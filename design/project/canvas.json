@@ -1,0 +1,21 @@
+{
+  "v": 3,
+  "createdOnFiles": { "v": 1, "at": "2026-11-20T12:00:00Z" },
+  "title": "K-Star Interface Redesign",
+  "launch": { "view": "canvas" },
+  "pages": [],
+  "boards": {
+    "Main.dc.html": { "x": 0, "y": 0, "w": 1440, "h": 900, "title": "Main window", "expand": "fill", "is_interactive": true },
+    "AddUrl.dc.html": { "x": 0, "y": 1300, "w": 680, "h": 760, "title": "Add URL dialog" },
+    "Tray.dc.html": { "x": 760, "y": 1300, "w": 380, "h": 600, "title": "Tray popover" },
+    "Empty.dc.html": { "x": 1220, "y": 1300, "w": 680, "h": 760, "title": "First run / empty" },
+    "Tokens.dc.html": { "x": 0, "y": 2460, "w": 1440, "h": 820, "title": "Design tokens" }
+  },
+  "order": ["Main.dc.html", "AddUrl.dc.html", "Tray.dc.html", "Empty.dc.html", "Tokens.dc.html"],
+  "notes": {
+    "t1": { "x": 0, "y": -300, "text": "K-Star — Graphite Signal", "kind": "title1", "maxW": 1440 },
+    "t2": { "x": 0, "y": 1020, "text": "Dialogs & surfaces", "kind": "title1", "maxW": 1900 },
+    "t3": { "x": 0, "y": 2180, "text": "Tokens & components", "kind": "title1", "maxW": 1440 }
+  },
+  "designSystems": []
+}

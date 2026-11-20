@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>K-Star — Tray popover</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400..800&amp;family=JetBrains+Mono:wght@400;500;600&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#F5A524}a:hover{color:#FFC35C}
+.mono{font-family:"JetBrains Mono",ui-monospace,monospace;font-variant-numeric:tabular-nums}
+button{font:inherit;cursor:pointer}
+</style>
+</helmet>
+<div style="--accent: {{accent}}; width: 380px; height: 600px; box-sizing: border-box; padding: 14px; background: #07080A; font-family: Inter, system-ui, sans-serif; font-size: 13px; line-height: 1.45; color: #ECEEF2">
+<div style="height: 100%; box-sizing: border-box; display: flex; flex-direction: column; border-radius: 14px; background: #13161B; border: 1px solid rgba(255,255,255,.1); box-shadow: 0 24px 60px rgba(0,0,0,.5); overflow: hidden">
+
+<div style="padding: 16px 16px 12px">
+<div style="display: flex; align-items: center; gap: 8px">
+<div style="width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center; background: var(--accent); color: #1A1300">
+<svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3C12.6 7.8 13.8 9 18.6 9.6 13.8 10.2 12.6 11.4 12 16.2 11.4 11.4 10.2 10.2 5.4 9.6 10.2 9 11.4 7.8 12 3Z" fill="currentColor"></path><rect x="7.6" y="18.2" width="8.8" height="1.9" rx=".95" fill="currentColor"></rect></svg>
+</div>
+<span style="font-weight: 700">K-Star</span>
+<span style="margin-left: auto; font-size: 11.5px; color: #8B92A0">2 active · 1 paused</span>
+</div>
+<div style="display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin-top: 14px">
+<div class="mono" style="font-size: 28px; font-weight: 600; letter-spacing: -0.03em; line-height: 1">24.5 <span style="font-size: 13px; color: #8B92A0">MB/s</span></div>
+<svg viewBox="0 0 160 36" preserveAspectRatio="none" aria-hidden="true" style="width: 150px; height: 36px">
+<path d="M0,26 L10,22 L20,24 L30,17 L40,19 L50,13 L60,15 L70,10 L80,12 L90,8 L100,11 L110,7 L120,9 L130,6 L140,9 L150,5 L160,7 L160,36 L0,36 Z" style="fill: var(--accent); opacity: .16"></path>
+<path d="M0,26 L10,22 L20,24 L30,17 L40,19 L50,13 L60,15 L70,10 L80,12 L90,8 L100,11 L110,7 L120,9 L130,6 L140,9 L150,5 L160,7" vector-effect="non-scaling-stroke" style="fill: none; stroke: var(--accent); stroke-width: 1.6"></path>
+</svg>
+</div>
+</div>
+
+<div style="flex: 1; display: flex; flex-direction: column; gap: 4px; padding: 4px 8px; border-top: 1px solid rgba(255,255,255,.07)">
+<div style="padding: 8px 8px 2px; font-size: 11px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; color: #8B92A0">Now</div>
+
+<div style="display: flex; flex-direction: column; gap: 7px; padding: 10px 8px; border-radius: 9px">
+<div style="display: flex; justify-content: space-between; gap: 10px">
+<span style="font-weight: 560; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">ubuntu-24.10-desktop-amd64.iso</span>
+<span class="mono" style="flex: none; font-size: 12px">18.4 MB/s</span>
+</div>
+<div style="display: flex; gap: 2px; height: 5px">
+<div style="flex: 14 1 0; border-radius: 2px; background: var(--accent)"></div>
+<div style="flex: 12 1 0; border-radius: 2px; background: var(--accent)"></div>
+<div style="flex: 13 1 0; border-radius: 2px; overflow: hidden; background: rgba(255,255,255,.08)"><div style="width: 62%; height: 100%; background: var(--accent)"></div></div>
+<div style="flex: 11 1 0; border-radius: 2px; overflow: hidden; background: rgba(255,255,255,.08)"><div style="width: 55%; height: 100%; background: var(--accent)"></div></div>
+<div style="flex: 13 1 0; border-radius: 2px; overflow: hidden; background: rgba(255,255,255,.08)"><div style="width: 48%; height: 100%; background: var(--accent)"></div></div>
+<div style="flex: 12 1 0; border-radius: 2px; overflow: hidden; background: rgba(255,255,255,.08)"><div style="width: 70%; height: 100%; background: var(--accent)"></div></div>
+<div style="flex: 13 1 0; border-radius: 2px; overflow: hidden; background: rgba(255,255,255,.08)"><div style="width: 41%; height: 100%; background: var(--accent)"></div></div>
+<div style="flex: 12 1 0; border-radius: 2px; overflow: hidden; background: rgba(255,255,255,.08)"><div style="width: 58%; height: 100%; background: var(--accent)"></div></div>
+</div>
+<div class="mono" style="display: flex; justify-content: space-between; font-size: 11.5px; color: #8B92A0"><span>67.0% · 3.82 of 5.70 GB</span><span>1m 45s left</span></div>
+</div>
+
+<div style="display: flex; flex-direction: column; gap: 7px; padding: 10px 8px; border-radius: 9px">
+<div style="display: flex; justify-content: space-between; gap: 10px">
+<span style="font-weight: 560; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">blender-4.3.0-linux-x64.tar.xz</span>
+<span class="mono" style="flex: none; font-size: 12px">6.1 MB/s</span>
+</div>
+<div style="display: flex; gap: 2px; height: 5px">
+<div style="flex: 18 1 0; border-radius: 2px; background: var(--accent)"></div>
+<div style="flex: 16 1 0; border-radius: 2px; background: var(--accent)"></div>
+<div style="flex: 17 1 0; border-radius: 2px; overflow: hidden; background: rgba(255,255,255,.08)"><div style="width: 92%; height: 100%; background: var(--accent)"></div></div>
+<div style="flex: 16 1 0; border-radius: 2px; overflow: hidden; background: rgba(255,255,255,.08)"><div style="width: 88%; height: 100%; background: var(--accent)"></div></div>
+<div style="flex: 17 1 0; border-radius: 2px; overflow: hidden; background: rgba(255,255,255,.08)"><div style="width: 79%; height: 100%; background: var(--accent)"></div></div>
+<div style="flex: 16 1 0; border-radius: 2px; overflow: hidden; background: rgba(255,255,255,.08)"><div style="width: 85%; height: 100%; background: var(--accent)"></div></div>
+</div>
+<div class="mono" style="display: flex; justify-content: space-between; font-size: 11.5px; color: #8B92A0"><span>90.8% · 310 of 342 MB</span><span>6s left</span></div>
+</div>
+
+<div style="display: flex; flex-direction: column; gap: 7px; padding: 10px 8px; border-radius: 9px">
+<div style="display: flex; justify-content: space-between; gap: 10px">
+<span style="font-weight: 560; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">38c3-opening-ceremony-1080p.mp4</span>
+<span style="flex: none; font-size: 12px; font-weight: 560; color: #8EA2FF">Paused</span>
+</div>
+<div style="height: 5px; border-radius: 2px; overflow: hidden; background: rgba(255,255,255,.08)"><div style="width: 31%; height: 100%; background: #8EA2FF"></div></div>
+<div class="mono" style="font-size: 11.5px; color: #8B92A0">31.3% · 397 MB of 1.24 GB</div>
+</div>
+
+<div style="display: flex; align-items: center; gap: 10px; margin: 6px 8px 0; padding: 10px 12px; border-radius: 9px; background: color-mix(in srgb, #FF7A7A 9%, transparent)">
+<span style="width: 6px; height: 6px; border-radius: 50%; background: #FF7A7A"></span>
+<span style="flex: 1; font-size: 12px">1 download needs a fresh link</span>
+<a href="#" style="font-size: 12px; font-weight: 600">Review</a>
+</div>
+</div>
+
+<div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding: 12px 16px; border-top: 1px solid rgba(255,255,255,.07)">
+<button style="display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: 36px; border-radius: 9px; background: #1A1E25; border: 1px solid rgba(255,255,255,.13); color: #ECEEF2; font-weight: 600; font-size: 12.5px">
+<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M9 5v14M15 5v14"></path></svg>
+Pause all
+</button>
+<button style="display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: 36px; border-radius: 9px; background: var(--accent); border: 0; color: #1A1300; font-weight: 650; font-size: 12.5px">
+<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>
+Add URL
+</button>
+</div>
+<div style="display: flex; align-items: center; justify-content: space-between; padding: 0 16px 14px; font-size: 12px">
+<a href="#" style="color: #B0B6C2">Open K-Star</a>
+<span style="display: inline-flex; align-items: center; gap: 6px; color: #8B92A0"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 14l4-4M3.3 19a10 10 0 1 1 17.4 0"></path></svg>No limit</span>
+<a href="#" style="color: #B0B6C2">Quit</a>
+</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#F5A524","options":["#F5A524","#4C9AFF","#B48CFF","#FF7A59"]},"$preview":{"width":380,"height":600}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { accent: this.props.accent ?? '#F5A524' };
+  }
+}
+</script>
+</body>
+</html>

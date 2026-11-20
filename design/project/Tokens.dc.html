@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>K-Star — Design tokens</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400..800&amp;family=JetBrains+Mono:wght@400;500;600&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#F5A524}a:hover{color:#FFC35C}
+.mono{font-family:"JetBrains Mono",ui-monospace,monospace;font-variant-numeric:tabular-nums}
+button{font:inherit;cursor:pointer}
+</style>
+</helmet>
+<div style="--accent: {{accent}}; width: 1440px; height: 820px; box-sizing: border-box; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; padding: 48px; background: #0E1014; font-family: Inter, system-ui, sans-serif; font-size: 13px; line-height: 1.45; color: #ECEEF2">
+
+<div style="display: flex; flex-direction: column; gap: 22px">
+<div>
+<h2 style="margin: 0 0 4px; font-size: 20px; font-weight: 700; letter-spacing: -0.02em">Graphite Signal</h2>
+<p style="margin: 0; color: #B0B6C2; max-width: 380px">Graphite surfaces, one amber signal for live transfers, mono numerals that don't jitter as they tick.</p>
+</div>
+<div style="display: flex; flex-direction: column; gap: 8px">
+<div style="font-size: 11px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; color: #8B92A0">Surfaces · dark / light</div>
+<div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px">
+<div style="display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: 10px; background: #13161B; border: 1px solid rgba(255,255,255,.07)"><span style="width: 34px; height: 34px; border-radius: 7px; background: #0A0C0F; border: 1px solid rgba(255,255,255,.1)"></span><div><div style="font-weight: 600; font-size: 12px">side</div><div class="mono" style="font-size: 11px; color: #8B92A0">#0A0C0F · #ECECE7</div></div></div>
+<div style="display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: 10px; background: #13161B; border: 1px solid rgba(255,255,255,.07)"><span style="width: 34px; height: 34px; border-radius: 7px; background: #0E1014; border: 1px solid rgba(255,255,255,.1)"></span><div><div style="font-weight: 600; font-size: 12px">bg</div><div class="mono" style="font-size: 11px; color: #8B92A0">#0E1014 · #F4F4F1</div></div></div>
+<div style="display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: 10px; background: #13161B; border: 1px solid rgba(255,255,255,.07)"><span style="width: 34px; height: 34px; border-radius: 7px; background: #13161B; border: 1px solid rgba(255,255,255,.1)"></span><div><div style="font-weight: 600; font-size: 12px">panel</div><div class="mono" style="font-size: 11px; color: #8B92A0">#13161B · #FFFFFF</div></div></div>
+<div style="display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: 10px; background: #13161B; border: 1px solid rgba(255,255,255,.07)"><span style="width: 34px; height: 34px; border-radius: 7px; background: #1A1E25; border: 1px solid rgba(255,255,255,.1)"></span><div><div style="font-weight: 600; font-size: 12px">raise</div><div class="mono" style="font-size: 11px; color: #8B92A0">#1A1E25 · #F6F6F3</div></div></div>
+<div style="display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: 10px; background: #13161B; border: 1px solid rgba(255,255,255,.07)"><span style="width: 34px; height: 34px; border-radius: 7px; background: #ECEEF2"></span><div><div style="font-weight: 600; font-size: 12px">ink</div><div class="mono" style="font-size: 11px; color: #8B92A0">#ECEEF2 · #14161B</div></div></div>
+<div style="display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: 10px; background: #13161B; border: 1px solid rgba(255,255,255,.07)"><span style="width: 34px; height: 34px; border-radius: 7px; background: #8B92A0"></span><div><div style="font-weight: 600; font-size: 12px">mute</div><div class="mono" style="font-size: 11px; color: #8B92A0">#8B92A0 · #636A77</div></div></div>
+</div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 8px">
+<div style="font-size: 11px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; color: #8B92A0">Signal &amp; status</div>
+<div style="display: flex; flex-direction: column; gap: 6px; padding: 12px; border-radius: 10px; background: #13161B; border: 1px solid rgba(255,255,255,.07)">
+<div style="display: flex; align-items: center; gap: 10px"><span style="width: 8px; height: 8px; border-radius: 50%; background: var(--accent)"></span><span style="flex: 1; color: var(--accent); font-weight: 560">Downloading · Connecting</span><span class="mono" style="font-size: 11px; color: #8B92A0">accent #F5A524</span></div>
+<div style="display: flex; align-items: center; gap: 10px"><span style="width: 8px; height: 8px; border-radius: 50%; background: #8EA2FF"></span><span style="flex: 1; color: #8EA2FF; font-weight: 560">Paused</span><span class="mono" style="font-size: 11px; color: #8B92A0">#8EA2FF · #4457C8</span></div>
+<div style="display: flex; align-items: center; gap: 10px"><span style="width: 8px; height: 8px; border-radius: 50%; background: #8B92A0"></span><span style="flex: 1; color: #B0B6C2; font-weight: 560">Queued · Download later</span><span class="mono" style="font-size: 11px; color: #8B92A0">mute</span></div>
+<div style="display: flex; align-items: center; gap: 10px"><span style="width: 8px; height: 8px; border-radius: 50%; background: #3DD68C"></span><span style="flex: 1; color: #3DD68C; font-weight: 560">Completed</span><span class="mono" style="font-size: 11px; color: #8B92A0">#3DD68C · #12784A</span></div>
+<div style="display: flex; align-items: center; gap: 10px"><span style="width: 8px; height: 8px; border-radius: 50%; background: #FF7A7A"></span><span style="flex: 1; color: #FF7A7A; font-weight: 560">Failed · Needs login</span><span class="mono" style="font-size: 11px; color: #8B92A0">#FF7A7A · #C33131</span></div>
+</div>
+</div>
+</div>
+
+<div style="display: flex; flex-direction: column; gap: 22px">
+<div style="display: flex; flex-direction: column; gap: 8px">
+<div style="font-size: 11px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; color: #8B92A0">Type</div>
+<div style="display: flex; flex-direction: column; gap: 14px; padding: 16px; border-radius: 10px; background: #13161B; border: 1px solid rgba(255,255,255,.07)">
+<div style="display: flex; align-items: baseline; justify-content: space-between; gap: 12px"><span style="font-size: 19px; font-weight: 700; letter-spacing: -0.02em">All downloads</span><span class="mono" style="font-size: 11px; color: #8B92A0">Inter 19 / 700</span></div>
+<div style="display: flex; align-items: baseline; justify-content: space-between; gap: 12px"><span style="font-size: 14.5px; font-weight: 650">Download details</span><span class="mono" style="font-size: 11px; color: #8B92A0">Inter 14.5 / 650</span></div>
+<div style="display: flex; align-items: baseline; justify-content: space-between; gap: 12px"><span style="font-size: 13px; font-weight: 560">ubuntu-24.10-desktop-amd64.iso</span><span class="mono" style="font-size: 11px; color: #8B92A0">Inter 13 / 560</span></div>
+<div style="display: flex; align-items: baseline; justify-content: space-between; gap: 12px"><span style="font-size: 12px; color: #8B92A0">releases.ubuntu.com · Programs</span><span class="mono" style="font-size: 11px; color: #8B92A0">Inter 12 / 400</span></div>
+<div style="display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,.07)"><span class="mono" style="font-size: 34px; font-weight: 600; letter-spacing: -0.03em; line-height: 1">67.0%</span><span class="mono" style="font-size: 11px; color: #8B92A0">JetBrains Mono 34 / 600</span></div>
+<div style="display: flex; align-items: baseline; justify-content: space-between; gap: 12px"><span class="mono" style="font-size: 12px">18.4 MB/s · 1m 45s</span><span class="mono" style="font-size: 11px; color: #8B92A0">Mono 12, tabular</span></div>
+</div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 8px">
+<div style="font-size: 11px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; color: #8B92A0">Categories</div>
+<div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px">
+<div style="display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 8px; background: #13161B"><span style="width: 10px; height: 10px; border-radius: 3px; background: #E0559B"></span><span style="flex: 1">Video</span><span class="mono" style="font-size: 11px; color: #8B92A0">#E0559B</span></div>
+<div style="display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 8px; background: #13161B"><span style="width: 10px; height: 10px; border-radius: 3px; background: #9B7BFF"></span><span style="flex: 1">Music</span><span class="mono" style="font-size: 11px; color: #8B92A0">#9B7BFF</span></div>
+<div style="display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 8px; background: #13161B"><span style="width: 10px; height: 10px; border-radius: 3px; background: #2FB67C"></span><span style="flex: 1">Images</span><span class="mono" style="font-size: 11px; color: #8B92A0">#2FB67C</span></div>
+<div style="display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 8px; background: #13161B"><span style="width: 10px; height: 10px; border-radius: 3px; background: #4A90E2"></span><span style="flex: 1">Documents</span><span class="mono" style="font-size: 11px; color: #8B92A0">#4A90E2</span></div>
+<div style="display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 8px; background: #13161B"><span style="width: 10px; height: 10px; border-radius: 3px; background: #D99A1E"></span><span style="flex: 1">Compressed</span><span class="mono" style="font-size: 11px; color: #8B92A0">#D99A1E</span></div>
+<div style="display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 8px; background: #13161B"><span style="width: 10px; height: 10px; border-radius: 3px; background: #1FB2C8"></span><span style="flex: 1">Programs</span><span class="mono" style="font-size: 11px; color: #8B92A0">#1FB2C8</span></div>
+</div>
+</div>
+</div>
+
+<div style="display: flex; flex-direction: column; gap: 22px">
+<div style="display: flex; flex-direction: column; gap: 8px">
+<div style="font-size: 11px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; color: #8B92A0">Buttons</div>
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 16px; border-radius: 10px; background: #13161B; border: 1px solid rgba(255,255,255,.07)">
+<button style="height: 34px; padding: 0 14px; border-radius: 8px; background: var(--accent); border: 0; color: #1A1300; font-weight: 640">Start download</button>
+<button style="height: 34px; padding: 0 14px; border-radius: 8px; background: #1A1E25; border: 1px solid rgba(255,255,255,.13); color: #ECEEF2; font-weight: 600">Download later</button>
+<button aria-label="Pause" style="width: 34px; height: 34px; display: grid; place-items: center; border-radius: 8px; background: #242932; border: 0; color: #ECEEF2"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M9 5v14M15 5v14"></path></svg></button>
+<button style="height: 34px; padding: 0 14px; border-radius: 8px; background: #C33131; border: 0; color: #FFFFFF; font-weight: 600">Remove</button>
+</div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 8px">
+<div style="font-size: 11px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; color: #8B92A0">Segment bar</div>
+<div style="display: flex; flex-direction: column; gap: 14px; padding: 16px; border-radius: 10px; background: #13161B; border: 1px solid rgba(255,255,255,.07)">
+<div style="display: flex; flex-direction: column; gap: 6px">
+<div style="display: flex; gap: 2px; height: 6px">
+<div style="flex: 14 1 0; border-radius: 2px; background: var(--accent)"></div>
+<div style="flex: 12 1 0; border-radius: 2px; background: var(--accent)"></div>
+<div style="flex: 13 1 0; border-radius: 2px; overflow: hidden; background: rgba(255,255,255,.08)"><div style="width: 62%; height: 100%; background: var(--accent)"></div></div>
+<div style="flex: 11 1 0; border-radius: 2px; overflow: hidden; background: rgba(255,255,255,.08)"><div style="width: 55%; height: 100%; background: var(--accent)"></div></div>
+<div style="flex: 13 1 0; border-radius: 2px; overflow: hidden; background: rgba(255,255,255,.08)"><div style="width: 48%; height: 100%; background: var(--accent)"></div></div>
+<div style="flex: 12 1 0; border-radius: 2px; overflow: hidden; background: rgba(255,255,255,.08)"><div style="width: 70%; height: 100%; background: var(--accent)"></div></div>
+</div>
+<span style="font-size: 12px; color: #8B92A0">Row: 6 px, 2 px gaps. One block per connection, sized by its share of the file.</span>
+</div>
+<div style="display: flex; flex-direction: column; gap: 6px">
+<div style="display: flex; gap: 3px; height: 26px">
+<div style="flex: 34 1 0; border-radius: 4px; overflow: hidden; background: rgba(255,255,255,.08)"><div style="width: 62%; height: 100%; background: #FF7A7A"></div></div>
+<div style="flex: 33 1 0; border-radius: 4px; overflow: hidden; background: rgba(255,255,255,.08)"><div style="width: 40%; height: 100%; background: #FF7A7A"></div></div>
+<div style="flex: 33 1 0; border-radius: 4px; overflow: hidden; background: rgba(255,255,255,.08)"><div style="width: 30%; height: 100%; background: #FF7A7A"></div></div>
+</div>
+<span style="font-size: 12px; color: #8B92A0">Detail: 26 px, 3 px gaps. Fill takes the status colour (here: failed).</span>
+</div>
+</div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 8px">
+<div style="font-size: 11px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; color: #8B92A0">Radii &amp; spacing</div>
+<div style="display: flex; align-items: flex-end; gap: 14px; padding: 16px; border-radius: 10px; background: #13161B; border: 1px solid rgba(255,255,255,.07)">
+<div style="text-align: center"><div style="width: 40px; height: 40px; border-radius: 7px; border: 1.5px solid var(--accent)"></div><div class="mono" style="font-size: 11px; color: #8B92A0; margin-top: 6px">7</div></div>
+<div style="text-align: center"><div style="width: 40px; height: 40px; border-radius: 9px; border: 1.5px solid var(--accent)"></div><div class="mono" style="font-size: 11px; color: #8B92A0; margin-top: 6px">9</div></div>
+<div style="text-align: center"><div style="width: 40px; height: 40px; border-radius: 12px; border: 1.5px solid var(--accent)"></div><div class="mono" style="font-size: 11px; color: #8B92A0; margin-top: 6px">12</div></div>
+<div style="text-align: center"><div style="width: 40px; height: 40px; border-radius: 16px; border: 1.5px solid var(--accent)"></div><div class="mono" style="font-size: 11px; color: #8B92A0; margin-top: 6px">16</div></div>
+<div style="margin-left: auto; font-size: 12px; color: #8B92A0; text-align: right">4 · 8 · 12 · 16 · 20 grid<br>Rows 58 px, compact 42 px</div>
+</div>
+</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#F5A524","options":["#F5A524","#4C9AFF","#B48CFF","#FF7A59"]},"$preview":{"width":1440,"height":820}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { accent: this.props.accent ?? '#F5A524' };
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>K-Star — First run</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400..800&amp;family=JetBrains+Mono:wght@400;500;600&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#F5A524}a:hover{color:#FFC35C}
+.mono{font-family:"JetBrains Mono",ui-monospace,monospace}
+button{font:inherit;cursor:pointer}
+</style>
+</helmet>
+<div style="--accent: {{accent}}; width: 680px; height: 760px; box-sizing: border-box; display: flex; flex-direction: column; gap: 20px; padding: 40px; background: #0E1014; font-family: Inter, system-ui, sans-serif; font-size: 13px; line-height: 1.5; color: #ECEEF2">
+
+<div style="flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 32px; border-radius: 16px; border: 1.5px dashed rgba(255,255,255,.16); text-align: center">
+<div style="width: 64px; height: 64px; border-radius: 16px; display: grid; place-items: center; background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent)">
+<svg width="36" height="36" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3C12.6 7.8 13.8 9 18.6 9.6 13.8 10.2 12.6 11.4 12 16.2 11.4 11.4 10.2 10.2 5.4 9.6 10.2 9 11.4 7.8 12 3Z" fill="currentColor"></path><rect x="7.6" y="18.2" width="8.8" height="1.9" rx=".95" fill="currentColor"></rect></svg>
+</div>
+<h2 style="margin: 4px 0 0; font-size: 22px; font-weight: 700; letter-spacing: -0.02em">Nothing downloading yet</h2>
+<p style="margin: 0; max-width: 380px; color: #B0B6C2">Drop a link anywhere in this window, or paste one. K-Star splits big files across several connections and can resume them after a restart.</p>
+<div style="display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 8px">
+<button style="display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 0 16px; border-radius: 9px; background: var(--accent); border: 0; color: #1A1300; font-weight: 650">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>
+Add URL
+</button>
+<button style="display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px; border-radius: 9px; background: #1A1E25; border: 1px solid rgba(255,255,255,.13); color: #ECEEF2; font-weight: 600">
+Paste link
+<span class="mono" style="font-size: 10.5px; color: #8B92A0">Ctrl V</span>
+</button>
+</div>
+</div>
+
+<div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px">
+<div style="display: flex; flex-direction: column; gap: 10px; padding: 16px; border-radius: 12px; background: #13161B; border: 1px solid rgba(255,255,255,.07)">
+<div style="display: flex; align-items: center; gap: 8px">
+<span style="width: 8px; height: 8px; border-radius: 50%; background: #8B92A0"></span>
+<span style="font-weight: 650">Firefox extension</span>
+</div>
+<p style="margin: 0; font-size: 12.5px; color: #B0B6C2">Send downloads from Firefox, LibreWolf, Floorp or Zen straight to K-Star, cookies and all.</p>
+<button style="align-self: flex-start; height: 32px; padding: 0 12px; border-radius: 8px; background: #1A1E25; border: 1px solid rgba(255,255,255,.13); color: #ECEEF2; font-weight: 600; font-size: 12.5px">Install extension</button>
+</div>
+<div style="display: flex; flex-direction: column; gap: 10px; padding: 16px; border-radius: 12px; background: #13161B; border: 1px solid rgba(255,255,255,.07)">
+<div style="display: flex; align-items: center; gap: 8px">
+<span style="width: 8px; height: 8px; border-radius: 50%; background: #3DD68C"></span>
+<span style="font-weight: 650">Saving to</span>
+</div>
+<p class="mono" style="margin: 0; font-size: 12px; color: #ECEEF2">~/Downloads/&lt;category&gt;</p>
+<p style="margin: 0; font-size: 12.5px; color: #B0B6C2">Videos, music, archives and more each get their own folder.</p>
+<a href="#" style="font-size: 12.5px; font-weight: 600">Change in Settings</a>
+</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#F5A524","options":["#F5A524","#4C9AFF","#B48CFF","#FF7A59"]},"$preview":{"width":680,"height":760}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { accent: this.props.accent ?? '#F5A524' };
+  }
+}
+</script>
+</body>
+</html>
