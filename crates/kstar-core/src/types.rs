@@ -202,6 +202,8 @@ pub struct DownloadInfo {
     pub speed: u64,
     pub active_connections: u32,
     pub segments: Vec<Segment>,
+    /// A media download (video or audio stream) rather than a plain file.
+    pub media: Option<crate::media::MediaInfo>,
 }
 
 /// A server wants a login for a download.
@@ -222,6 +224,9 @@ pub struct ProgressItem {
     pub speed: u64,
     pub active_connections: u32,
     pub segments: Vec<Segment>,
+    /// Phase and piece counts of a media download.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub media: Option<crate::media::MediaProgress>,
 }
 
 #[derive(Debug, Clone, Serialize)]

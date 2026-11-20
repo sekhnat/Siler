@@ -3,12 +3,13 @@
   import { open } from "@tauri-apps/plugin-dialog";
   import { onMount } from "svelte";
   import { slide } from "svelte/transition";
-  import { api, errorText, MAIN_QUEUE, type Category, type LoginRequest, type Pending, type ProbeError, type ProbeResult, type Settings } from "../api";
+  import { api, errorText, MAIN_QUEUE, type Category, type ContainerChoice, type LoginRequest, type MediaProbe, type Pending, type ProbeError, type ProbeResult, type Selection, type Settings, type SubtitleMode } from "../api";
   import { CATEGORIES, categoryMeta } from "../categories";
   import { bytes, host, looksLikeUrl, nameFromUrl, parseUrls, percent } from "../format";
   import { toasts } from "../store.svelte";
   import FileIcon from "./FileIcon.svelte";
   import LoginForm from "./LoginForm.svelte";
+  import MediaPicker from "./MediaPicker.svelte";
   import QueuePicker from "./QueuePicker.svelte";
 
   let {
@@ -50,6 +51,11 @@
   // svelte-ignore state_referenced_locally
   let queueId = $state(pending?.queue_id ?? MAIN_QUEUE);
   let category = $state<Category>("other");
+  // A stream (HLS or DASH), or a stream that can't be downloaded: its tracks are the form.
+  let mediaProbe = $state<MediaProbe | null>(null);
+  let selection = $state<Selection>({ video: null, audio: [], subtitles: [] });
+  let container = $state<ContainerChoice>("auto");
+  let subtitleMode = $state<SubtitleMode>("embed");
   let settings = $state<Settings | null>(null);
   let connections = $state<number | null>(null);
   let advanced = $state(false);
@@ -60,11 +66,17 @@
   let choice = $state<"rename" | "overwrite">("rename");
 
   const valid = $derived(looksLikeUrl(url));
+  const isStream = $derived(mediaProbe?.kind === "hls" || mediaProbe?.kind === "dash");
+  const mediaReady = $derived(isStream && (selection.video !== null || selection.audio.length > 0));
   const resumable = $derived(pending?.resumable ?? null);
 
   onMount(async () => {
     settings = await api.getSettings().catch(() => null);
     if (settings?.on_conflict === "overwrite") choice = "overwrite";
+    if (settings) {
+      container = settings.default_media_container;
+      subtitleMode = settings.default_subtitle_mode;
+    }
   });
 
   function categoryDir(c: Category): string {
@@ -86,6 +98,17 @@
     probing = true;
     probeError = "";
     try {
+      // Streams are looked at first: a manifest is never downloaded as a file.
+      const m = await api.probeMedia(target, pending?.id).catch(() => null);
+      if (mine !== seq) return;
+      if (m && m.kind !== "direct" && m.kind !== "not_media") {
+        mediaProbe = m;
+        selection = { ...m.default };
+        probe = null;
+        loginNeeded = null;
+        return;
+      }
+      mediaProbe = null;
       const p = await api.probe(target, pending?.id);
       if (mine !== seq) return;
       probe = p;
@@ -156,6 +179,27 @@
   }
 
   async function submit(startPaused: boolean) {
+    if (mediaProbe) {
+      if (!mediaReady || busy) return;
+      busy = true;
+      try {
+        await api.addMedia({
+          url: url.trim(),
+          container,
+          subtitles: subtitleMode,
+          selection,
+          startPaused,
+          pendingId: pending?.id ?? null,
+          queueId,
+        });
+        ondone();
+      } catch (e) {
+        toasts.error(e);
+      } finally {
+        busy = false;
+      }
+      return;
+    }
     if (!valid || busy) return;
     busy = true;
     try {
@@ -239,6 +283,8 @@
     <div class="login-box">
       <LoginForm request={loginNeeded} onloggedin={() => runProbe(url.trim())} />
     </div>
+  {:else if mediaProbe}
+    <MediaPicker probe={mediaProbe} bind:selection bind:container bind:subtitles={subtitleMode} ffmpeg={mediaProbe.ffmpeg} />
   {:else}
   <div class="card" class:loading={probing}>
     <FileIcon {category} size={44} />
@@ -268,6 +314,7 @@
 
   {/if}
 
+  {#if !mediaProbe}
   <div class="grid">
     <label class="field">
       <span class="label">File name</span>
@@ -314,12 +361,14 @@
     </div>
   {/if}
 
+  {/if}
+
   <div class="actions">
     <button class="btn btn-ghost" onclick={oncancel}>Cancel</button>
     <span class="grow"></span>
     <QueuePicker bind:value={queueId} />
-    <button class="btn" class:btn-primary={later} disabled={!valid || busy} onclick={() => submit(true)}>Download later</button>
-    <button class="btn" class:btn-primary={!later} disabled={!valid || busy} onclick={() => submit(false)}>Start download</button>
+    <button class="btn" class:btn-primary={later} disabled={(mediaProbe ? !mediaReady : !valid) || busy} onclick={() => submit(true)}>Download later</button>
+    <button class="btn" class:btn-primary={!later} disabled={(mediaProbe ? !mediaReady : !valid) || busy} onclick={() => submit(false)}>Start download</button>
   </div>
 </div>
 

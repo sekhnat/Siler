@@ -130,6 +130,10 @@ export interface Download {
   speed: number;
   active_connections: number;
   segments: Segment[];
+  /** A media download (a video or audio stream) rather than a file. */
+  media: MediaInfo | null;
+  /** The phase and piece counts of a media download while it runs. */
+  media_progress?: MediaProgress | null;
 }
 
 export interface ProgressItem {
@@ -139,6 +143,93 @@ export interface ProgressItem {
   speed: number;
   active_connections: number;
   segments: Segment[];
+  media?: MediaProgress | null;
+}
+
+export type ContainerChoice = "auto" | "mp4" | "mkv" | "original";
+export type SubtitleMode = "embed" | "sidecar" | "none";
+export type ManifestKind = "hls" | "dash";
+export type OutputKind = "mp4" | "mkv" | "original";
+
+/** The tracks a media download takes. */
+export interface Selection {
+  video: string | null;
+  audio: string[];
+  subtitles: string[];
+}
+
+export interface MediaInfo {
+  manifest: ManifestKind;
+  output: OutputKind;
+  reason: string;
+  subtitles: SubtitleMode;
+  labels: string[];
+  sidecars: string[];
+}
+
+export interface MediaProgress {
+  phase: "resolving" | "downloading" | "rebuilding" | "publishing";
+  segments_done: number;
+  segments_total: number;
+  permille: number;
+}
+
+/** What a probe of a link found: a plain file, a page, or a stream and its tracks. */
+export type MediaKindView = "direct" | "hls" | "dash" | "not_media" | "live" | "drm" | "unsupported";
+
+export interface TrackView {
+  id: string;
+  kind: "video" | "audio" | "subtitle";
+  label: string;
+  lang: string | null;
+  codecs: string | null;
+  bandwidth: number | null;
+  resolution: [number, number] | null;
+  channels: number | null;
+  estimated_bytes: number | null;
+  is_default: boolean;
+  container: string;
+}
+
+export interface VariantView {
+  video: TrackView;
+  audio: string[];
+  subtitles: string[];
+  muxed_audio: boolean;
+}
+
+export interface MediaProbe {
+  kind: MediaKindView;
+  message: string | null;
+  title: string | null;
+  duration: number | null;
+  variants: VariantView[];
+  audio: TrackView[];
+  subtitles: TrackView[];
+  default: Selection;
+  warnings: string[];
+  dropped_drm: number;
+  ffmpeg: boolean;
+}
+
+export interface FfmpegStatus {
+  path: string | null;
+  version: string | null;
+  ok: boolean;
+  missing: string[];
+}
+
+export interface MediaArgs {
+  url: string;
+  filename?: string | null;
+  dir?: string | null;
+  selection?: Selection | null;
+  container?: ContainerChoice | null;
+  subtitles?: SubtitleMode | null;
+  startPaused?: boolean;
+  onConflict?: OnConflict | null;
+  pendingId?: number | null;
+  queueId?: number | null;
 }
 
 export type EngineEvent =
@@ -200,6 +291,13 @@ export interface Settings {
   prevent_sleep: boolean;
   clipboard_monitor: boolean;
   sounds: SoundSettings;
+  media_segment_concurrency: number;
+  preferred_max_height: number;
+  preferred_audio_language: string;
+  preferred_subtitle_language: string;
+  default_media_container: ContainerChoice;
+  default_subtitle_mode: SubtitleMode;
+  allow_private_media_addresses: boolean;
 }
 
 export interface Pending {
@@ -261,6 +359,9 @@ export const api = {
   probe: (url: string, pendingId?: number | null) => invoke<ProbeResult>("probe_url", { url, pendingId }),
   nameStatus: (dir: string, name: string) => invoke<{ exists: boolean; suggested: string }>("name_status", { dir, name }),
   add: (args: AddArgs) => invoke<number>("add_download", { args }),
+  probeMedia: (url: string, pendingId?: number | null) => invoke<MediaProbe>("probe_media", { url, pendingId }),
+  addMedia: (args: MediaArgs) => invoke<number>("add_media", { args }),
+  mediaDiagnostics: () => invoke<FfmpegStatus>("media_diagnostics"),
   pending: () => invoke<Pending[]>("pending_adds"),
   dismissPending: (id: number) => invoke<void>("dismiss_pending", { id }),
   pause: (id: number) => invoke<void>("pause", { id }),

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { FolderOpen, KeyRound, ListOrdered, LoaderCircle, Pause, Play, RefreshCw, RotateCw } from "@lucide/svelte";
+  import { Film, FolderOpen, KeyRound, ListOrdered, LoaderCircle, Pause, Play, RefreshCw, RotateCw } from "@lucide/svelte";
   import { api, MAIN_QUEUE, type Download } from "../api";
   import { STATUS_COLOR, STATUS_LABEL } from "../categories";
   import { bytes, eta, host, nameFromUrl, percent, relativeTime, speed, syncLabel } from "../format";
@@ -10,10 +10,38 @@
   let { d, selected }: { d: Download; selected: boolean } = $props();
 
   const done = $derived(d.status === "completed");
-  const pct = $derived(done ? 100 : percent(d.total_size, d.downloaded));
+  const mp = $derived(d.media_progress ?? null);
+  /** A media download has no known size: its progress is its phase. */
+  function mediaPct(m: NonNullable<typeof mp>): number {
+    switch (m.phase) {
+      case "downloading":
+        return m.segments_total ? (88 * m.segments_done) / m.segments_total : 0;
+      case "rebuilding":
+        return 88 + (m.permille / 1000) * 10;
+      case "publishing":
+        return 99;
+      default:
+        return 0;
+    }
+  }
+  const pct = $derived(done ? 100 : mp ? mediaPct(mp) : percent(d.total_size, d.downloaded));
   const name = $derived(d.filename ?? nameFromUrl(d.url));
+  const phaseText = $derived.by(() => {
+    if (!mp) return null;
+    switch (mp.phase) {
+      case "resolving":
+        return "Reading the stream…";
+      case "downloading":
+        return `Pieces ${mp.segments_done} of ${mp.segments_total}`;
+      case "rebuilding":
+        return `Rebuilding ${(mp.permille / 10).toFixed(0)}%`;
+      default:
+        return "Saving…";
+    }
+  });
   const sizeText = $derived.by(() => {
     if (done) return bytes(d.total_size);
+    if (phaseText) return phaseText;
     if (d.total_size) return `${bytes(d.downloaded)} of ${bytes(d.total_size)}`;
     return d.downloaded ? bytes(d.downloaded) : "Unknown size";
   });
@@ -33,6 +61,9 @@
       <span class="name truncate" title={name}>{name}</span>
       {#if d.file_missing}
         <span class="pill" style:--c="var(--warn)" title="The file was moved or deleted">File missing</span>
+      {/if}
+      {#if d.media}
+        <span class="pill quiet" title={d.media.reason}><Film size={11} />{d.media.manifest === "hls" ? "HLS" : "DASH"}</span>
       {/if}
       {#if !done && d.queue_id !== MAIN_QUEUE}
         <span class="pill quiet" title="In the queue “{store.queueName(d.queue_id)}”"><ListOrdered size={11} />{store.queueName(d.queue_id)}</span>
@@ -67,7 +98,7 @@
   <div class="rate">
     {#if d.status === "downloading"}
       <div class="speed num">{speed(d.speed)}</div>
-      <div class="eta num">{eta(d.total_size, d.downloaded, d.speed)} left</div>
+      {#if !d.media}<div class="eta num">{eta(d.total_size, d.downloaded, d.speed)} left</div>{/if}
     {/if}
   </div>
 

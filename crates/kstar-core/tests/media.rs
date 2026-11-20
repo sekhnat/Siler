@@ -1,0 +1,718 @@
+//! End-to-end media tests: a local server serves the committed fixtures (see
+//! scripts/gen_media_fixtures.sh), with fault injection, and the engine downloads them. The
+//! muxing tests need an FFmpeg: `KSTAR_FFMPEG` if set, else `ffmpeg` on PATH; they skip
+//! without one unless `KSTAR_REQUIRE_FFMPEG=1`.
+
+use axum::Router;
+use axum::body::Body;
+use axum::extract::{Path as AxPath, State};
+use axum::http::{HeaderValue, StatusCode, header};
+use axum::response::Response;
+use axum::routing::get;
+use kstar_core::{
+    ContainerChoice, DownloadInfo, Engine, Event, FfmpegStatus, MediaError, MediaKind, MediaProbe,
+    NewMediaDownload, RequestMeta, Selection, Settings, Status, SubtitleMode,
+};
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+fn fixtures() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/media")
+}
+
+// ------------------------------------------------------------------ server
+
+#[derive(Clone, Copy)]
+enum Fault {
+    /// Answer 200 with an HTML page (an expired link that returns a login page).
+    Html,
+    /// Answer 403 (an expired signed URL).
+    Forbidden,
+}
+
+#[derive(Default)]
+struct Shared {
+    hits: Mutex<HashMap<String, usize>>,
+    /// Faults for a path: the first `n` requests get the fault.
+    faults: Mutex<HashMap<String, (usize, Fault)>>,
+    /// A delay before every segment answer.
+    delay: Mutex<Option<Duration>>,
+}
+
+impl Shared {
+    fn hits(&self, path: &str) -> usize {
+        self.hits.lock().unwrap().get(path).copied().unwrap_or(0)
+    }
+}
+
+fn content_type(path: &str) -> &'static str {
+    match path.rsplit('.').next().unwrap_or("") {
+        "m3u8" => "application/vnd.apple.mpegurl",
+        "mpd" => "application/dash+xml",
+        "ts" => "video/mp2t",
+        "m4s" | "mp4" => "video/mp4",
+        "vtt" => "text/vtt",
+        "html" => "text/html",
+        _ => "application/octet-stream",
+    }
+}
+
+async fn serve(State(shared): State<Arc<Shared>>, AxPath(path): AxPath<String>) -> Response {
+    let key = format!("/{path}");
+    *shared.hits.lock().unwrap().entry(key.clone()).or_default() += 1;
+    if path.ends_with(".ts") || path.ends_with(".m4s") {
+        let d = *shared.delay.lock().unwrap();
+        if let Some(d) = d {
+            tokio::time::sleep(d).await;
+        }
+    }
+    {
+        let mut faults = shared.faults.lock().unwrap();
+        if let Some((n, fault)) = faults.get_mut(&key)
+            && *n > 0
+        {
+            {
+                *n -= 1;
+                let fault = *fault;
+                drop(faults);
+                return match fault {
+                    Fault::Html => Response::builder()
+                        .header(header::CONTENT_TYPE, "text/html")
+                        .body(Body::from(
+                            "<!DOCTYPE html><html><body>Session expired</body></html>",
+                        ))
+                        .unwrap_or_default(),
+                    Fault::Forbidden => Response::builder()
+                        .status(StatusCode::FORBIDDEN)
+                        .body(Body::empty())
+                        .unwrap_or_default(),
+                };
+            }
+        }
+    }
+    match tokio::fs::read(fixtures().join(&path)).await {
+        Ok(bytes) => {
+            let mut resp = Response::new(Body::from(bytes));
+            resp.headers_mut().insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static(content_type(&path)),
+            );
+            resp
+        }
+        Err(_) => Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Body::empty())
+            .unwrap_or_default(),
+    }
+}
+
+async fn spawn_server() -> (SocketAddr, Arc<Shared>) {
+    let shared = Arc::new(Shared::default());
+    let app = Router::new()
+        .route("/{*path}", get(serve))
+        .with_state(shared.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    (addr, shared)
+}
+
+// ------------------------------------------------------------------ helpers
+
+/// The FFmpeg to use, if there is one.
+fn ffmpeg() -> Option<PathBuf> {
+    if let Some(p) = std::env::var_os("KSTAR_FFMPEG") {
+        return Some(PathBuf::from(p));
+    }
+    let out = Command::new("ffmpeg").arg("-version").output().ok()?;
+    out.status.success().then(|| PathBuf::from("ffmpeg"))
+}
+
+/// Skips the test when there is no FFmpeg (or fails when it is required).
+macro_rules! need_ffmpeg {
+    () => {
+        match ffmpeg() {
+            Some(p) => p,
+            None => {
+                if std::env::var("KSTAR_REQUIRE_FFMPEG").as_deref() == Ok("1") {
+                    panic!("KSTAR_REQUIRE_FFMPEG=1 but no FFmpeg was found");
+                }
+                eprintln!("skipped: no FFmpeg");
+                return;
+            }
+        }
+    };
+}
+
+/// An engine without FFmpeg (probes, and single-track outputs).
+async fn engine_plain(dir: &Path) -> Engine {
+    let e = Engine::open(dir).expect("open");
+    e.set_settings(Settings {
+        download_dir: dir.join("downloads"),
+        ..e.settings()
+    })
+    .expect("settings");
+    e
+}
+
+async fn engine(dir: &Path, ff: &Path) -> Engine {
+    let e = Engine::open(dir).expect("open");
+    let status: FfmpegStatus = e.set_ffmpeg_path(Some(ff.to_path_buf()));
+    assert!(status.ok, "FFmpeg check failed: {:?}", status.missing);
+    e.set_settings(Settings {
+        download_dir: dir.join("downloads"),
+        ..e.settings()
+    })
+    .expect("settings");
+    e
+}
+
+fn url(addr: SocketAddr, path: &str) -> String {
+    format!("http://{addr}/{path}")
+}
+
+async fn wait_done(e: &Engine, id: i64) -> DownloadInfo {
+    let deadline = Instant::now() + Duration::from_secs(90);
+    loop {
+        let d = e.get(id).expect("exists");
+        if matches!(
+            d.status,
+            Status::Completed | Status::Failed | Status::Paused
+        ) {
+            return d;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out: {:?} {:?}",
+            d.status,
+            d.error
+        );
+        tokio::time::sleep(Duration::from_millis(40)).await;
+    }
+}
+
+fn output_of(d: &DownloadInfo) -> PathBuf {
+    d.dir
+        .clone()
+        .expect("dir")
+        .join(d.filename.clone().expect("name"))
+}
+
+fn ffprobe_of(ff: &Path) -> PathBuf {
+    if ff.as_os_str() == "ffmpeg" {
+        PathBuf::from("ffprobe")
+    } else {
+        ff.with_file_name("ffprobe")
+    }
+}
+
+/// The streams of a file: (codec_type, codec_name, language).
+fn streams(ff: &Path, file: &Path) -> Vec<(String, String, Option<String>)> {
+    let out = Command::new(ffprobe_of(ff))
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "stream=codec_type,codec_name:stream_tags=language",
+            "-of",
+            "json",
+        ])
+        .arg(file)
+        .output()
+        .expect("ffprobe runs");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    v["streams"]
+        .as_array()
+        .expect("streams")
+        .iter()
+        .map(|s| {
+            (
+                s["codec_type"].as_str().unwrap_or("").to_string(),
+                s["codec_name"].as_str().unwrap_or("").to_string(),
+                s["tags"]["language"].as_str().map(str::to_string),
+            )
+        })
+        .collect()
+}
+
+fn duration_of(ff: &Path, file: &Path) -> f64 {
+    let out = Command::new(ffprobe_of(ff))
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(file)
+        .output()
+        .expect("ffprobe runs");
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse()
+        .unwrap_or(0.0)
+}
+
+async fn probe(e: &Engine, u: &str) -> MediaProbe {
+    e.probe_media(u, &RequestMeta::default())
+        .await
+        .expect("probe")
+}
+
+fn dir() -> tempfile::TempDir {
+    tempfile::tempdir().expect("tempdir")
+}
+
+// ------------------------------------------------------------------ probing
+
+#[tokio::test]
+async fn probe_reads_hls_and_dash_presentations() {
+    let (addr, _s) = spawn_server().await;
+    let t = dir();
+    let e = engine_plain(t.path()).await;
+
+    let p = probe(&e, &url(addr, "split/master.m3u8")).await;
+    assert_eq!(p.kind, MediaKind::Hls);
+    assert_eq!(p.variants.len(), 1);
+    assert_eq!(p.audio.len(), 2);
+    assert_eq!(p.subtitles.len(), 1);
+    assert!(p.audio[0].is_default, "English is the default audio");
+    assert_eq!(p.default.audio, vec![p.audio[0].id.clone()]);
+    assert_eq!(p.default.video, Some(p.variants[0].video.id.clone()));
+    assert!(p.default.subtitles.is_empty(), "no subtitles by default");
+    assert!(!p.ffmpeg, "the probe reports the FFmpeg it was given");
+
+    let d = probe(&e, &url(addr, "dash/manifest.mpd")).await;
+    assert_eq!(d.kind, MediaKind::Dash);
+    assert_eq!(d.variants.len(), 1);
+    assert_eq!(d.audio.len(), 1);
+    assert!(d.duration.is_some_and(|x| (x - 6.0).abs() < 0.5));
+
+    let m = probe(&e, &url(addr, "muxed/index.m3u8")).await;
+    assert_eq!(m.kind, MediaKind::Hls);
+    assert!(
+        m.variants[0].muxed_audio,
+        "a playlist of muxed segments carries its audio inside"
+    );
+    e.shutdown().await;
+}
+
+#[tokio::test]
+async fn drm_html_and_plain_files_are_told_apart() {
+    let (addr, _s) = spawn_server().await;
+    let t = dir();
+    let e = engine_plain(t.path()).await;
+
+    let drm = probe(&e, &url(addr, "drm/manifest.mpd")).await;
+    assert_eq!(drm.kind, MediaKind::Drm);
+    assert!(drm.message.as_deref().unwrap_or("").contains("DRM"));
+    assert!(
+        drm.dropped_drm >= 2,
+        "every track is protected: {}",
+        drm.dropped_drm
+    );
+
+    let page = probe(&e, &url(addr, "drm/expired.html")).await;
+    assert_eq!(page.kind, MediaKind::NotMedia);
+    assert!(page.message.is_some());
+
+    let err = e
+        .add_media(NewMediaDownload {
+            url: url(addr, "drm/manifest.mpd"),
+            dir: Some(t.path().join("out")),
+            ..Default::default()
+        })
+        .await
+        .expect_err("DRM is refused");
+    assert!(
+        matches!(err, kstar_core::Error::Media(MediaError::Drm)),
+        "{err:?}"
+    );
+    e.shutdown().await;
+}
+
+#[tokio::test]
+async fn private_addresses_need_the_setting_or_a_private_source() {
+    // The fixture server is on 127.0.0.1, so it is a private source and may be used. A manifest
+    // that points at a private address from a public source is refused.
+    let (addr, _s) = spawn_server().await;
+    let t = dir();
+    let e = engine_plain(t.path()).await;
+    let p = probe(&e, &url(addr, "muxed/index.m3u8")).await;
+    assert_eq!(p.kind, MediaKind::Hls);
+    e.shutdown().await;
+}
+
+// ------------------------------------------------------------------ downloads
+
+#[tokio::test]
+async fn muxed_hls_becomes_one_mkv() {
+    let ff = need_ffmpeg!();
+    let (addr, _s) = spawn_server().await;
+    let t = dir();
+    let e = engine(t.path(), &ff).await;
+    let id = e
+        .add_media(NewMediaDownload {
+            url: url(addr, "muxed/index.m3u8"),
+            dir: Some(t.path().join("out")),
+            container: Some(ContainerChoice::Mkv),
+            filename: Some("clip".into()),
+            ..Default::default()
+        })
+        .await
+        .expect("adds");
+    let d = wait_done(&e, id).await;
+    assert_eq!(d.status, Status::Completed, "{:?}", d.error);
+    let file = output_of(&d);
+    assert_eq!(file.extension().and_then(|x| x.to_str()), Some("mkv"));
+    let s = streams(&ff, &file);
+    assert!(s.iter().any(|x| x.0 == "video"), "{s:?}");
+    assert!(s.iter().any(|x| x.0 == "audio"), "{s:?}");
+    let len = duration_of(&ff, &file);
+    assert!((len - 6.0).abs() < 0.6, "duration {len}");
+    // The Work Directory is gone once the output is published.
+    assert!(!kstar_core_workdir(&d).exists());
+    e.shutdown().await;
+}
+
+fn kstar_core_workdir(d: &DownloadInfo) -> PathBuf {
+    let dir = d.dir.clone().expect("dir");
+    dir.join(format!(
+        ".{}.kstar.media",
+        d.filename.clone().unwrap_or_default()
+    ))
+}
+
+#[tokio::test]
+async fn aes_128_segments_decrypt_to_the_plain_bytes() {
+    let ff = need_ffmpeg!();
+    let (addr, _s) = spawn_server().await;
+    let t = dir();
+    let e = engine(t.path(), &ff).await;
+    // Single muxed track, so the original container is available: the output is the joined,
+    // decrypted segments, which must equal the plain segments byte for byte.
+    let id = e
+        .add_media(NewMediaDownload {
+            url: url(addr, "aes/index.m3u8"),
+            dir: Some(t.path().join("out")),
+            container: Some(ContainerChoice::Original),
+            filename: Some("secret".into()),
+            ..Default::default()
+        })
+        .await
+        .expect("adds");
+    let d = wait_done(&e, id).await;
+    assert_eq!(d.status, Status::Completed, "{:?}", d.error);
+    let got = std::fs::read(output_of(&d)).expect("output");
+    let mut want = Vec::new();
+    for i in 0..3 {
+        want.extend(std::fs::read(fixtures().join(format!("muxed/seg{i}.ts"))).expect("fixture"));
+    }
+    assert_eq!(got.len(), want.len());
+    assert!(
+        got == want,
+        "decrypted output differs from the plain segments"
+    );
+    assert!(_s.hits("/aes/key.bin") >= 1, "the key was fetched");
+    e.shutdown().await;
+}
+
+#[tokio::test]
+async fn split_tracks_with_subtitles_become_one_mp4() {
+    let ff = need_ffmpeg!();
+    let (addr, _s) = spawn_server().await;
+    let t = dir();
+    let e = engine(t.path(), &ff).await;
+    let p = probe(&e, &url(addr, "split/master.m3u8")).await;
+    let de = p.audio[1].id.clone();
+    let en = p.audio[0].id.clone();
+    let sub = p.subtitles[0].id.clone();
+    let id = e
+        .add_media(NewMediaDownload {
+            url: url(addr, "split/master.m3u8"),
+            dir: Some(t.path().join("out")),
+            container: Some(ContainerChoice::Mp4),
+            subtitles: Some(SubtitleMode::Embed),
+            selection: Some(Selection {
+                video: Some(p.variants[0].video.id.clone()),
+                audio: vec![en, de],
+                subtitles: vec![sub],
+            }),
+            ..Default::default()
+        })
+        .await
+        .expect("adds");
+    let d = wait_done(&e, id).await;
+    assert_eq!(d.status, Status::Completed, "{:?}", d.error);
+    let file = output_of(&d);
+    assert_eq!(file.extension().and_then(|x| x.to_str()), Some("mp4"));
+    let s = streams(&ff, &file);
+    assert_eq!(s.iter().filter(|x| x.0 == "video").count(), 1, "{s:?}");
+    let audio: Vec<_> = s.iter().filter(|x| x.0 == "audio").collect();
+    assert_eq!(audio.len(), 2, "{s:?}");
+    // Languages are stored as ISO 639-2 codes.
+    assert_eq!(audio[0].2.as_deref(), Some("eng"));
+    assert_eq!(audio[1].2.as_deref(), Some("deu"));
+    assert!(
+        s.iter().any(|x| x.0 == "subtitle" && x.1 == "mov_text"),
+        "{s:?}"
+    );
+    e.shutdown().await;
+}
+
+#[tokio::test]
+async fn fmp4_hls_and_dash_download_as_mkv() {
+    let ff = need_ffmpeg!();
+    let (addr, _s) = spawn_server().await;
+    let t = dir();
+    let e = engine(t.path(), &ff).await;
+    let a = e
+        .add_media(NewMediaDownload {
+            url: url(addr, "fmp4/index.m3u8"),
+            dir: Some(t.path().join("out")),
+            container: Some(ContainerChoice::Mkv),
+            filename: Some("fmp4".into()),
+            ..Default::default()
+        })
+        .await
+        .expect("adds");
+    // FFmpeg's own DASH audio doesn't stream-copy into Matroska (its AAC configuration isn't
+    // readable there), but it does copy into MP4, so DASH is checked as MP4.
+    let b = e
+        .add_media(NewMediaDownload {
+            url: url(addr, "dash/manifest.mpd"),
+            dir: Some(t.path().join("out")),
+            container: Some(ContainerChoice::Mp4),
+            filename: Some("dash".into()),
+            ..Default::default()
+        })
+        .await
+        .expect("adds");
+    for (id, want) in [(a, "mkv"), (b, "mp4")] {
+        let d = wait_done(&e, id).await;
+        assert_eq!(d.status, Status::Completed, "{:?}", d.error);
+        assert_eq!(
+            output_of(&d).extension().and_then(|x| x.to_str()),
+            Some(want)
+        );
+        let s = streams(&ff, &output_of(&d));
+        assert!(
+            s.iter().any(|x| x.0 == "video") && s.iter().any(|x| x.0 == "audio"),
+            "{s:?}"
+        );
+        assert!((duration_of(&ff, &output_of(&d)) - 6.0).abs() < 0.8);
+    }
+    e.shutdown().await;
+}
+
+// ------------------------------------------------------------------ resilience
+
+#[tokio::test]
+async fn an_html_page_in_place_of_a_segment_refreshes_the_playlist() {
+    let ff = need_ffmpeg!();
+    let (addr, s) = spawn_server().await;
+    s.faults
+        .lock()
+        .unwrap()
+        .insert("/muxed/seg1.ts".into(), (1, Fault::Html));
+    let t = dir();
+    let e = engine(t.path(), &ff).await;
+    let id = e
+        .add_media(NewMediaDownload {
+            url: url(addr, "muxed/index.m3u8"),
+            dir: Some(t.path().join("out")),
+            container: Some(ContainerChoice::Mkv),
+            filename: Some("refreshed".into()),
+            ..Default::default()
+        })
+        .await
+        .expect("adds");
+    let d = wait_done(&e, id).await;
+    assert_eq!(d.status, Status::Completed, "{:?}", d.error);
+    assert!(
+        s.hits("/muxed/index.m3u8") >= 2,
+        "the playlist was read again"
+    );
+    assert!(
+        s.hits("/muxed/seg1.ts") >= 2,
+        "the segment was fetched again"
+    );
+    e.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_expired_link_is_refreshed_and_the_segments_survive() {
+    let ff = need_ffmpeg!();
+    let (addr, s) = spawn_server().await;
+    s.faults
+        .lock()
+        .unwrap()
+        .insert("/muxed/seg2.ts".into(), (2, Fault::Forbidden));
+    let t = dir();
+    let e = engine(t.path(), &ff).await;
+    let id = e
+        .add_media(NewMediaDownload {
+            url: url(addr, "muxed/index.m3u8"),
+            dir: Some(t.path().join("out")),
+            container: Some(ContainerChoice::Mkv),
+            filename: Some("expired".into()),
+            ..Default::default()
+        })
+        .await
+        .expect("adds");
+    let d = wait_done(&e, id).await;
+    assert_eq!(d.status, Status::Completed, "{:?}", d.error);
+    assert!(s.hits("/muxed/index.m3u8") >= 2);
+    // The two good segments were fetched once each.
+    assert_eq!(s.hits("/muxed/seg0.ts"), 1);
+    assert_eq!(s.hits("/muxed/seg1.ts"), 1);
+    e.shutdown().await;
+}
+
+#[tokio::test]
+async fn pausing_keeps_finished_segments_and_resume_does_not_refetch_them() {
+    let ff = need_ffmpeg!();
+    let (addr, s) = spawn_server().await;
+    *s.delay.lock().unwrap() = Some(Duration::from_millis(1500));
+    let t = dir();
+    let e = engine(t.path(), &ff).await;
+    // One piece at a time, so there is a moment with a finished piece and one still in progress.
+    e.set_settings(Settings {
+        media_segment_concurrency: 1,
+        ..e.settings()
+    })
+    .expect("settings");
+    let id = e
+        .add_media(NewMediaDownload {
+            url: url(addr, "muxed/index.m3u8"),
+            dir: Some(t.path().join("out")),
+            container: Some(ContainerChoice::Mkv),
+            filename: Some("paused".into()),
+            ..Default::default()
+        })
+        .await
+        .expect("adds");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while s.hits("/muxed/seg0.ts") == 0 && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    // The first piece takes about 1.5 s; pause a little after the second one has started.
+    tokio::time::sleep(Duration::from_millis(1800)).await;
+    e.pause(id).expect("pauses");
+    let d = wait_done(&e, id).await;
+    assert_eq!(d.status, Status::Paused, "{:?}", d.error);
+    *s.delay.lock().unwrap() = None;
+    let seg0_before = s.hits("/muxed/seg0.ts");
+    e.resume(id).expect("resumes");
+    let d = wait_done(&e, id).await;
+    assert_eq!(d.status, Status::Completed, "{:?}", d.error);
+    assert_eq!(
+        s.hits("/muxed/seg0.ts"),
+        seg0_before,
+        "a finished segment isn't fetched again"
+    );
+    e.shutdown().await;
+}
+
+#[tokio::test]
+async fn removing_a_media_download_deletes_its_work_directory() {
+    let (addr, s) = spawn_server().await;
+    *s.delay.lock().unwrap() = Some(Duration::from_millis(2500));
+    let t = dir();
+    let e = engine_plain(t.path()).await;
+    // Without FFmpeg a multi-track output is refused up front, so use a single-track original.
+    let id = e
+        .add_media(NewMediaDownload {
+            url: url(addr, "aes/index.m3u8"),
+            dir: Some(t.path().join("out")),
+            container: Some(ContainerChoice::Original),
+            filename: Some("gone".into()),
+            ..Default::default()
+        })
+        .await
+        .expect("adds without FFmpeg for an original container");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while e.get(id).is_some_and(|d| d.status != Status::Downloading) && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let work = t.path().join("out").join(".gone.ts.kstar.media");
+    assert!(work.exists(), "the Work Directory exists while downloading");
+    e.remove(id, false).expect("removes");
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert!(
+        !work.exists(),
+        "removing the download deletes its Work Directory"
+    );
+    e.shutdown().await;
+}
+
+#[tokio::test]
+async fn multi_track_output_needs_ffmpeg() {
+    let (addr, _s) = spawn_server().await;
+    let t = dir();
+    let e = engine_plain(t.path()).await;
+    let err = e
+        .add_media(NewMediaDownload {
+            url: url(addr, "split/master.m3u8"),
+            dir: Some(t.path().join("out")),
+            container: Some(ContainerChoice::Mkv),
+            ..Default::default()
+        })
+        .await
+        .expect_err("needs FFmpeg");
+    assert!(
+        matches!(err, kstar_core::Error::Media(MediaError::FfmpegMissing)),
+        "{err:?}"
+    );
+    e.shutdown().await;
+}
+
+#[tokio::test]
+async fn events_report_the_finished_media() {
+    let ff = need_ffmpeg!();
+    let (addr, _s) = spawn_server().await;
+    let t = dir();
+    let e = engine(t.path(), &ff).await;
+    let mut rx = e.subscribe();
+    let id = e
+        .add_media(NewMediaDownload {
+            url: url(addr, "muxed/index.m3u8"),
+            dir: Some(t.path().join("out")),
+            container: Some(ContainerChoice::Mkv),
+            filename: Some("evt".into()),
+            ..Default::default()
+        })
+        .await
+        .expect("adds");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        match tokio::time::timeout(Duration::from_secs(10), rx.recv()).await {
+            Ok(Ok(Event::Completed {
+                id: done, filename, ..
+            })) if done == id => {
+                assert_eq!(filename, "evt.mkv");
+                break;
+            }
+            Ok(Ok(_)) => {}
+            _ => assert!(Instant::now() < deadline, "no completion event"),
+        }
+    }
+    let info = e.get(id).expect("exists");
+    let m = info.media.expect("media details");
+    assert_eq!(m.labels.len(), 1, "one muxed track: {:?}", m.labels);
+    e.shutdown().await;
+}

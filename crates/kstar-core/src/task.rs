@@ -44,6 +44,8 @@ pub(crate) struct Running {
     /// The part file, once created. The task deletes it when the download is removed.
     pub part: Mutex<Option<PathBuf>>,
     pub table: Mutex<Table>,
+    /// Phase and piece counts of a media download (None for a file).
+    pub media: Mutex<Option<crate::media::MediaProgress>>,
     pub downloaded: AtomicU64,
     pub ranged: AtomicBool,
     pub active: AtomicU32,
@@ -64,6 +66,7 @@ impl Running {
             changed: Notify::new(),
             part: Mutex::new(None),
             table: Mutex::new(Table::default()),
+            media: Mutex::new(None),
             downloaded: AtomicU64::new(0),
             ranged: AtomicBool::new(false),
             active: AtomicU32::new(0),

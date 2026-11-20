@@ -21,6 +21,7 @@ pub fn extensions(s: &kstar_core::Settings) -> HashSet<String> {
     s.categories
         .iter()
         .flat_map(|c| c.extensions.iter().cloned())
+        .chain(["m3u8", "mpd"].map(String::from))
         .collect()
 }
 

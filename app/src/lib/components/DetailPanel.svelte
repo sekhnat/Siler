@@ -32,6 +32,20 @@
   const history = $derived(store.perHistory[d.id] ?? []);
   const path = $derived(d.dir && d.filename ? `${d.dir}/${d.filename}` : d.dir);
 
+  /** What a media download is doing now, in words. */
+  function mediaPhase(m: NonNullable<Download["media_progress"]>): string {
+    switch (m.phase) {
+      case "resolving":
+        return "Reading the stream";
+      case "downloading":
+        return `Pieces ${m.segments_done} of ${m.segments_total}`;
+      case "rebuilding":
+        return `Rebuilding ${(m.permille / 10).toFixed(0)}%`;
+      default:
+        return "Saving the file";
+    }
+  }
+
   async function copyLink() {
     try {
       await navigator.clipboard.writeText(d.url);
@@ -119,6 +133,24 @@
     {#if d.sync_every}
       <dt>Kept up to date</dt>
       <dd>Checked {syncLabel(d.sync_every)}{d.sync_checked_at ? `, last ${relativeTime(d.sync_checked_at)}` : ""}</dd>
+    {/if}
+    {#if d.media}
+      <dt>Stream</dt>
+      <dd>{d.media.manifest === "hls" ? "HLS" : "DASH"} · {d.media.output === "original" ? "original format" : d.media.output.toUpperCase()} · {d.media.reason}</dd>
+      <dt>Tracks</dt>
+      <dd class="selectable">{d.media.labels.join(" · ")}</dd>
+      {#if d.media.subtitles !== "none" && d.media.labels.length}
+        <dt>Subtitles</dt>
+        <dd>{d.media.subtitles === "embed" ? "Inside the video" : d.media.subtitles === "sidecar" ? "As a separate file" : "Left out"}</dd>
+      {/if}
+      {#if d.media.sidecars.length}
+        <dt>Also saved</dt>
+        <dd class="selectable">{d.media.sidecars.join(", ")}</dd>
+      {/if}
+      {#if d.media_progress && d.status !== "completed"}
+        <dt>Progress</dt>
+        <dd>{mediaPhase(d.media_progress)}</dd>
+      {/if}
     {/if}
     <dt>Added</dt>
     <dd>{dateTime(d.created_at)}</dd>

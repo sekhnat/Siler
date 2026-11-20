@@ -38,6 +38,56 @@ pub enum Error {
     },
     #[error("The proxy needs a username and password")]
     ProxyAuth,
+    /// A media download could not continue (see [`MediaError`]).
+    #[error("{0}")]
+    Media(MediaError),
+}
+
+/// Why a media download can't be made, in words for the user.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum MediaError {
+    #[error("This isn't a video or audio stream K-Star can download.")]
+    NotMedia,
+    #[error("This stream is live, and K-Star can't record live streams yet.")]
+    LiveUnsupported,
+    #[error("This video is protected by DRM. K-Star doesn't download DRM-protected media.")]
+    Drm,
+    #[error("This stream uses encryption K-Star can't decrypt: {0}")]
+    Unsupported(String),
+    #[error("The playlist can't be read: {0}")]
+    Invalid(String),
+    #[error("The playlist or a file in it is larger than K-Star accepts ({0} bytes).")]
+    BodyTooLarge(u64),
+    #[error("The chosen video or audio is no longer offered; choose again.")]
+    SelectionUnavailable,
+    #[error(
+        "The stream changed since the download started. Restart the download to use the new version."
+    )]
+    ManifestChanged,
+    #[error(
+        "The server stopped giving valid pieces of the stream, even after asking for the playlist again."
+    )]
+    RefreshExhausted,
+    #[error("A piece of the stream didn't arrive as video or audio (the link may have expired).")]
+    SegmentInvalid,
+    #[error("The decryption key couldn't be used: {0}")]
+    KeyFetch(String),
+    #[error("A piece of the stream couldn't be decrypted (wrong key or damaged data).")]
+    Decrypt,
+    #[error(
+        "FFmpeg is needed to combine these streams, but K-Star couldn't find a usable copy. See Settings → Media."
+    )]
+    FfmpegMissing,
+    #[error("FFmpeg couldn't combine the streams: {0}")]
+    FfmpegFailed(String),
+    #[error(
+        "The audio or video can't be joined into one file in this container ({0}). Choose another container or the original format."
+    )]
+    DiscontinuityIncompatible(String),
+    #[error("K-Star won't contact that address: {0}")]
+    UrlForbidden(String),
+    #[error("There isn't enough free disk space for this stream.")]
+    DiskSpace,
 }
 
 fn auth_message(host: &str, rejected: bool) -> String {

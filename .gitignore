@@ -6,3 +6,4 @@ node_modules/
 *.kstar.part
 /extension/web-ext-artifacts/
 /extension/.amo-upload-uuid
+/app/src-tauri/resources/

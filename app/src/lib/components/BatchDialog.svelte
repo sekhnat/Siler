@@ -59,7 +59,10 @@
     let failed = 0;
     for (const it of items) {
       try {
-        if (checked[it.key]) {
+        if (checked[it.key] && /\.(m3u8|mpd)(\?|#|$)/i.test(it.url)) {
+          // A manifest is a stream: its default tracks, as a media download.
+          await api.addMedia({ url: it.url, startPaused, pendingId: it.pendingId, onConflict: conflict, queueId });
+        } else if (checked[it.key]) {
           await api.add({ url: it.url, filename: it.filename, startPaused, pendingId: it.pendingId, onConflict: conflict, queueId });
         } else if (it.pendingId != null) {
           await api.dismissPending(it.pendingId);

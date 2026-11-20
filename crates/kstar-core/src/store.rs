@@ -3,6 +3,7 @@
 use rusqlite::{Connection, OptionalExtension, Row, ToSql, params};
 use std::path::{Path, PathBuf};
 
+use crate::media::{JobKind, MediaRecord};
 use crate::queue::Queue;
 use crate::{Category, OnConflict, RequestMeta, Result, Segment, Settings, Status};
 
@@ -39,6 +40,9 @@ pub(crate) struct Record {
     pub sync_checked_at: Option<i64>,
     /// Not saved: the server wanted a login the last time this download ran.
     pub needs_login: Option<crate::LoginRequest>,
+    pub kind: JobKind,
+    /// The media details of a media download.
+    pub media: Option<MediaRecord>,
 }
 
 const SCHEMA_V1: &str = "
@@ -74,6 +78,11 @@ const SCHEMA_V2: &str = "
 ALTER TABLE downloads ADD COLUMN position INTEGER NOT NULL DEFAULT 0;
 UPDATE downloads SET position = id;
 ALTER TABLE downloads ADD COLUMN on_conflict TEXT NOT NULL DEFAULT 'rename';
+";
+
+const SCHEMA_V4: &str = "
+ALTER TABLE downloads ADD COLUMN kind TEXT NOT NULL DEFAULT 'file';
+ALTER TABLE downloads ADD COLUMN media TEXT;
 ";
 
 const SCHEMA_V3: &str = "
@@ -132,6 +141,12 @@ impl Store {
             tx.pragma_update(None, "user_version", 3)?;
             tx.commit()?;
         }
+        if version < 4 {
+            let tx = self.conn.unchecked_transaction()?;
+            tx.execute_batch(SCHEMA_V4)?;
+            tx.pragma_update(None, "user_version", 4)?;
+            tx.commit()?;
+        }
         Ok(())
     }
 
@@ -164,6 +179,8 @@ impl Store {
             (":queue_id", Box::new(r.queue_id)),
             (":sync_every", Box::new(r.sync_every)),
             (":sync_checked_at", Box::new(r.sync_checked_at)),
+            (":kind", Box::new(r.kind.as_str())),
+            (":media", Box::new(r.media.as_ref().map(to_json))),
         ]
     }
 
@@ -176,11 +193,12 @@ impl Store {
         self.exec(
             "INSERT INTO downloads (url, final_url, filename, dir, category, total_size, downloaded, status,
                 resumable, error, notice, etag, last_modified, meta, connections, speed_limit, created_at,
-                completed_at, segments, position, on_conflict, queue_id, sync_every, sync_checked_at)
+                completed_at, segments, position, on_conflict, queue_id, sync_every, sync_checked_at,
+                kind, media)
              VALUES (:url, :final_url, :filename, :dir, :category, :total_size, :downloaded, :status,
                 :resumable, :error, :notice, :etag, :last_modified, :meta, :connections, :speed_limit,
                 :created_at, :completed_at, :segments, :position, :on_conflict, :queue_id,
-                :sync_every, :sync_checked_at)",
+                :sync_every, :sync_checked_at, :kind, :media)",
             &Self::values(r),
         )?;
         Ok(self.conn.last_insert_rowid())
@@ -196,7 +214,8 @@ impl Store {
                 last_modified=:last_modified, meta=:meta, connections=:connections,
                 speed_limit=:speed_limit, created_at=:created_at, completed_at=:completed_at,
                 segments=:segments, position=:position, on_conflict=:on_conflict,
-                queue_id=:queue_id, sync_every=:sync_every, sync_checked_at=:sync_checked_at
+                queue_id=:queue_id, sync_every=:sync_every, sync_checked_at=:sync_checked_at,
+                kind=:kind, media=:media
              WHERE id=:id",
             &values,
         )?;
@@ -334,6 +353,10 @@ fn row_to_record(row: &Row) -> rusqlite::Result<Record> {
         sync_every: row.get("sync_every")?,
         sync_checked_at: row.get("sync_checked_at")?,
         needs_login: None,
+        kind: JobKind::parse(&row.get::<_, String>("kind")?),
+        media: row
+            .get::<_, Option<String>>("media")?
+            .and_then(|m| serde_json::from_str(&m).ok()),
     })
 }
 

@@ -8,7 +8,9 @@
 mod category;
 mod error;
 pub mod filename;
+mod http;
 mod manager;
+pub mod media;
 mod net;
 mod probe;
 pub mod proxy;
@@ -22,8 +24,14 @@ mod task;
 mod types;
 
 pub use category::Category;
-pub use error::Error;
+pub use error::{Error, MediaError};
+pub use kstar_media::select::{ContainerChoice, Selection, SubtitleMode};
+pub use kstar_media::{ManifestKind, TrackId};
 pub use manager::Engine;
+pub use media::{
+    FfmpegStatus, JobKind, MediaInfo, MediaKind, MediaProbe, MediaProgress, NewMediaDownload,
+    TrackView, VariantView,
+};
 pub use net::{Login, host_key};
 pub use probe::ProbeResult;
 pub use queue::{AfterDone, MAIN_QUEUE, Queue};

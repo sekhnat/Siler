@@ -2,7 +2,7 @@
   import { CircleCheck, CircleX, FileText, FolderOpen, KeyRound, Monitor, Moon, Play, Plus, Puzzle, Sun, TriangleAlert, X } from "@lucide/svelte";
   import { open } from "@tauri-apps/plugin-dialog";
   import { onMount } from "svelte";
-  import { api, type IntegrationStatus, type ProxyMode, type ProxyRoute, type SavedLogin, type Settings, type SoundEvent } from "../api";
+  import { api, type IntegrationStatus, type ProxyMode, type ProxyRoute, type SavedLogin, type Settings, type SoundEvent, type FfmpegStatus } from "../api";
   import { SPEED_PRESETS, limitLabel, relativeTime } from "../format";
   import { toasts } from "../store.svelte";
   import { theme, type ThemePref } from "../theme.svelte";
@@ -11,7 +11,7 @@
 
   let { settings, onclose, onsaved }: { settings: Settings; onclose: () => void; onsaved: (s: Settings) => void } = $props();
 
-  type Tab = "general" | "transfers" | "network" | "categories" | "browser" | "appearance";
+  type Tab = "general" | "transfers" | "media" | "network" | "categories" | "browser" | "appearance";
   let tab = $state<Tab>("general");
   // Edit a copy; nothing changes until Save.
   // svelte-ignore state_referenced_locally
@@ -55,6 +55,12 @@
   function addLimit() {
     s.server_limits = [...s.server_limits, { host: "", connections: 4 }];
   }
+
+  // FFmpeg is looked at when the Media tab opens.
+  let ffmpeg = $state<FfmpegStatus | null>(null);
+  $effect(() => {
+    if (tab === "media" && ffmpeg === null) api.mediaDiagnostics().then((f) => (ffmpeg = f)).catch(() => (ffmpeg = null));
+  });
 
   async function browse() {
     const picked = await open({ directory: true, defaultPath: s.download_dir, title: "Download folder" });
@@ -105,6 +111,7 @@
   const tabs: { key: Tab; label: string }[] = [
     { key: "general", label: "General" },
     { key: "transfers", label: "Transfers" },
+    { key: "media", label: "Media" },
     { key: "network", label: "Network" },
     { key: "categories", label: "Categories" },
     { key: "browser", label: "Browser" },
@@ -197,6 +204,64 @@
         <span class="hint grow truncate" title={integration?.log_dir}>Logs: {integration?.log_dir ?? "~/.local/state/kstar/logs"}</span>
         <button class="btn btn-sm" onclick={() => api.openLogFolder().catch(toasts.error.bind(toasts))}>Open log folder</button>
       </div>
+    {:else if tab === "media"}
+      <div class="field">
+        <span class="label">FFmpeg</span>
+        {#if ffmpeg?.ok}
+          <div class="hint"><CircleCheck size={13} /> {ffmpeg.version ? `Version ${ffmpeg.version}` : "Found"} at {ffmpeg.path}</div>
+        {:else}
+          <div class="hint warn"><TriangleAlert size={13} /> FFmpeg isn't usable: {ffmpeg?.missing.join(", ") || "not found"}. Single-track downloads still work; combining video and audio needs it.</div>
+          <div class="hint">Build the bundled copy with <code>scripts/build-ffmpeg.sh</code>.</div>
+        {/if}
+      </div>
+      <div class="field">
+        <span class="label">Pieces fetched at once <b>{s.media_segment_concurrency}</b></span>
+        <input type="range" min="1" max="16" bind:value={s.media_segment_concurrency} />
+        <div class="hint">Segments of one stream downloaded in parallel. The connection limits still apply.</div>
+      </div>
+      <label class="field">
+        <span class="label">Highest video quality by default</span>
+        <select class="input" bind:value={s.preferred_max_height}>
+          <option value={0}>No limit</option>
+          <option value={1080}>1080p</option>
+          <option value={720}>720p</option>
+          <option value={480}>480p</option>
+          <option value={360}>360p</option>
+        </select>
+      </label>
+      <div class="grid2">
+        <label class="field">
+          <span class="label">Preferred audio language</span>
+          <input class="input" bind:value={s.preferred_audio_language} placeholder="en" spellcheck="false" />
+        </label>
+        <label class="field">
+          <span class="label">Preferred subtitle language</span>
+          <input class="input" bind:value={s.preferred_subtitle_language} placeholder="none" spellcheck="false" />
+        </label>
+      </div>
+      <label class="field">
+        <span class="label">Default container</span>
+        <select class="input" bind:value={s.default_media_container}>
+          <option value="auto">Automatic (MP4, or MKV when needed)</option>
+          <option value="mp4">MP4</option>
+          <option value="mkv">MKV</option>
+        </select>
+      </label>
+      <label class="field">
+        <span class="label">Subtitles by default</span>
+        <select class="input" bind:value={s.default_subtitle_mode}>
+          <option value="embed">Inside the video</option>
+          <option value="sidecar">As a separate file</option>
+          <option value="none">Leave out</option>
+        </select>
+      </label>
+      <button class="toggle-row" onclick={() => (s.allow_private_media_addresses = !s.allow_private_media_addresses)}>
+        <div>
+          <div class="t-label">Allow streams from this computer or the local network</div>
+          <div class="hint">Off by default, so a playlist can't make K-Star contact other machines. Turn it on for a media server at home.</div>
+        </div>
+        <span class="switch" class:on={s.allow_private_media_addresses}></span>
+      </button>
     {:else if tab === "transfers"}
       <div class="field">
         <span class="label">Connections per download <b>{s.connections}</b></span>
@@ -640,5 +705,16 @@
     background: var(--surface);
     color: var(--text);
     box-shadow: var(--shadow-sm);
+  }
+  .grid2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  .hint.warn {
+    color: var(--warn);
+    display: flex;
+    gap: 6px;
+    align-items: center;
   }
 </style>

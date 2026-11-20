@@ -1,0 +1,8 @@
+WEBVTT
+X-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:0
+
+00:00:00.500 --> 00:00:01.500
+Hello, segment 1
+
+00:00:01.600 --> 00:00:01.900 align:start
+(from 2 s)

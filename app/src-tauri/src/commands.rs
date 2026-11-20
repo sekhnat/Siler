@@ -1,7 +1,8 @@
 use kstar_core::proxy::ProxyRoute;
 use kstar_core::{
-    AfterDone, Category, DownloadInfo, EditDownload, Login, LoginRequest, NewDownload, OnConflict,
-    ProbeResult, Queue, QueueMove, RequestMeta, Settings, Status,
+    AfterDone, Category, ContainerChoice, DownloadInfo, EditDownload, Login, LoginRequest,
+    NewDownload, NewMediaDownload, OnConflict, ProbeResult, Queue, QueueMove, RequestMeta,
+    Selection, Settings, Status, SubtitleMode,
 };
 use kstar_ipc::BrowserItem;
 use serde::{Deserialize, Serialize};
@@ -205,6 +206,63 @@ pub fn add_download(state: State<'_, AppState>, args: AddArgs) -> Res<i64> {
         .map_err(err)?;
     forget_pending(&state, args.pending_id);
     Ok(id)
+}
+
+/// Looks at a link as a media source: a stream with its tracks, or why it isn't one.
+#[tauri::command]
+pub async fn probe_media(
+    state: State<'_, AppState>,
+    url: String,
+    pending_id: Option<u64>,
+) -> Result<kstar_core::MediaProbe, String> {
+    let meta = pending_meta(&state, pending_id).unwrap_or_default();
+    state.engine.probe_media(&url, &meta).await.map_err(err)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddMediaArgs {
+    url: String,
+    filename: Option<String>,
+    dir: Option<PathBuf>,
+    selection: Option<Selection>,
+    container: Option<ContainerChoice>,
+    subtitles: Option<SubtitleMode>,
+    #[serde(default)]
+    start_paused: bool,
+    on_conflict: Option<OnConflict>,
+    pending_id: Option<u64>,
+    queue_id: Option<i64>,
+}
+
+/// Adds a stream as a media download with the chosen tracks, or the default ones.
+#[tauri::command]
+pub async fn add_media(state: State<'_, AppState>, args: AddMediaArgs) -> Res<i64> {
+    let meta = pending_meta(&state, args.pending_id).unwrap_or_default();
+    let id = state
+        .engine
+        .add_media(NewMediaDownload {
+            url: args.url,
+            meta,
+            filename: args.filename.filter(|f| !f.trim().is_empty()),
+            dir: args.dir,
+            selection: args.selection,
+            container: args.container,
+            subtitles: args.subtitles,
+            start_paused: args.start_paused,
+            on_conflict: args.on_conflict,
+            queue_id: args.queue_id,
+        })
+        .await
+        .map_err(err)?;
+    forget_pending(&state, args.pending_id);
+    Ok(id)
+}
+
+/// What the FFmpeg check found, for Settings → Media.
+#[tauri::command]
+pub fn media_diagnostics(state: State<'_, AppState>) -> kstar_core::FfmpegStatus {
+    state.engine.ffmpeg_status()
 }
 
 #[tauri::command]

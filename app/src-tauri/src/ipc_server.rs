@@ -205,6 +205,38 @@ pub fn handle_add(app: &AppHandle, items: Vec<BrowserItem>, opts: &AddOptions) -
     if direct && !items.iter().any(needs_asking) {
         let mut errors = Vec::new();
         for item in &items {
+            if crate::media::is_stream(&item.url) {
+                // A manifest is a stream: its tracks are chosen by default, as a media download.
+                let engine = state.engine.clone();
+                let app = app.clone();
+                let item = item.clone();
+                let dir = opts.dir.clone();
+                let later = opts.later;
+                let queue_id = opts.queue_id;
+                let on_conflict = settings.unattended_conflict();
+                tauri::async_runtime::spawn(async move {
+                    let url = item.url.clone();
+                    let nd = kstar_core::NewMediaDownload {
+                        url: url.clone(),
+                        meta: meta_of(&item),
+                        filename: item.filename.clone(),
+                        dir,
+                        start_paused: later,
+                        on_conflict: Some(on_conflict),
+                        queue_id,
+                        ..Default::default()
+                    };
+                    if let Err(e) = engine.add_media(nd).await {
+                        // Show the Add window: it explains why this stream can't be downloaded.
+                        tracing::warn!("stream {url}: {e}");
+                        if let Some(state) = app.try_state::<AppState>() {
+                            state.push_pending(vec![item], &AddOptions::default());
+                        }
+                        crate::open_add_window(&app);
+                    }
+                });
+                continue;
+            }
             let nd = NewDownload {
                 url: item.url.clone(),
                 filename: item.filename.clone(),

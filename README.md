@@ -55,6 +55,8 @@ Firefox extension ──native messaging (stdio)──► kstar-nmhost ──Uni
 - The database (`~/.local/share/app.kstar.KStar/kstar.db`) is mode 0600 because it stores forwarded cookies, which are needed to resume. Cookies are never sent to the UI.
 - The socket is mode 0600 and only accepts peers with the same UID.
 - Scheduling runs while K-Star is running (in the tray is fine). It can't wake a sleeping or switched-off computer: that needs root (rtcwake) and is left out.
+- Media downloads (HLS and DASH streams) read the manifest again at every attempt, so expired signed links are replaced by the playlist's own refresh. Downloaded pieces are kept in a hidden work folder (`.<name>.kstar.media`) beside the output until it is published, and never fetched twice.
+- Media playlists are checked before anything is fetched: a manifest's own links must be `http(s)`, and by default may not point at this computer or the local network (Settings → Media can allow it). DRM-protected streams are refused, and K-Star never contacts a license server. Live streams and HDS, generic playlists and SAMPLE-AES are not downloaded yet.
 - Logins are kept in memory and, when you choose to save them, in the keyring; they are never written to the database. A login is only sent to the server it belongs to (redirects to another host don't carry it). The keyring is read only when a server asks for a login, or at start when a manual proxy has a username.
 
 ## Development
@@ -87,7 +89,10 @@ cd app && pnpm check
   - `--queue=NAME` and `--start-queue=NAME` do the same for a named queue (only the `=` form takes a name, any case). An unknown name is refused.
   - Example: `kstar --queue=Night --silent --dir ~/ISOs https://example.com/a.iso`, and later `kstar --start-queue=Night`.
 - **Logs:** written to `~/.local/state/kstar/logs/`, as `kstar.<date>.log` (kept for a week), `nmhost.log`, and `kstar-stderr.log` when the browser started K-Star. Settings → General → **Open log folder** opens the folder.
-- **Data:** stored in `~/.local/share/app.kstar.KStar/kstar.db`. The schema migrates on start (v1 → v2 adds the queue position and conflict policy; v2 → v3 adds named queues and keeping files up to date).
+- **Data:** stored in `~/.local/share/app.kstar.KStar/kstar.db`. The schema migrates on start (v1 → v2 adds the queue position and conflict policy; v2 → v3 adds named queues and keeping files up to date; v3 → v4 adds media downloads).
+- **Video and audio streams:** paste an HLS (`.m3u8`) or DASH (`.mpd`) address into the Add window (or on the command line, or copy one: the clipboard watcher offers it). K-Star lists the video qualities, audio languages and subtitles, and downloads the ones you pick into one file. Streams are muxed with **FFmpeg**: K-Star ships a static build made from a pinned release by `scripts/build-ffmpeg.sh` (only the codecs, containers and filters it needs; no re-encoding). `scripts/install-dev.sh` builds it the first time and puts `ffmpeg` and `ffprobe` next to the app. Without FFmpeg, single-track downloads still work; combining video and audio needs it. Settings → Media shows which FFmpeg is in use.
+  - Output is MP4 when every codec fits it, and MKV otherwise (Opus audio, VP9, unknown codecs); the Add window says why. Subtitles go inside the file by default.
+  - Test streams: `scripts/gen_media_fixtures.sh` regenerates the small fixtures under `crates/kstar-core/tests/media`, which the media tests use.
 - **If K-Star can't start** (e.g. the database can't be opened), the window shows the error instead of the app disappearing.
 
 ### Firefox extension
@@ -115,6 +120,6 @@ How capture works:
 - **"Always ask where to save files":** if this Firefox setting is on, the hand-over happens after the save dialog.
 
 ## Roadmap
-- **M2 (rest):** the video grabber: HLS/DASH with a quality, audio and subtitle picker and a bundled FFmpeg (0.5), then videos found by the Firefox extension (0.6).
+- **M2 (rest):** videos found by the Firefox extension, with YouTube and other sites (0.6). HLS and DASH downloads with a quality, audio and subtitle picker and a bundled FFmpeg are in 0.5.
 - **M3:** checksum verification, mirrors and multi-source downloads, import/export, site grabber.
 - **M4:** FTP/SFTP, a Chromium extension, Flatpak/AUR packaging (Flatpak Firefox needs another native-host path), autostart.

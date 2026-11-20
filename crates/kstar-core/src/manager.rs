@@ -8,6 +8,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::runtime::Handle;
 use tokio::sync::broadcast;
 
+use crate::error::MediaError;
+use crate::http::Limiters;
+use crate::media::{
+    self, FfmpegStatus, JobKind, MediaInfo, MediaProbe, MediaRecord, NewMediaDownload,
+};
 use crate::net::{Login, Net, host_key};
 use crate::probe::{self, ProbeResult};
 use crate::proxy::ProxyRoute;
@@ -21,6 +26,8 @@ use crate::{
     Category, DownloadInfo, EditDownload, Error, Event, MAX_BODY, NewDownload, OnConflict,
     ProgressItem, QueueMove, RequestMeta, Result, Settings, Status, filename,
 };
+use kstar_media::ParseLimits;
+use kstar_media::select::{self, Output};
 
 /// The download engine. Cheap to clone; all clones share one queue.
 #[derive(Clone)]
@@ -28,39 +35,42 @@ pub struct Engine {
     inner: Arc<Inner>,
 }
 
-struct Inner {
+pub(crate) struct Inner {
     store: Mutex<Store>,
-    net: Arc<Net>,
+    pub(crate) net: Arc<Net>,
     proxy_password: Mutex<Option<String>>,
     settings: RwLock<Settings>,
-    global: Arc<RateLimiter>,
+    pub(crate) global: Arc<RateLimiter>,
     state: Mutex<State>,
     events: broadcast::Sender<Event>,
     rt: Handle,
+    /// The FFmpeg used to combine media, when it passed the capability check.
+    ffmpeg: Mutex<Option<std::path::PathBuf>>,
+    ffmpeg_status: Mutex<FfmpegStatus>,
 }
 
 #[derive(Default)]
-struct State {
-    records: BTreeMap<i64, Record>,
-    running: HashMap<i64, Arc<Running>>,
+pub(crate) struct State {
+    pub(crate) records: BTreeMap<i64, Record>,
+    pub(crate) running: HashMap<i64, Arc<Running>>,
     /// "Start now": these start even when `max_concurrent` downloads are running.
-    forced: HashSet<i64>,
+    pub(crate) forced: HashSet<i64>,
     /// Downloads whose files are being moved; they don't start until that's done.
-    moving: HashSet<i64>,
+    pub(crate) moving: HashSet<i64>,
     /// Running downloads per server (`host_key`), oldest first, for the connection limit.
-    hosts: HashMap<String, Vec<i64>>,
-    queues: BTreeMap<i64, Queue>,
+    pub(crate) hosts: HashMap<String, Vec<i64>>,
+    pub(crate) queues: BTreeMap<i64, Queue>,
     /// Finished and failed downloads per active queue, for `QueueDone`.
-    queue_results: HashMap<i64, (usize, usize)>,
+    pub(crate) queue_results: HashMap<i64, (usize, usize)>,
     /// Running downloads stopped by their queue; they go back to Waiting, not Paused.
-    hold: HashSet<i64>,
+    pub(crate) hold: HashSet<i64>,
     /// Downloads being checked for a newer version.
-    checking: HashSet<i64>,
-    shutting_down: bool,
-    idle_reported: bool,
+    pub(crate) checking: HashSet<i64>,
+    pub(crate) shutting_down: bool,
+    pub(crate) idle_reported: bool,
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -113,6 +123,10 @@ fn reset_progress(r: &mut Record) {
 fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
     if let Some(parent) = to.parent() {
         std::fs::create_dir_all(parent)?;
+    }
+    if from.is_dir() {
+        // A media Work Directory: it only moves within one filesystem, like a part file.
+        return std::fs::rename(from, to);
     }
     match std::fs::rename(from, to) {
         Err(e) if e.raw_os_error() == Some(18) => {
@@ -224,6 +238,8 @@ impl Engine {
             }),
             events: broadcast::channel(1024).0,
             rt,
+            ffmpeg: Mutex::new(None),
+            ffmpeg_status: Mutex::new(FfmpegStatus::default()),
         });
 
         let weak = Arc::downgrade(&inner);
@@ -401,6 +417,8 @@ impl Engine {
             sync_every: 0,
             sync_checked_at: None,
             needs_login: None,
+            kind: JobKind::File,
+            media: None,
         };
         rec.id = self.inner.store.lock().unwrap().insert(&rec)?;
         let id = rec.id;
@@ -589,6 +607,9 @@ impl Engine {
             if rec.status != Status::Completed {
                 return Err(Error::Protocol("This download hasn't finished yet".into()));
             }
+            if rec.kind == JobKind::Media {
+                return Err(Error::Protocol("Streams aren't kept up to date".into()));
+            }
             if !st.checking.insert(id) {
                 return Ok(());
             }
@@ -686,7 +707,10 @@ impl Engine {
             let mut st = self.inner.state();
             let rec = st.records.get_mut(&id).ok_or(Error::NotFound)?;
             if let (Some(dir), Some(name)) = (&rec.dir, &rec.filename) {
-                let _ = std::fs::remove_file(filename::part_path(dir, name));
+                let _ = partial_remove(rec, dir, name);
+            }
+            if let Some(m) = rec.media.as_mut() {
+                m.fingerprint = None;
             }
             reset_progress(rec);
             rec.status = Status::Queued;
@@ -871,6 +895,8 @@ impl Engine {
                 let completed = rec.status == Status::Completed;
                 let (from, to) = if completed {
                     (od.join(on), nd.join(nn))
+                } else if rec.kind == JobKind::Media {
+                    (media::workdir(od, on), media::workdir(nd, nn))
                 } else {
                     (filename::part_path(od, on), filename::part_path(nd, nn))
                 };
@@ -990,7 +1016,7 @@ impl Engine {
             if let (Some(dir), Some(name)) = (&rec.dir, &rec.filename) {
                 if rec.status != Status::Completed {
                     if !running {
-                        let _ = std::fs::remove_file(filename::part_path(dir, name));
+                        let _ = partial_remove(rec, dir, name);
                     }
                 } else if delete_files {
                     let _ = std::fs::remove_file(dir.join(name));
@@ -1018,6 +1044,181 @@ impl Engine {
     }
 
     /// The finished file, or the partial file while the download is unfinished.
+    /// Looks at a link before anything is downloaded: a plain file, a page, or a stream with
+    /// the video, audio and subtitles it offers.
+    pub async fn probe_media(&self, url: &str, meta: &RequestMeta) -> Result<MediaProbe> {
+        let s = self.settings();
+        let url = probe::parse_url(&self.inner.strip_login(url)?)?;
+        let run_limit = RateLimiter::new(0);
+        let io = Limiters {
+            global: &self.inner.global,
+            run: &run_limit,
+        };
+        let src = media::source(
+            &self.inner.net,
+            &url,
+            meta,
+            &s.user_agent,
+            s.allow_private_media_addresses,
+            &ParseLimits::default(),
+            &io,
+        )
+        .await?;
+        Ok(media::probe_view(
+            src,
+            &media::preferences(&s),
+            self.inner.ffmpeg().is_some(),
+        ))
+    }
+
+    /// Adds a stream as a media download: the chosen (or the default) video, audio and
+    /// subtitle tracks, in the chosen container. The stream is read again at every attempt.
+    pub async fn add_media(&self, nd: NewMediaDownload) -> Result<i64> {
+        let s = self.settings();
+        let url = probe::parse_url(&self.inner.strip_login(&nd.url)?)?;
+        let run_limit = RateLimiter::new(0);
+        let io = Limiters {
+            global: &self.inner.global,
+            run: &run_limit,
+        };
+        let src = media::source(
+            &self.inner.net,
+            &url,
+            &nd.meta,
+            &s.user_agent,
+            s.allow_private_media_addresses,
+            &ParseLimits::default(),
+            &io,
+        )
+        .await?;
+        let final_url = src.final_url.clone();
+        let pres = media::presentation_or_error(src)?;
+        let selection = nd
+            .selection
+            .clone()
+            .unwrap_or_else(|| select::default_selection(&pres, &media::preferences(&s)));
+        let resolved = select::resolve(&pres, &selection)
+            .map_err(|_| Error::Media(MediaError::SelectionUnavailable))?;
+        let choice = nd.container.unwrap_or(s.default_media_container);
+        let subtitles = nd.subtitles.unwrap_or(s.default_subtitle_mode);
+        let (output, reason) = select::resolve_container(choice, &resolved, subtitles)
+            .map_err(|e| Error::Protocol(e.to_string()))?;
+        if output != Output::Original && self.inner.ffmpeg().is_none() {
+            return Err(Error::Media(MediaError::FfmpegMissing));
+        }
+        let only = if output == Output::Original {
+            resolved.tracks().first().copied()
+        } else {
+            None
+        };
+        let ext = media::extension(output, only);
+        let title = pres.title.clone();
+        let base = nd
+            .filename
+            .clone()
+            .unwrap_or_else(|| media::default_name(title.as_deref(), &final_url));
+        let stem = base
+            .strip_suffix(&format!(".{ext}"))
+            .unwrap_or(&base)
+            .to_string();
+        let name = filename::sanitize(&format!("{stem}.{ext}"))
+            .ok_or_else(|| Error::Protocol("That file name isn't allowed".into()))?;
+        let dir = nd
+            .dir
+            .clone()
+            .unwrap_or_else(|| s.category_dir(Category::Video));
+        let on_conflict = match nd.on_conflict.unwrap_or(s.on_conflict) {
+            OnConflict::Ask => OnConflict::Rename,
+            p => p,
+        };
+        let mrec = MediaRecord {
+            manifest: pres.kind,
+            selection,
+            container: choice,
+            output,
+            reason,
+            subtitles,
+            title,
+            labels: resolved
+                .tracks()
+                .iter()
+                .map(|t| media::describe(t))
+                .collect(),
+            fingerprint: None,
+            sidecars: Vec::new(),
+        };
+        let mut st = self.inner.state();
+        let queue_id = nd
+            .queue_id
+            .filter(|q| st.queues.contains_key(q))
+            .unwrap_or(MAIN_QUEUE);
+        let position = st.records.values().map(|r| r.position).max().unwrap_or(0) + 1;
+        let mut rec = Record {
+            id: 0,
+            url: url.to_string(),
+            final_url: Some(final_url.to_string()),
+            filename: Some(name),
+            dir: Some(dir),
+            category: Category::Video,
+            total_size: None,
+            downloaded: 0,
+            status: if nd.start_paused {
+                Status::Waiting
+            } else {
+                Status::Queued
+            },
+            resumable: None,
+            error: None,
+            notice: None,
+            etag: None,
+            last_modified: None,
+            meta: nd.meta,
+            connections: s.connections.clamp(1, 32),
+            speed_limit: 0,
+            created_at: now_ms(),
+            completed_at: None,
+            segments: Vec::new(),
+            position,
+            on_conflict,
+            queue_id,
+            sync_every: 0,
+            sync_checked_at: None,
+            needs_login: None,
+            kind: JobKind::Media,
+            media: Some(mrec),
+        };
+        rec.id = self.inner.store.lock().unwrap().insert(&rec)?;
+        let id = rec.id;
+        let info = self.inner.info(&rec, None);
+        st.records.insert(id, rec);
+        drop(st);
+        self.inner.emit(Event::Upsert {
+            download: Box::new(info),
+        });
+        self.inner.schedule();
+        Ok(id)
+    }
+
+    /// Sets the FFmpeg that combines media (its path from the application's bundle, or
+    /// `PATH` in development). Returns what was found, whether or not it is used.
+    pub fn set_ffmpeg_path(&self, path: Option<PathBuf>) -> FfmpegStatus {
+        let status = match &path {
+            Some(p) => media::probe_ffmpeg(p),
+            None => FfmpegStatus {
+                missing: vec!["no FFmpeg was found".into()],
+                ..Default::default()
+            },
+        };
+        *self.inner.ffmpeg.lock().unwrap() = if status.ok { path } else { None };
+        *self.inner.ffmpeg_status.lock().unwrap() = status.clone();
+        status
+    }
+
+    /// What the FFmpeg check found.
+    pub fn ffmpeg_status(&self) -> FfmpegStatus {
+        self.inner.ffmpeg_status.lock().unwrap().clone()
+    }
+
     pub fn file_path(&self, id: i64) -> Option<PathBuf> {
         let st = self.inner.state();
         let r = st.records.get(&id)?;
@@ -1046,6 +1247,16 @@ impl Engine {
     }
 }
 
+/// Deletes the partial data of a download that isn't running: a media Work Directory, or a
+/// part file.
+fn partial_remove(rec: &Record, dir: &Path, name: &str) -> std::io::Result<()> {
+    if rec.kind == JobKind::Media {
+        std::fs::remove_dir_all(media::workdir(dir, name))
+    } else {
+        std::fs::remove_file(filename::part_path(dir, name))
+    }
+}
+
 /// True if another unfinished download already intends to write `dir/name`.
 fn name_claimed(st: &State, dir: &Path, name: &str, except: Option<i64>) -> bool {
     st.records.values().any(|r| {
@@ -1057,15 +1268,20 @@ fn name_claimed(st: &State, dir: &Path, name: &str, except: Option<i64>) -> bool
 }
 
 impl Inner {
-    fn state(&self) -> MutexGuard<'_, State> {
+    pub(crate) fn state(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap()
     }
 
-    fn settings(&self) -> Settings {
+    pub(crate) fn settings(&self) -> Settings {
         self.settings.read().unwrap().clone()
     }
 
-    fn emit(&self, ev: Event) {
+    /// The FFmpeg to combine media with, when it is usable.
+    pub(crate) fn ffmpeg(&self) -> Option<std::path::PathBuf> {
+        self.ffmpeg.lock().unwrap().clone()
+    }
+
+    pub(crate) fn emit(&self, ev: Event) {
         let _ = self.events.send(ev);
     }
 
@@ -1126,10 +1342,18 @@ impl Inner {
             speed,
             active_connections: active,
             segments: visible_segments(&segments),
+            media: r.media.as_ref().map(|m| MediaInfo {
+                manifest: m.manifest,
+                output: m.output,
+                reason: m.reason.clone(),
+                subtitles: m.subtitles,
+                labels: m.labels.clone(),
+                sidecars: m.sidecars.clone(),
+            }),
         }
     }
 
-    fn persist_and_emit(&self, rec: &Record, run: Option<&Running>) -> Result<()> {
+    pub(crate) fn persist_and_emit(&self, rec: &Record, run: Option<&Running>) -> Result<()> {
         self.store.lock().unwrap().update(rec)?;
         self.emit(Event::Upsert {
             download: Box::new(self.info(rec, run)),
@@ -1162,6 +1386,7 @@ impl Inner {
                     speed,
                     active_connections: run.active.load(Relaxed),
                     segments: visible_segments(&run.table.lock().unwrap().segs),
+                    media: run.media.lock().unwrap().clone(),
                 }
             })
             .collect();
@@ -1177,7 +1402,7 @@ impl Inner {
         Ok(u.to_string())
     }
 
-    fn join_host(&self, id: i64, run: &Running, host: String) {
+    pub(crate) fn join_host(&self, id: i64, run: &Running, host: String) {
         let mut st = self.state();
         if !st.running.contains_key(&id) {
             return;
@@ -1443,7 +1668,10 @@ impl Inner {
                 .records
                 .values()
                 .filter(|r| {
-                    r.status == Status::Completed
+                    // Media streams aren't kept up to date (the stream's own manifest would
+                    // be checked as if it were a file).
+                    r.kind == JobKind::File
+                        && r.status == Status::Completed
                         && r.sync_every > 0
                         && !st.checking.contains(&r.id)
                         && now - r.sync_checked_at.or(r.completed_at).unwrap_or(0)
@@ -1506,7 +1734,16 @@ impl Inner {
     }
 
     async fn run(self: Arc<Self>, id: i64, run: Arc<Running>) {
-        let result = self.drive(id, &run).await;
+        let is_media = self
+            .state()
+            .records
+            .get(&id)
+            .is_some_and(|r| r.kind == JobKind::Media);
+        let result = if is_media {
+            media::drive(&self, id, &run).await
+        } else {
+            self.drive(id, &run).await
+        };
         let reason = run.stop_reason.load(Relaxed);
         let mut failed = None;
         let removed;
@@ -1583,7 +1820,11 @@ impl Inner {
             }
         }
         if removed && let Some(part) = run.part.lock().unwrap().take() {
-            let _ = std::fs::remove_file(part);
+            let _ = if part.is_dir() {
+                std::fs::remove_dir_all(part)
+            } else {
+                std::fs::remove_file(part)
+            };
         }
         run.finished.cancel();
         if let Some(ev) = failed {

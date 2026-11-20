@@ -6,6 +6,7 @@ mod integration;
 mod ipc_server;
 mod logging;
 mod logins;
+mod media;
 mod power;
 mod sound;
 mod tray;
@@ -645,6 +646,15 @@ fn main() {
         .setup(move |app| {
             match open_engine(app) {
                 Ok(engine) => {
+                    let ffmpeg = engine.set_ffmpeg_path(media::find_ffmpeg(app.handle()));
+                    if ffmpeg.ok {
+                        tracing::info!(
+                            "media: using {}",
+                            ffmpeg.path.as_deref().unwrap_or("FFmpeg")
+                        );
+                    } else {
+                        tracing::warn!("media: FFmpeg is not usable: {:?}", ffmpeg.missing);
+                    }
                     app.manage(AppState {
                         engine: engine.clone(),
                         pending: Mutex::new(Vec::new()),
@@ -712,8 +722,11 @@ fn main() {
             commands::startup_error,
             commands::list_downloads,
             commands::probe_url,
+            commands::probe_media,
             commands::name_status,
             commands::add_download,
+            commands::add_media,
+            commands::media_diagnostics,
             commands::pending_adds,
             commands::dismiss_pending,
             commands::pause,
@@ -847,6 +860,7 @@ mod tests {
             speed: 0,
             active_connections: 1,
             segments: vec![],
+            media: None,
         };
         assert_eq!(
             tray_status(&[item(50, Some(100)), item(5, None)], 5_100_000),

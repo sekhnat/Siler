@@ -52,6 +52,7 @@ class DownloadStore {
           d.speed = p.speed;
           d.active_connections = p.active_connections;
           d.segments = p.segments;
+          if (p.media !== undefined) d.media_progress = p.media;
           if (p.total_size != null) d.total_size = p.total_size;
           const h = this.perHistory[p.id] ?? new Array(HISTORY).fill(0);
           h.push(p.speed);

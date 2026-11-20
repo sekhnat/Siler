@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use crate::proxy::ProxySettings;
 use crate::{Category, OnConflict};
+use kstar_media::select::{ContainerChoice, SubtitleMode};
 
 pub const DEFAULT_USER_AGENT: &str =
     "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0";
@@ -110,6 +111,19 @@ pub struct Settings {
     /// Offer links to downloadable files when they are copied.
     pub clipboard_monitor: bool,
     pub sounds: SoundSettings,
+    /// Segments fetched at once for one media download (1–16).
+    pub media_segment_concurrency: u8,
+    /// The highest video height to pick by default (0 = no limit).
+    pub preferred_max_height: u32,
+    /// Preferred audio and subtitle languages (for example `en`); empty for none.
+    pub preferred_audio_language: String,
+    pub preferred_subtitle_language: String,
+    /// The container media downloads use unless the picker says otherwise.
+    pub default_media_container: ContainerChoice,
+    /// What happens to subtitles by default.
+    pub default_subtitle_mode: SubtitleMode,
+    /// Let media downloads use private and loopback addresses (for example a home media server).
+    pub allow_private_media_addresses: bool,
 }
 
 impl Default for Settings {
@@ -139,6 +153,13 @@ impl Default for Settings {
             prevent_sleep: true,
             clipboard_monitor: false,
             sounds: SoundSettings::default(),
+            media_segment_concurrency: 4,
+            preferred_max_height: 0,
+            preferred_audio_language: String::new(),
+            preferred_subtitle_language: String::new(),
+            default_media_container: ContainerChoice::Auto,
+            default_subtitle_mode: SubtitleMode::Embed,
+            allow_private_media_addresses: false,
         }
     }
 }
@@ -196,6 +217,9 @@ impl Settings {
     }
 
     pub(crate) fn normalized(mut self) -> Self {
+        self.media_segment_concurrency = self.media_segment_concurrency.clamp(1, 16);
+        self.preferred_audio_language = self.preferred_audio_language.trim().to_string();
+        self.preferred_subtitle_language = self.preferred_subtitle_language.trim().to_string();
         self.max_concurrent = self.max_concurrent.clamp(1, 20);
         self.connections = self.connections.clamp(1, 32);
         self.min_split_size = self.min_split_size.max(16 * 1024);
