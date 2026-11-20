@@ -12,7 +12,7 @@ pub const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 
 /// Bumped when the extension and the app stop understanding each other.
 /// The extension sends its own value in `Ping` and compares it with the `Pong`.
-pub const PROTOCOL: u32 = 1;
+pub const PROTOCOL: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -54,6 +54,42 @@ pub struct BrowserItem {
     pub body: Option<String>,
     /// Pre-selection in the batch dialog ("Download all links"); selected when absent.
     pub selected: Option<bool>,
+    /// What the extension found out about a video on the page (protocol 2).
+    pub media: Option<MediaHint>,
+}
+
+/// A video the extension found on a page, with what the app can't see from the URL alone.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MediaHint {
+    /// The recogniser that found it: `youtube`, `vimeo`, `facebook`, `instagram`, `tiktok`.
+    pub site: Option<String>,
+    pub title: Option<String>,
+    /// A manifest the page gave as text instead of a URL.
+    pub manifest: Option<InlineManifest>,
+    /// Whole WebVTT files to offer as subtitle tracks.
+    pub subtitles: Vec<SubtitleFile>,
+    /// Fetch whole-file tracks in ranges of at most this many bytes.
+    pub chunk_bytes: Option<u64>,
+    /// Don't fetch anything before this time (ms since the epoch).
+    pub not_before_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InlineManifest {
+    /// `hls` or `dash`.
+    pub kind: String,
+    pub body: String,
+    /// The address relative URLs in the body are resolved against.
+    pub base_url: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SubtitleFile {
+    pub url: String,
+    pub lang: Option<String>,
+    pub label: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -223,7 +259,27 @@ mod tests {
             protocol: PROTOCOL,
         })
         .unwrap();
-        assert_eq!(pong, r#"{"type":"pong","version":"0.2.0","protocol":1}"#);
+        assert_eq!(pong, r#"{"type":"pong","version":"0.2.0","protocol":2}"#);
+    }
+
+    #[test]
+    fn items_carry_what_the_page_said_about_a_video() {
+        let req: Request = serde_json::from_str(
+            r#"{"type":"add_downloads","items":[{"url":"https://www.youtube.com/watch?v=x","media":{"site":"youtube","title":"T","manifest":{"kind":"dash","body":"<MPD/>","base_url":"https://www.youtube.com/"},"subtitles":[{"url":"https://x/a.vtt","lang":"en"}],"chunk_bytes":10485760}}]}"#,
+        )
+        .unwrap();
+        let Request::AddDownloads { items, .. } = req else {
+            panic!()
+        };
+        let m = items[0].media.as_ref().unwrap();
+        assert_eq!(m.site.as_deref(), Some("youtube"));
+        assert_eq!(m.manifest.as_ref().unwrap().kind, "dash");
+        assert_eq!(m.subtitles[0].lang.as_deref(), Some("en"));
+        assert_eq!(m.chunk_bytes, Some(10 << 20));
+        assert_eq!(m.not_before_ms, None);
+        // Items from protocol 1 have none.
+        let old: BrowserItem = serde_json::from_str(r#"{"url":"https://x/y"}"#).unwrap();
+        assert!(old.media.is_none());
     }
 
     #[test]

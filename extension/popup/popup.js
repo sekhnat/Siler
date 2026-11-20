@@ -14,12 +14,79 @@ function fmtSpeed(n) {
 }
 
 let siteHost = "";
+let tabId = null;
+
+/** The videos K-Star found on the tab, to pick from. */
+async function renderVideos(fresh = false) {
+  if (tabId == null) return;
+  const list = await browser.runtime.sendMessage({ type: "media-list", tabId, fresh }).catch(() => []);
+  // Keep what the user ticked when the list is refreshed.
+  const ticked = new Set([...document.querySelectorAll("#video-list input:checked")].map((i) => i.value));
+  const touched = document.querySelector("#video-list input") !== null;
+  const box = $("videos");
+  box.hidden = !list?.length;
+  if (!list?.length) return;
+  $("videos-count").textContent = list.length === 1 ? "" : `${list.length} found`;
+  const ul = $("video-list");
+  ul.replaceChildren(
+    ...list.map((v, i) => {
+      const li = document.createElement("li");
+      const label = document.createElement("label");
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.value = v.key;
+      box.checked = touched ? ticked.has(v.key) : i === 0;
+      box.addEventListener("change", syncButton);
+      const text = document.createElement("span");
+      text.className = "v-text";
+      const name = document.createElement("span");
+      name.className = "v-name";
+      name.textContent = v.name;
+      name.title = v.name;
+      const meta = document.createElement("span");
+      meta.className = "v-label";
+      meta.textContent = v.label;
+      text.append(name, meta);
+      label.append(box, text);
+      li.append(label);
+      return li;
+    }),
+  );
+  syncButton();
+}
+
+function syncButton() {
+  const n = document.querySelectorAll("#video-list input:checked").length;
+  $("video-download").disabled = n === 0;
+  $("video-download").textContent = n > 1 ? `Download ${n} with K-Star` : "Download with K-Star";
+}
+
+$("video-download").addEventListener("click", async () => {
+  const keys = [...document.querySelectorAll("#video-list input:checked")].map((i) => i.value);
+  if (!keys.length) return;
+  const btn = $("video-download");
+  const msg = $("video-msg");
+  btn.disabled = true;
+  btn.textContent = "Sending to K-Star…";
+  msg.hidden = true;
+  msg.classList.remove("err");
+  const r = await browser.runtime.sendMessage({ type: "media-download", tabId, keys }).catch((e) => ({ ok: false, message: String(e?.message ?? e) }));
+  if (r?.ok) {
+    window.close();
+    return;
+  }
+  msg.textContent = r?.message || "K-Star couldn't take the video.";
+  msg.classList.add("err");
+  msg.hidden = false;
+  syncButton();
+});
 
 async function render() {
   const cfg = await kstarConfig();
   $("enabled").setAttribute("aria-checked", String(cfg.enabled));
 
   const [tab] = await browser.tabs.query({ active: true, currentWindow: true }).catch(() => []);
+  tabId = tab?.id ?? null;
   siteHost = /^https?:/i.test(tab?.url ?? "") ? kstarHostOf(tab.url) : "";
   $("site-row").hidden = !siteHost;
   if (siteHost) {
@@ -27,8 +94,8 @@ async function render() {
     $("site").textContent = siteHost.replace(/^www\./, "");
     $("site-on").setAttribute("aria-checked", String(!blocked));
     $("site-hint").textContent = blocked
-      ? "Firefox handles this site's downloads"
-      : "Turn off to let Firefox handle this site's downloads";
+      ? "Firefox handles this site's downloads and videos"
+      : "Turn off to let Firefox handle this site's downloads and videos";
   }
 
   const last = await browser.runtime.sendMessage({ type: "last-error" }).catch(() => null);
@@ -73,6 +140,7 @@ $("site-on").addEventListener("click", async () => {
   const cfg = await kstarConfig();
   await kstarSetSiteBlocked(siteHost, !kstarSiteBlocked(cfg, siteHost));
   render();
+  renderVideos(true);
 });
 
 $("error-close").addEventListener("click", async () => {
@@ -103,3 +171,5 @@ $("add").addEventListener("submit", async (e) => {
 });
 
 render();
+// What is known now, then again after looking at the page.
+renderVideos().then(() => renderVideos(true));

@@ -1,7 +1,19 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const SWITCHES = ["enabled", "captureAll", "captureByMime", "notifyFailures"];
+const SWITCHES = [
+  "enabled",
+  "captureAll",
+  "captureByMime",
+  "notifyFailures",
+  "findVideos",
+  "videoButton",
+  "site_youtube",
+  "site_vimeo",
+  "site_facebook",
+  "site_instagram",
+  "site_tiktok",
+];
 const FIELDS = ["extensions", "minSizeMB", "blocklist"];
 const ALL_SITES = { origins: ["<all_urls>"] };
 

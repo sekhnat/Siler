@@ -340,6 +340,74 @@ impl Presentation {
     }
 }
 
+/// A whole WebVTT file to offer as a subtitle track, from outside the manifest (the browser
+/// extension found it on the page).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubtitleFile {
+    pub url: Url,
+    pub lang: Option<String>,
+    pub label: Option<String>,
+}
+
+impl Presentation {
+    /// Adds whole WebVTT files as subtitle tracks that go with every video. A file already
+    /// offered (same address without its query, language and label) isn't added twice.
+    pub fn add_subtitle_files(&mut self, files: &[SubtitleFile]) {
+        let duration = self.duration.unwrap_or(0.0);
+        for f in files {
+            let lang = language(f.lang.as_deref());
+            let label = f
+                .label
+                .as_deref()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(str::to_string);
+            let id = TrackId::of(&[
+                "file",
+                "subtitle",
+                &without_query(&f.url),
+                lang.as_deref().unwrap_or(""),
+                label.as_deref().unwrap_or(""),
+            ]);
+            if self.track(&id).is_some() {
+                continue;
+            }
+            for v in &mut self.variants {
+                v.subtitles.push(id.clone());
+            }
+            self.subtitles.push(Track {
+                id,
+                kind: TrackKind::Subtitle,
+                lang,
+                name: label,
+                codecs: None,
+                container: SegmentContainer::Vtt,
+                bandwidth: None,
+                resolution: None,
+                channels: None,
+                is_default: false,
+                protection: Protection::Clear,
+                plan: SegmentPlan {
+                    inits: Vec::new(),
+                    segments: vec![Segment {
+                        seq: 0,
+                        object: Object {
+                            url: f.url.clone(),
+                            range: None,
+                        },
+                        init: None,
+                        key: None,
+                        discontinuity: 0,
+                        start: 0.0,
+                        duration,
+                    }],
+                    whole: true,
+                },
+            });
+        }
+    }
+}
+
 /// Resolves `uri` against `base`. Refuses empty and unparseable references.
 pub(crate) fn resolve(base: &Url, uri: &str) -> Result<Url, ParseError> {
     let uri = uri.trim();
@@ -373,4 +441,47 @@ pub fn without_query(url: &Url) -> String {
     u.set_query(None);
     u.set_fragment(None);
     u.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dash() -> Presentation {
+        let mpd = br#"<MPD mediaPresentationDuration="PT10S"><Period><AdaptationSet mimeType="video/mp4" codecs="avc1"><Representation id="v1" bandwidth="1000" width="640" height="360"><BaseURL>v1.mp4</BaseURL><SegmentBase indexRange="0-9"/></Representation><Representation id="v2" bandwidth="2000" width="1280" height="720"><BaseURL>v2.mp4</BaseURL><SegmentBase indexRange="0-9"/></Representation></AdaptationSet></Period></MPD>"#;
+        let base = Url::parse("https://example.com/a/").unwrap();
+        crate::dash::parse(mpd, &base, &crate::ParseLimits::default()).unwrap()
+    }
+
+    #[test]
+    fn subtitle_files_go_with_every_video() {
+        let mut p = dash();
+        let file = |q: &str, lang: &str, label: &str| SubtitleFile {
+            url: Url::parse(&format!("https://example.com/api/timedtext?v=x&lang={q}")).unwrap(),
+            lang: Some(lang.into()),
+            label: Some(label.into()),
+        };
+        p.add_subtitle_files(&[
+            file("en", "en", "English"),
+            file("en-auto", "en", "English (auto-generated)"),
+            file("de", "de", "Deutsch"),
+        ]);
+        // The same file again (a fresh query) isn't added twice.
+        p.add_subtitle_files(&[file("en2", "en", "English")]);
+        assert_eq!(p.subtitles.len(), 3);
+        for v in &p.variants {
+            assert_eq!(v.subtitles.len(), 3);
+        }
+        let t = &p.subtitles[0];
+        assert!(t.plan.whole);
+        assert_eq!(t.container, SegmentContainer::Vtt);
+        assert_eq!(t.plan.duration(), 10.0);
+        assert_eq!(t.name.as_deref(), Some("English"));
+        let again = {
+            let mut q = dash();
+            q.add_subtitle_files(&[file("other", "en", "English")]);
+            q.subtitles[0].id.clone()
+        };
+        assert_eq!(again, t.id, "ids don't depend on the query");
+    }
 }

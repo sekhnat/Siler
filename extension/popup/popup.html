@@ -42,6 +42,16 @@
       <button id="site-on" class="switch" role="switch" aria-checked="true"></button>
     </label>
 
+    <section id="videos" class="videos" hidden>
+      <div class="videos-head">
+        <span class="label">Videos on this page</span>
+        <span id="videos-count" class="muted small"></span>
+      </div>
+      <ul id="video-list" class="video-list"></ul>
+      <button id="video-download" class="btn btn-primary" disabled>Download with K-Star</button>
+      <div id="video-msg" class="muted small" hidden></div>
+    </section>
+
     <form id="add" class="add">
       <input id="url" type="url" placeholder="Paste a link to download" autocomplete="off" />
       <button class="btn" type="submit">Add</button>

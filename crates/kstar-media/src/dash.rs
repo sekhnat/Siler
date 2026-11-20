@@ -1126,4 +1126,40 @@ mod regressions {
         .expect("parses");
         assert_eq!(p.audio[0].lang, None);
     }
+
+    #[test]
+    fn the_extensions_youtube_manifest_is_read_as_whole_files() {
+        // Written by extension/media/youtube/build.js (its tests keep this snapshot).
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../extension/tests/fixtures/youtube/visionos.mpd"
+        );
+        let mpd = std::fs::read(path).unwrap();
+        let base = Url::parse("https://www.youtube.com/watch?v=dQw4w9WgXcQ").unwrap();
+        let p = parse(&mpd, &base, &ParseLimits::default()).unwrap();
+        assert_eq!(p.duration, Some(213.0));
+        assert_eq!(p.variants.len(), 22, "every video format is a choice");
+        assert_eq!(p.audio.len(), 5);
+        assert!(p.warnings.is_empty(), "{:?}", p.warnings);
+        let h264 = p
+            .variants
+            .iter()
+            .find(|v| v.video.codecs.as_deref() == Some("avc1.640028"))
+            .unwrap();
+        assert_eq!(h264.video.resolution, Some((1920, 1080)));
+        assert!(h264.video.plan.whole);
+        assert_eq!(h264.video.container, SegmentContainer::Fmp4);
+        assert!(
+            h264.video.plan.segments[0].object.url.as_str().starts_with(
+                "https://rr1---sn-test.googlevideo.com/videoplayback?expire=1&itag=137&"
+            )
+        );
+        assert_eq!(h264.audio.len(), 5, "every audio goes with every video");
+        let opus = p
+            .audio
+            .iter()
+            .filter(|a| a.container == SegmentContainer::Webm)
+            .count();
+        assert_eq!(opus, 3);
+    }
 }

@@ -1,0 +1,658 @@
+{
+ "playabilityStatus": {
+  "status": "OK"
+ },
+ "videoDetails": {
+  "videoId": "dQw4w9WgXcQ",
+  "title": "Rick Astley - Never Gonna Give You Up (Official Video) (4K Remaster)",
+  "lengthSeconds": "213"
+ },
+ "streamingData": {
+  "adaptiveFormats": [
+   {
+    "itag": 313,
+    "mimeType": "video/webm; codecs=\"vp9\"",
+    "bitrate": 18076636,
+    "averageBitrate": 13466333,
+    "width": 3840,
+    "height": 2160,
+    "fps": 25,
+    "initRange": {
+     "start": "0",
+     "end": "220"
+    },
+    "indexRange": {
+     "start": "221",
+     "end": "893"
+    },
+    "contentLength": "358608461",
+    "approxDurationMs": "213040",
+    "qualityLabel": "2160p",
+    "url": "https://rr1---sn-test.googlevideo.com/videoplayback?expire=1&itag=313&id=o-TEST&source=youtube&mime=video%2Fwebm"
+   },
+   {
+    "itag": 401,
+    "mimeType": "video/mp4; codecs=\"av01.0.12M.08\"",
+    "bitrate": 17400774,
+    "averageBitrate": 9024958,
+    "width": 3840,
+    "height": 2160,
+    "fps": 25,
+    "initRange": {
+     "start": "0",
+     "end": "700"
+    },
+    "indexRange": {
+     "start": "701",
+     "end": "1188"
+    },
+    "contentLength": "240334643",
+    "approxDurationMs": "213040",
+    "qualityLabel": "2160p",
+    "url": "https://rr1---sn-test.googlevideo.com/videoplayback?expire=1&itag=401&id=o-TEST&source=youtube&mime=video%2Fmp4"
+   },
+   {
+    "itag": 271,
+    "mimeType": "video/webm; codecs=\"vp9\"",
+    "bitrate": 8978328,
+    "averageBitrate": 5674177,
+    "width": 2560,
+    "height": 1440,
+    "fps": 25,
+    "initRange": {
+     "start": "0",
+     "end": "219"
+    },
+    "indexRange": {
+     "start": "220",
+     "end": "889"
+    },
+    "contentLength": "151103346",
+    "approxDurationMs": "213040",
+    "qualityLabel": "1440p",
+    "url": "https://rr1---sn-test.googlevideo.com/videoplayback?expire=1&itag=271&id=o-TEST&source=youtube&mime=video%2Fwebm"
+   },
+   {
+    "itag": 400,
+    "mimeType": "video/mp4; codecs=\"av01.0.12M.08\"",
+    "bitrate": 7755221,
+    "averageBitrate": 4587618,
+    "width": 2560,
+    "height": 1440,
+    "fps": 25,
+    "initRange": {
+     "start": "0",
+     "end": "700"
+    },
+    "indexRange": {
+     "start": "701",
+     "end": "1188"
+    },
+    "contentLength": "122168277",
+    "approxDurationMs": "213040",
+    "qualityLabel": "1440p",
+    "url": "https://rr1---sn-test.googlevideo.com/videoplayback?expire=1&itag=400&id=o-TEST&source=youtube&mime=video%2Fmp4"
+   },
+   {
+    "itag": 137,
+    "mimeType": "video/mp4; codecs=\"avc1.640028\"",
+    "bitrate": 4334157,
+    "averageBitrate": 3038377,
+    "width": 1920,
+    "height": 1080,
+    "fps": 25,
+    "initRange": {
+     "start": "0",
+     "end": "741"
+    },
+    "indexRange": {
+     "start": "742",
+     "end": "1229"
+    },
+    "contentLength": "80911999",
+    "approxDurationMs": "213040",
+    "qualityLabel": "1080p",
+    "url": "https://rr1---sn-test.googlevideo.com/videoplayback?expire=1&itag=137&id=o-TEST&source=youtube&mime=video%2Fmp4"
+   },
+   {
+    "itag": 248,
+    "mimeType": "video/webm; codecs=\"vp9\"",
+    "bitrate": 1549172,
+    "averageBitrate": 1158339,
+    "width": 1920,
+    "height": 1080,
+    "fps": 25,
+    "initRange": {
+     "start": "0",
+     "end": "219"
+    },
+    "indexRange": {
+     "start": "220",
+     "end": "874"
+    },
+    "contentLength": "30846580",
+    "approxDurationMs": "213040",
+    "qualityLabel": "1080p",
+    "url": "https://rr1---sn-test.googlevideo.com/videoplayback?expire=1&itag=248&id=o-TEST&source=youtube&mime=video%2Fwebm"
+   },
+   {
+    "itag": 399,
+    "mimeType": "video/mp4; codecs=\"av01.0.08M.08\"",
+    "bitrate": 1594543,
+    "averageBitrate": 1142170,
+    "width": 1920,
+    "height": 1080,
+    "fps": 25,
+    "initRange": {
+     "start": "0",
+     "end": "699"
+    },
+    "indexRange": {
+     "start": "700",
+     "end": "1187"
+    },
+    "contentLength": "30415996",
+    "approxDurationMs": "213040",
+    "qualityLabel": "1080p",
+    "url": "https://rr1---sn-test.googlevideo.com/videoplayback?expire=1&itag=399&id=o-TEST&source=youtube&mime=video%2Fmp4"
+   },
+   {
+    "itag": 136,
+    "mimeType": "video/mp4; codecs=\"avc1.4D401F\"",
+    "bitrate": 1058310,
+    "averageBitrate": 993461,
+    "width": 1280,
+    "height": 720,
+    "fps": 25,
+    "initRange": {
+     "start": "0",
+     "end": "739"
+    },
+    "indexRange": {
+     "start": "740",
+     "end": "1227"
+    },
+    "contentLength": "26455880",
+    "approxDurationMs": "213040",
+    "qualityLabel": "720p",
+    "url": "https://rr1---sn-test.googlevideo.com/videoplayback?expire=1&itag=136&id=o-TEST&source=youtube&mime=video%2Fmp4"
+   },
+   {
+    "itag": 247,
+    "mimeType": "video/webm; codecs=\"vp9\"",
+    "bitrate": 867871,
+    "averageBitrate": 664165,
+    "width": 1280,
+    "height": 720,
+    "fps": 25,
+    "initRange": {
+     "start": "0",
+     "end": "219"
+    },
+    "indexRange": {
+     "start": "220",
+     "end": "860"
+    },
+    "contentLength": "17686717",
+    "approxDurationMs": "213040",
+    "qualityLabel": "720p",
+    "url": "https://rr1---sn-test.googlevideo.com/videoplayback?expire=1&itag=247&id=o-TEST&source=youtube&mime=video%2Fwebm"
+   },
+   {
+    "itag": 398,
+    "mimeType": "video/mp4; codecs=\"av01.0.05M.08\"",
+    "bitrate": 1012348,
+    "averageBitrate": 660648,
+    "width": 1280,
+    "height": 720,
+    "fps": 25,
+    "initRange": {
+     "start": "0",
+     "end": "699"
+    },
+    "indexRange": {
+     "start": "700",
+     "end": "1187"
+    },
+    "contentLength": "17593076",
+    "approxDurationMs": "213040",
+    "qualityLabel": "720p",
+    "url": "https://rr1---sn-test.googlevideo.com/videoplayback?expire=1&itag=398&id=o-TEST&source=youtube&mime=video%2Fmp4"
+   },
+   {
+    "itag": 135,
+    "mimeType": "video/mp4; codecs=\"avc1.4D401E\"",
+    "bitrate": 690764,
+    "averageBitrate": 529610,
+    "width": 854,
+    "height": 480,
+    "fps": 25,
+    "initRange": {
+     "start": "0",
+     "end": "740"
+    },
+    "indexRange": {
+     "start": "741",
+     "end": "1228"
+    },
+    "contentLength": "14103519",
+    "approxDurationMs": "213040",
+    "qualityLabel": "480p",
+    "url": "https://rr1---sn-test.googlevideo.com/videoplayback?expire=1&itag=135&id=o-TEST&source=youtube&mime=video%2Fmp4"
+   },
+   {
+    "itag": 244,
+    "mimeType": "video/webm; codecs=\"vp9\"",
+    "bitrate": 466632,
+    "averageBitrate": 352289,
+    "width": 854,
+    "height": 480,
+    "fps": 25,
+    "initRange": {
+     "start": "0",
+     "end": "219"
+    },
+    "indexRange": {
+     "start": "220",
+     "end": "857"
+    },
+    "contentLength": "9381481",
+    "approxDurationMs": "213040",
+    "qualityLabel": "480p",
+    "url": "https://rr1---sn-test.googlevideo.com/videoplayback?expire=1&itag=244&id=o-TEST&source=youtube&mime=video%2Fwebm"
+   },
+   {
+    "itag": 397,
+    "mimeType": "video/mp4; codecs=\"av01.0.04M.08\"",
+    "bitrate": 525728,
+    "averageBitrate": 370815,
+    "width": 854,
+    "height": 480,
+    "fps": 25,
+    "initRange": {
+     "start": "0",
+     "end": "699"
+    },
+    "indexRange": {
+     "start": "700",
+     "end": "1187"
+    },
+    "contentLength": "9874826",
+    "approxDurationMs": "213040",
+    "qualityLabel": "480p",
+    "url": "https://rr1---sn-test.googlevideo.com/videoplayback?expire=1&itag=397&id=o-TEST&source=youtube&mime=video%2Fmp4"
+   },
+   {
+    "itag": 134,
+    "mimeType": "video/mp4; codecs=\"avc1.4D401E\"",
+    "bitrate": 450863,
+    "averageBitrate": 315092,
+    "width": 640,
+    "height": 360,
+    "fps": 25,
+    "initRange": {
+     "start": "0",
+     "end": "740"
+    },
+    "indexRange": {
+     "start": "741",
+     "end": "1228"
+    },
+    "contentLength": "8390921",
+    "approxDurationMs": "213040",
+    "qualityLabel": "360p",
+    "url": "https://rr1---sn-test.googlevideo.com/videoplayback?expire=1&itag=134&id=o-TEST&source=youtube&mime=video%2Fmp4"
+   },
+   {
+    "itag": 243,
+    "mimeType": "video/webm; codecs=\"vp9\"",
+    "bitrate": 288453,
+    "averageBitrate": 225864,
+    "width": 640,
+    "height": 360,
+    "fps": 25,
+    "initRange": {
+     "start": "0",
+     "end": "219"
+    },
+    "indexRange": {
+     "start": "220",
+     "end": "857"
+    },
+    "contentLength": "6014765",
+    "approxDurationMs": "213040",
+    "qualityLabel": "360p",
+    "url": "https://rr1---sn-test.googlevideo.com/videoplayback?expire=1&itag=243&id=o-TEST&source=youtube&mime=video%2Fwebm"
+   },
+   {
+    "itag": 396,
+    "mimeType": "video/mp4; codecs=\"av01.0.01M.08\"",
+    "bitrate": 304466,
+    "averageBitrate": 213502,
+    "width": 640,
+    "height": 360,
+    "fps": 25,
+    "initRange": {
+     "start": "0",
+     "end": "699"
+    },
+    "indexRange": {
+     "start": "700",
+     "end": "1187"
+    },
+    "contentLength": "5685561",
+    "approxDurationMs": "213040",
+    "qualityLabel": "360p",
+    "url": "https://rr1---sn-test.googlevideo.com/videoplayback?expire=1&itag=396&id=o-TEST&source=youtube&mime=video%2Fmp4"
+   },
+   {
+    "itag": 133,
+    "mimeType": "video/mp4; codecs=\"avc1.4D4015\"",
+    "bitrate": 236224,
+    "averageBitrate": 161852,
+    "width": 426,
+    "height": 240,
+    "fps": 25,
+    "initRange": {
+     "start": "0",
+     "end": "739"
+    },
+    "indexRange": {
+     "start": "740",
+     "end": "1227"
+    },
+    "contentLength": "4310122",
+    "approxDurationMs": "213040",
+    "qualityLabel": "240p",
+    "url": "https://rr1---sn-test.googlevideo.com/videoplayback?expire=1&itag=133&id=o-TEST&source=youtube&mime=video%2Fmp4"
+   },
+   {
+    "itag": 242,
+    "mimeType": "video/webm; codecs=\"vp9\"",
+    "bitrate": 131647,
+    "averageBitrate": 101649,
+    "width": 426,
+    "height": 240,
+    "fps": 25,
+    "initRange": {
+     "start": "0",
+     "end": "218"
+    },
+    "indexRange": {
+     "start": "219",
+     "end": "856"
+    },
+    "contentLength": "2706929",
+    "approxDurationMs": "213040",
+    "qualityLabel": "240p",
+    "url": "https://rr1---sn-test.googlevideo.com/videoplayback?expire=1&itag=242&id=o-TEST&source=youtube&mime=video%2Fwebm"
+   },
+   {
+    "itag": 395,
+    "mimeType": "video/mp4; codecs=\"av01.0.00M.08\"",
+    "bitrate": 159709,
+    "averageBitrate": 116239,
+    "width": 426,
+    "height": 240,
+    "fps": 25,
+    "initRange": {
+     "start": "0",
+     "end": "699"
+    },
+    "indexRange": {
+     "start": "700",
+     "end": "1187"
+    },
+    "contentLength": "3095447",
+    "approxDurationMs": "213040",
+    "qualityLabel": "240p",
+    "url": "https://rr1---sn-test.googlevideo.com/videoplayback?expire=1&itag=395&id=o-TEST&source=youtube&mime=video%2Fmp4"
+   },
+   {
+    "itag": 160,
+    "mimeType": "video/mp4; codecs=\"avc1.4D400C\"",
+    "bitrate": 109973,
+    "averageBitrate": 77286,
+    "width": 256,
+    "height": 144,
+    "fps": 25,
+    "initRange": {
+     "start": "0",
+     "end": "738"
+    },
+    "indexRange": {
+     "start": "739",
+     "end": "1226"
+    },
+    "contentLength": "2058142",
+    "approxDurationMs": "213040",
+    "qualityLabel": "144p",
+    "url": "https://rr1---sn-test.googlevideo.com/videoplayback?expire=1&itag=160&id=o-TEST&source=youtube&mime=video%2Fmp4"
+   },
+   {
+    "itag": 278,
+    "mimeType": "video/webm; codecs=\"vp9\"",
+    "bitrate": 68500,
+    "averageBitrate": 57861,
+    "width": 256,
+    "height": 144,
+    "fps": 25,
+    "initRange": {
+     "start": "0",
+     "end": "217"
+    },
+    "indexRange": {
+     "start": "218",
+     "end": "854"
+    },
+    "contentLength": "1540844",
+    "approxDurationMs": "213040",
+    "qualityLabel": "144p",
+    "url": "https://rr1---sn-test.googlevideo.com/videoplayback?expire=1&itag=278&id=o-TEST&source=youtube&mime=video%2Fwebm"
+   },
+   {
+    "itag": 394,
+    "mimeType": "video/mp4; codecs=\"av01.0.00M.08\"",
+    "bitrate": 83289,
+    "averageBitrate": 56534,
+    "width": 256,
+    "height": 144,
+    "fps": 25,
+    "initRange": {
+     "start": "0",
+     "end": "699"
+    },
+    "indexRange": {
+     "start": "700",
+     "end": "1187"
+    },
+    "contentLength": "1505504",
+    "approxDurationMs": "213040",
+    "qualityLabel": "144p",
+    "url": "https://rr1---sn-test.googlevideo.com/videoplayback?expire=1&itag=394&id=o-TEST&source=youtube&mime=video%2Fmp4"
+   },
+   {
+    "itag": 139,
+    "mimeType": "audio/mp4; codecs=\"mp4a.40.5\"",
+    "bitrate": 50152,
+    "averageBitrate": 48813,
+    "initRange": {
+     "start": "0",
+     "end": "731"
+    },
+    "indexRange": {
+     "start": "732",
+     "end": "1027"
+    },
+    "contentLength": "1300631",
+    "approxDurationMs": "213159",
+    "audioChannels": 2,
+    "audioQuality": "AUDIO_QUALITY_LOW",
+    "url": "https://rr1---sn-test.googlevideo.com/videoplayback?expire=1&itag=139&id=o-TEST&source=youtube&mime=audio%2Fmp4"
+   },
+   {
+    "itag": 140,
+    "mimeType": "audio/mp4; codecs=\"mp4a.40.2\"",
+    "bitrate": 130677,
+    "averageBitrate": 129502,
+    "initRange": {
+     "start": "0",
+     "end": "722"
+    },
+    "indexRange": {
+     "start": "723",
+     "end": "1018"
+    },
+    "contentLength": "3449447",
+    "approxDurationMs": "213089",
+    "audioChannels": 2,
+    "audioQuality": "AUDIO_QUALITY_MEDIUM",
+    "url": "https://rr1---sn-test.googlevideo.com/videoplayback?expire=1&itag=140&id=o-TEST&source=youtube&mime=audio%2Fmp4"
+   },
+   {
+    "itag": 249,
+    "mimeType": "audio/webm; codecs=\"opus\"",
+    "bitrate": 49496,
+    "averageBitrate": 46234,
+    "initRange": {
+     "start": "0",
+     "end": "258"
+    },
+    "indexRange": {
+     "start": "259",
+     "end": "628"
+    },
+    "contentLength": "1231355",
+    "approxDurationMs": "213061",
+    "audioChannels": 2,
+    "audioQuality": "AUDIO_QUALITY_LOW",
+    "url": "https://rr1---sn-test.googlevideo.com/videoplayback?expire=1&itag=249&id=o-TEST&source=youtube&mime=audio%2Fwebm"
+   },
+   {
+    "itag": 250,
+    "mimeType": "audio/webm; codecs=\"opus\"",
+    "bitrate": 65508,
+    "averageBitrate": 61149,
+    "initRange": {
+     "start": "0",
+     "end": "258"
+    },
+    "indexRange": {
+     "start": "259",
+     "end": "629"
+    },
+    "contentLength": "1628559",
+    "approxDurationMs": "213061",
+    "audioChannels": 2,
+    "audioQuality": "AUDIO_QUALITY_LOW",
+    "url": "https://rr1---sn-test.googlevideo.com/videoplayback?expire=1&itag=250&id=o-TEST&source=youtube&mime=audio%2Fwebm"
+   },
+   {
+    "itag": 251,
+    "mimeType": "audio/webm; codecs=\"opus\"",
+    "bitrate": 136544,
+    "averageBitrate": 128930,
+    "initRange": {
+     "start": "0",
+     "end": "258"
+    },
+    "indexRange": {
+     "start": "259",
+     "end": "629"
+    },
+    "contentLength": "3433755",
+    "approxDurationMs": "213061",
+    "audioChannels": 2,
+    "audioQuality": "AUDIO_QUALITY_MEDIUM",
+    "url": "https://rr1---sn-test.googlevideo.com/videoplayback?expire=1&itag=251&id=o-TEST&source=youtube&mime=audio%2Fwebm"
+   }
+  ]
+ },
+ "captions": {
+  "playerCaptionsTracklistRenderer": {
+   "captionTracks": [
+    {
+     "baseUrl": "https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&caps=asr&xoaf=5&hl=en&ip=0.0.0.0&ipbits=0&expire=1&sparams=ip,ipbits,expire,v,caps,xoaf&signature=X&key=yt8&lang=en",
+     "name": {
+      "runs": [
+       {
+        "text": "English"
+       }
+      ]
+     },
+     "vssId": ".en",
+     "languageCode": "en",
+     "isTranslatable": true
+    },
+    {
+     "baseUrl": "https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&caps=asr&xoaf=5&hl=en&ip=0.0.0.0&ipbits=0&expire=1&sparams=ip,ipbits,expire,v,caps,xoaf&signature=X&key=yt8&kind=asr&lang=en",
+     "name": {
+      "runs": [
+       {
+        "text": "English (auto-generated)"
+       }
+      ]
+     },
+     "vssId": "a.en",
+     "languageCode": "en",
+     "kind": "asr",
+     "isTranslatable": true
+    },
+    {
+     "baseUrl": "https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&caps=asr&xoaf=5&hl=en&ip=0.0.0.0&ipbits=0&expire=1&sparams=ip,ipbits,expire,v,caps,xoaf&signature=X&key=yt8&lang=de-DE",
+     "name": {
+      "runs": [
+       {
+        "text": "German (Germany)"
+       }
+      ]
+     },
+     "vssId": ".de-DE",
+     "languageCode": "de-DE",
+     "isTranslatable": true
+    },
+    {
+     "baseUrl": "https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&caps=asr&xoaf=5&hl=en&ip=0.0.0.0&ipbits=0&expire=1&sparams=ip,ipbits,expire,v,caps,xoaf&signature=X&key=yt8&lang=ja",
+     "name": {
+      "runs": [
+       {
+        "text": "Japanese"
+       }
+      ]
+     },
+     "vssId": ".ja",
+     "languageCode": "ja",
+     "isTranslatable": true
+    },
+    {
+     "baseUrl": "https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&caps=asr&xoaf=5&hl=en&ip=0.0.0.0&ipbits=0&expire=1&sparams=ip,ipbits,expire,v,caps,xoaf&signature=X&key=yt8&lang=pt-BR",
+     "name": {
+      "runs": [
+       {
+        "text": "Portuguese (Brazil)"
+       }
+      ]
+     },
+     "vssId": ".pt-BR",
+     "languageCode": "pt-BR",
+     "isTranslatable": true
+    },
+    {
+     "baseUrl": "https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&caps=asr&xoaf=5&hl=en&ip=0.0.0.0&ipbits=0&expire=1&sparams=ip,ipbits,expire,v,caps,xoaf&signature=X&key=yt8&lang=es-419",
+     "name": {
+      "runs": [
+       {
+        "text": "Spanish (Latin America)"
+       }
+      ]
+     },
+     "vssId": ".es-419",
+     "languageCode": "es-419",
+     "isTranslatable": true
+    }
+   ]
+  }
+ },
+ "adPlacements": [],
+ "adSlots": []
+}

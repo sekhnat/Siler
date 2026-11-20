@@ -30,8 +30,8 @@ pub use kstar_media::select::{ContainerChoice, Selection, SubtitleMode};
 pub use kstar_media::{ManifestKind, TrackId};
 pub use manager::Engine;
 pub use media::{
-    FfmpegStatus, JobKind, MediaInfo, MediaKind, MediaProbe, MediaProgress, NewMediaDownload,
-    TrackView, VariantView,
+    FfmpegStatus, HintSubtitle, InlineManifest, JobKind, MediaInfo, MediaKind, MediaProbe,
+    MediaProgress, NewMediaDownload, SourceHint, TrackView, VariantView,
 };
 pub use net::{Login, host_key};
 pub use probe::ProbeResult;

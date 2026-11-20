@@ -168,7 +168,7 @@ export interface MediaInfo {
 }
 
 export interface MediaProgress {
-  phase: "resolving" | "downloading" | "rebuilding" | "publishing";
+  phase: "waiting" | "resolving" | "downloading" | "rebuilding" | "publishing";
   segments_done: number;
   segments_total: number;
   permille: number;
@@ -317,6 +317,12 @@ export interface Pending {
   keep_name: boolean;
   /** Where the link came from. */
   origin: "browser" | "command_line" | "clipboard";
+  /** The site the browser extension recognised the video on (`youtube`, …). */
+  site: string | null;
+  /** The video's title, from the page. */
+  title: string | null;
+  /** The extension gave the stream itself: a stream whatever the link looks like. */
+  stream: boolean;
   resumable: Download | null;
 }
 

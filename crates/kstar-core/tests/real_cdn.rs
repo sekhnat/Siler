@@ -175,7 +175,7 @@ impl std::fmt::Display for Verdict {
 }
 
 async fn one(e: &Engine, ff: &Path, out: &Path, name: &str, url: &str) -> Verdict {
-    let p = match e.probe_media(url, &RequestMeta::default()).await {
+    let p = match e.probe_media(url, &RequestMeta::default(), None).await {
         Ok(p) => p,
         Err(err) if err.is_transient() => return Verdict::Down(err.to_string()),
         Err(err) => return Verdict::Failed(format!("probe: {err}")),

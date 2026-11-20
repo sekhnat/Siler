@@ -56,6 +56,12 @@ pub struct PendingView {
     pub queue_id: Option<i64>,
     pub keep_name: bool,
     pub origin: Origin,
+    /// The site the extension recognised the video on (`youtube`, …).
+    pub site: Option<String>,
+    /// The video's title, from the page.
+    pub title: Option<String>,
+    /// The extension gave the stream's manifest as text: it is a stream whatever the link is.
+    pub stream: bool,
     /// A paused or failed download this one looks like, which its link could continue.
     pub resumable: Option<kstar_core::DownloadInfo>,
 }

@@ -2,7 +2,7 @@ use kstar_core::proxy::ProxyRoute;
 use kstar_core::{
     AfterDone, Category, ContainerChoice, DownloadInfo, EditDownload, Login, LoginRequest,
     NewDownload, NewMediaDownload, OnConflict, ProbeResult, Queue, QueueMove, RequestMeta,
-    Selection, Settings, Status, SubtitleMode,
+    Selection, Settings, SourceHint, Status, SubtitleMode,
 };
 use kstar_ipc::BrowserItem;
 use serde::{Deserialize, Serialize};
@@ -46,6 +46,25 @@ fn pending_meta(state: &AppState, pending_id: Option<u64>) -> Option<RequestMeta
     let id = pending_id?;
     let p = state.pending.lock().unwrap();
     p.iter().find(|p| p.id == id).map(|p| meta_of(&p.item))
+}
+
+/// What the extension said about the video of a pending item, as long as the dialog still
+/// has its link (an edited link is a different source).
+fn pending_hint(state: &AppState, pending_id: Option<u64>, url: &str) -> Option<SourceHint> {
+    let id = pending_id?;
+    let p = state.pending.lock().unwrap();
+    let item = &p.iter().find(|p| p.id == id)?.item;
+    if item.url != url {
+        return None;
+    }
+    hint_of(item.media.as_ref()?)
+}
+
+/// The extension's hint as the engine takes it: the two have the same shape.
+pub fn hint_of(m: &kstar_ipc::MediaHint) -> Option<SourceHint> {
+    serde_json::to_value(m)
+        .and_then(serde_json::from_value)
+        .ok()
 }
 
 fn forget_pending(state: &AppState, pending_id: Option<u64>) {
@@ -217,14 +236,15 @@ pub async fn probe_media(
     pending_id: Option<u64>,
 ) -> Result<kstar_core::MediaProbe, ProbeError> {
     let meta = pending_meta(&state, pending_id).unwrap_or_default();
-    let mut result = state.engine.probe_media(&url, &meta).await;
+    let hint = pending_hint(&state, pending_id, &url);
+    let mut result = state.engine.probe_media(&url, &meta, hint.as_ref()).await;
     if let Err(e) = &result
         && let Some(req) = e.login_request()
         && !req.rejected
         && let Some(login) = logins::find(&req.host).await
     {
         let _ = state.engine.set_login(&req.host, login);
-        result = state.engine.probe_media(&url, &meta).await;
+        result = state.engine.probe_media(&url, &meta, hint.as_ref()).await;
     }
     result.map_err(|e| ProbeError {
         message: e.to_string(),
@@ -252,11 +272,13 @@ pub struct AddMediaArgs {
 #[tauri::command]
 pub async fn add_media(state: State<'_, AppState>, args: AddMediaArgs) -> Res<i64> {
     let meta = pending_meta(&state, args.pending_id).unwrap_or_default();
+    let hint = pending_hint(&state, args.pending_id, &args.url);
     let id = state
         .engine
         .add_media(NewMediaDownload {
             url: args.url,
             meta,
+            hint,
             filename: args.filename.filter(|f| !f.trim().is_empty()),
             dir: args.dir,
             selection: args.selection,
@@ -305,6 +327,9 @@ pub fn pending_adds(state: State<'_, AppState>) -> Vec<PendingView> {
                 queue_id: p.queue_id,
                 keep_name: p.keep_name,
                 origin: p.origin,
+                site: p.item.media.as_ref().and_then(|m| m.site.clone()),
+                title: p.item.media.as_ref().and_then(|m| m.title.clone()),
+                stream: p.item.media.as_ref().is_some_and(|m| m.manifest.is_some()),
                 resumable: if single {
                     name.and_then(|n| state.engine.find_resumable(&n, p.item.size))
                 } else {

@@ -26,5 +26,5 @@ pub use error::ParseError;
 pub use limits::ParseLimits;
 pub use model::{
     ByteRange, Init, Key, Liveness, ManifestKind, Object, Presentation, Protection, Segment,
-    SegmentContainer, SegmentPlan, Track, TrackId, TrackKind, Variant,
+    SegmentContainer, SegmentPlan, SubtitleFile, Track, TrackId, TrackKind, Variant,
 };

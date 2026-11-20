@@ -9,6 +9,7 @@ use kstar_media::{ParseError, ParseLimits, Presentation, dash};
 use reqwest::Url;
 use std::collections::HashMap;
 
+use super::{InlineManifest, SourceHint};
 use crate::error::MediaError;
 use crate::http::{self, Http, Limiters, Overflow, Req};
 use crate::{Error, Result};
@@ -35,12 +36,7 @@ pub(crate) fn map_parse(e: ParseError) -> Error {
 
 /// Classifies `url` and, for streams, reads the presentation it offers. The first bytes are
 /// read once to recognise the source; a manifest that fits in them isn't fetched again.
-pub(crate) async fn source(
-    http: &Http,
-    url: &Url,
-    lim: &ParseLimits,
-    io: &Limiters<'_>,
-) -> Result<Source> {
+async fn source(http: &Http, url: &Url, lim: &ParseLimits, io: &Limiters<'_>) -> Result<Source> {
     let head = http::fetch_bounded(
         http,
         url,
@@ -84,6 +80,65 @@ pub(crate) async fn source(
         kind,
         final_url,
         presentation,
+    })
+}
+
+/// Reads a source: the manifest the page gave as text when there is one, else the one at
+/// `url`. The page's title and subtitle files are added to what the manifest offers.
+pub(crate) async fn resolve(
+    http: &Http,
+    url: &Url,
+    hint: Option<&SourceHint>,
+    lim: &ParseLimits,
+    io: &Limiters<'_>,
+) -> Result<Source> {
+    let mut src = match hint.and_then(|h| h.manifest.as_ref()) {
+        Some(m) => inline(http, m, lim, io).await?,
+        None => source(http, url, lim, io).await?,
+    };
+    if let (Some(h), Some(p)) = (hint, src.presentation.as_mut()) {
+        if h.title.is_some() {
+            p.title = h.title.clone();
+        }
+        p.add_subtitle_files(&h.subtitle_files());
+    }
+    Ok(src)
+}
+
+/// A manifest given as text. Its playlists (HLS) and everything it names are fetched like
+/// those of any manifest, through the URL policy.
+async fn inline(
+    http: &Http,
+    m: &InlineManifest,
+    lim: &ParseLimits,
+    io: &Limiters<'_>,
+) -> Result<Source> {
+    let base = Url::parse(&m.base_url).map_err(|e| Error::InvalidUrl(e.to_string()))?;
+    if m.body.len() > lim.max_manifest_bytes {
+        return Err(Error::Media(MediaError::BodyTooLarge(
+            lim.max_manifest_bytes as u64,
+        )));
+    }
+    let body = m.body.as_bytes();
+    let (kind, presentation) = match m.kind.as_str() {
+        "dash" => (
+            Kind::Dash,
+            dash::parse(body, &base, lim).map_err(map_parse)?,
+        ),
+        "hls" => (
+            Kind::Hls,
+            hls_presentation(http, &base, body, lim, io).await?,
+        ),
+        other => {
+            return Err(Error::Media(MediaError::Unsupported(format!(
+                "a manifest of kind “{other}”"
+            ))));
+        }
+    };
+    Ok(Source {
+        kind,
+        final_url: base,
+        presentation: Some(presentation),
     })
 }
 

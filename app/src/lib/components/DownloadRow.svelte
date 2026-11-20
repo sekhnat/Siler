@@ -29,6 +29,8 @@
   const phaseText = $derived.by(() => {
     if (!mp) return null;
     switch (mp.phase) {
+      case "waiting":
+        return "Waiting for the site…";
       case "resolving":
         return "Reading the stream…";
       case "downloading":

@@ -105,6 +105,18 @@
     return /mpegurl|dash\+xml/.test(type) || /\.(m3u8|mpd)$/i.test(p.filename);
   }
 
+  /** The name of a site the browser extension recognises. */
+  function siteName(site: string): string {
+    const names: Record<string, string> = {
+      youtube: "YouTube",
+      vimeo: "Vimeo",
+      facebook: "Facebook",
+      instagram: "Instagram",
+      tiktok: "TikTok",
+    };
+    return names[site] ?? site;
+  }
+
   /** Shows a stream's tracks instead of the file form. */
   function showMedia(m: MediaProbe) {
     mediaProbe = m;
@@ -125,11 +137,19 @@
     try {
       // A stream address is looked at as a stream only: a manifest is never a file to save.
       // Other links are probed as files first, so a plain download isn't fetched twice.
-      if (streamLike(target)) {
+      // The extension may hand over the stream itself, with the page's link.
+      const given = !!pending?.stream && target === pending.url;
+      if (given || streamLike(target)) {
         const m = await api.probeMedia(target, pending?.id);
         if (mine !== seq) return;
         if (m.kind !== "direct" && m.kind !== "not_media") {
           showMedia(m);
+          return;
+        }
+        if (given) {
+          mediaProbe = null;
+          probe = null;
+          probeError = m.message ?? "The page gave no video K-Star can download.";
           return;
         }
       }
@@ -146,7 +166,8 @@
       }
       probe = p;
       loginNeeded = null;
-      if (!pending?.keep_name) filename = p.filename;
+      // A name from the command line, or a video's title the extension found, is kept.
+      if (!pending?.keep_name && !(pending?.site && pending.filename)) filename = p.filename;
       category = p.category;
       if (!dirEdited) dir = p.dir;
     } catch (e) {
@@ -292,7 +313,7 @@
     <div>
       <h2>New download</h2>
       <div class="hint">
-        {#if pending && pending.origin === "command_line"}From the command line{:else if pending && pending.origin === "clipboard"}Copied to the clipboard{:else if pending}From Firefox{pending.page_url ? ` · ${host(pending.page_url)}` : ""}{pending.method === "POST" ? " · form submission" : ""}{:else}Paste one or more links{/if}
+        {#if pending && pending.origin === "command_line"}From the command line{:else if pending && pending.origin === "clipboard"}Copied to the clipboard{:else if pending}From {pending.site ? siteName(pending.site) : "Firefox"}{pending.page_url ? ` · ${host(pending.page_url)}` : ""}{pending.method === "POST" ? " · form submission" : ""}{:else}Paste one or more links{/if}
         {#if position}<span class="pos">{position}</span>{/if}
       </div>
     </div>

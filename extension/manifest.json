@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "K-Star Integration",
-  "version": "0.2.0",
-  "description": "Send downloads to the K-Star download manager for faster, resumable, multi-connection downloading.",
+  "version": "0.3.0",
+  "description": "Send downloads and videos on web pages to the K-Star download manager for faster, resumable, multi-connection downloading.",
   "browser_specific_settings": {
     "gecko": {
       "id": "kstar@kstar.app",
@@ -30,7 +30,8 @@
     "storage",
     "scripting",
     "webRequest",
-    "webRequestBlocking"
+    "webRequestBlocking",
+    "webRequestFilterResponse"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -38,6 +39,11 @@
   "background": {
     "scripts": [
       "shared.js",
+      "media/common.js",
+      "media/sites.js",
+      "media/youtube/build.js",
+      "media/youtube/page.js",
+      "media/feed.js",
       "background.js"
     ]
   },

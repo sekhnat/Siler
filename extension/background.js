@@ -116,7 +116,7 @@ async function describe(url, { referrer = null, pageUrl = null, filename = null,
 async function handOver(items, silent = false) {
   const reply = await kstarSend({ type: "add_downloads", items, silent });
   if (reply?.type !== "accepted") throw new Error(reply?.message || "K-Star rejected the download");
-  health = { installed: true, running: true, checkedAt: Date.now() };
+  health = { ...health, installed: true, running: true, checkedAt: Date.now() };
   return reply;
 }
 
@@ -353,7 +353,12 @@ function createMenus() {
     browser.contextMenus.create({
       id: "kstar-link",
       title: "Download with K-Star",
-      contexts: ["link", "image", "video", "audio"],
+      contexts: ["link", "image"],
+    });
+    browser.contextMenus.create({
+      id: "kstar-video",
+      title: "Download this video with K-Star",
+      contexts: ["video", "audio"],
     });
     browser.contextMenus.create({
       id: "kstar-all",
@@ -406,6 +411,8 @@ browser.contextMenus.onClicked.addListener(async (info, tab) => {
       const url = info.linkUrl || info.srcUrl;
       if (!url) return;
       await handOver([await describe(url, { referrer: info.pageUrl, pageUrl: info.pageUrl, storeId })]);
+    } else if (info.menuItemId === "kstar-video" && tab) {
+      await handOver([await Feed.forVideo(tab, info.frameId ?? 0, info.srcUrl, info.frameUrl || info.pageUrl)]);
     } else if (info.menuItemId === "kstar-all" && tab?.id != null) {
       const [res] = await browser.scripting.executeScript({ target: { tabId: tab.id, frameIds: [info.frameId ?? 0] }, func: collectLinks });
       const { links = [], selection = false } = res?.result ?? {};
@@ -430,14 +437,35 @@ browser.contextMenus.onClicked.addListener(async (info, tab) => {
   } catch (e) {
     console.error("K-Star:", e);
     health.checkedAt = 0;
-    notify("K-Star couldn't take the links", reasonOf(e));
+    notify(info.menuItemId === "kstar-video" ? "K-Star couldn't take the video" : "K-Star couldn't take the links", reasonOf(e));
   }
 });
 
 // ---------------------------------------------------------------- messages & lifecycle
 
-browser.runtime.onMessage.addListener((msg) => {
+browser.runtime.onMessage.addListener((msg, sender) => {
   switch (msg?.type) {
+    case "media-list":
+      return Feed.forPopup(msg.tabId, !!msg.fresh).catch(() => []);
+    case "media-download":
+      return Feed.download(msg.tabId, msg.keys).then(
+        () => ({ ok: true }),
+        (e) => ({ ok: false, message: reasonOf(e) }),
+      );
+    case "video-button": {
+      const tab = sender.tab;
+      if (!tab) return;
+      return Feed.forVideo(tab, sender.frameId ?? 0, msg.src, sender.url || msg.pageUrl)
+        .then((item) => handOver([item]))
+        .then(
+          () => ({ ok: true }),
+          (e) => {
+            health.checkedAt = 0;
+            notify("K-Star couldn't take the video", reasonOf(e));
+            return { ok: false, message: reasonOf(e) };
+          },
+        );
+    }
     case "bypass":
       bypassUntil = Date.now() + 4000;
       return;

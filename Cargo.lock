@@ -2574,7 +2574,7 @@ dependencies = [
 
 [[package]]
 name = "kstar"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "arboard",
  "dirs",
@@ -2605,7 +2605,7 @@ dependencies = [
 
 [[package]]
 name = "kstar-core"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -2634,7 +2634,7 @@ dependencies = [
 
 [[package]]
 name = "kstar-ipc"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2643,7 +2643,7 @@ dependencies = [
 
 [[package]]
 name = "kstar-media"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "aes",
  "cbc",
@@ -2660,7 +2660,7 @@ dependencies = [
 
 [[package]]
 name = "kstar-nmhost"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "kstar-ipc",
  "serde_json",

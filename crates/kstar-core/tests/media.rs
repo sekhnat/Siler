@@ -10,8 +10,9 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::Response;
 use axum::routing::get;
 use kstar_core::{
-    ContainerChoice, DownloadInfo, Engine, Event, FfmpegStatus, MediaError, MediaKind, MediaProbe,
-    NewMediaDownload, RequestMeta, Selection, Settings, Status, SubtitleMode,
+    ContainerChoice, DownloadInfo, Engine, Event, FfmpegStatus, HintSubtitle, InlineManifest,
+    MediaError, MediaKind, MediaProbe, NewMediaDownload, RequestMeta, Selection, Settings,
+    SourceHint, Status, SubtitleMode,
 };
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -43,6 +44,12 @@ struct Shared {
     faults: Mutex<HashMap<String, (usize, Fault)>>,
     /// A delay before every segment answer.
     delay: Mutex<Option<Duration>>,
+    /// Files made by a test, served under `/extra/`.
+    extra: Mutex<Option<PathBuf>>,
+    /// The `Range` headers asked for, by path.
+    ranges: Mutex<Vec<(String, String)>>,
+    /// When each path was first asked for.
+    first: Mutex<HashMap<String, Instant>>,
 }
 
 impl Shared {
@@ -63,9 +70,26 @@ fn content_type(path: &str) -> &'static str {
     }
 }
 
-async fn serve(State(shared): State<Arc<Shared>>, AxPath(path): AxPath<String>) -> Response {
+async fn serve(
+    State(shared): State<Arc<Shared>>,
+    AxPath(path): AxPath<String>,
+    headers: axum::http::HeaderMap,
+) -> Response {
     let key = format!("/{path}");
     *shared.hits.lock().unwrap().entry(key.clone()).or_default() += 1;
+    shared
+        .first
+        .lock()
+        .unwrap()
+        .entry(key.clone())
+        .or_insert_with(Instant::now);
+    let range = headers
+        .get(header::RANGE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    if let Some(r) = &range {
+        shared.ranges.lock().unwrap().push((key.clone(), r.clone()));
+    }
     if let Some(rest) = path.strip_prefix("redir/") {
         // A redirect to the same path without the prefix (relative references then resolve
         // against where it led).
@@ -106,8 +130,32 @@ async fn serve(State(shared): State<Arc<Shared>>, AxPath(path): AxPath<String>) 
             }
         }
     }
-    match tokio::fs::read(fixtures().join(&path)).await {
+    let file = match (
+        path.strip_prefix("extra/"),
+        shared.extra.lock().unwrap().clone(),
+    ) {
+        (Some(rest), Some(dir)) => dir.join(rest),
+        _ => fixtures().join(&path),
+    };
+    match tokio::fs::read(file).await {
         Ok(bytes) => {
+            if let Some((a, b)) = range.as_deref().and_then(parse_range) {
+                let len = bytes.len() as u64;
+                if a >= len {
+                    return Response::builder()
+                        .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                        .header(header::CONTENT_RANGE, format!("bytes */{len}"))
+                        .body(Body::empty())
+                        .unwrap_or_default();
+                }
+                let b = b.unwrap_or(len - 1).min(len - 1);
+                return Response::builder()
+                    .status(StatusCode::PARTIAL_CONTENT)
+                    .header(header::CONTENT_TYPE, content_type(&path))
+                    .header(header::CONTENT_RANGE, format!("bytes {a}-{b}/{len}"))
+                    .body(Body::from(bytes[a as usize..=b as usize].to_vec()))
+                    .unwrap_or_default();
+            }
             let mut resp = Response::new(Body::from(bytes));
             resp.headers_mut().insert(
                 header::CONTENT_TYPE,
@@ -120,6 +168,12 @@ async fn serve(State(shared): State<Arc<Shared>>, AxPath(path): AxPath<String>) 
             .body(Body::empty())
             .unwrap_or_default(),
     }
+}
+
+/// `bytes=a-b` or `bytes=a-`.
+fn parse_range(r: &str) -> Option<(u64, Option<u64>)> {
+    let (a, b) = r.strip_prefix("bytes=")?.split_once('-')?;
+    Some((a.parse().ok()?, b.parse().ok()))
 }
 
 async fn spawn_server() -> (SocketAddr, Arc<Shared>) {
@@ -280,7 +334,7 @@ fn duration_of(ff: &Path, file: &Path) -> f64 {
 }
 
 async fn probe(e: &Engine, u: &str) -> MediaProbe {
-    e.probe_media(u, &RequestMeta::default())
+    e.probe_media(u, &RequestMeta::default(), None)
         .await
         .expect("probe")
 }
@@ -1216,5 +1270,209 @@ async fn skip_leaves_an_existing_file_alone() {
         b"mine"
     );
     assert_eq!(s.hits("/aes/seg0.ts"), 0, "nothing was downloaded");
+    e.shutdown().await;
+}
+
+// ------------------------------------------------------------------ streams the page gave
+
+/// Whole MP4 files like YouTube's (video and audio apart), made from the DASH fixtures, and
+/// a WebVTT file, in `dir`.
+fn whole_files(dir: &Path) {
+    let d = fixtures().join("dash");
+    for (out, init, n) in [
+        ("video.mp4", "init-0.m4s", 3),
+        ("audio.mp4", "init-1.m4s", 4),
+    ] {
+        let mut b = std::fs::read(d.join(init)).expect("init");
+        for i in 1..=n {
+            b.extend(
+                std::fs::read(d.join(format!("chunk-{}-{i:05}.m4s", &init[5..6]))).expect("chunk"),
+            );
+        }
+        std::fs::write(dir.join(out), b).expect("write");
+    }
+    std::fs::write(
+        dir.join("en.vtt"),
+        "WEBVTT\n\n00:00:00.500 --> 00:00:02.000\nHello\n\n00:00:03.000 --> 00:00:04.000\nAgain\n",
+    )
+    .expect("vtt");
+}
+
+/// What the YouTube recogniser hands over: an MPD it wrote, with whole files in ranges.
+fn page_hint(addr: SocketAddr) -> SourceHint {
+    let mpd = format!(
+        r#"<?xml version="1.0"?><MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration="PT6S"><Period><AdaptationSet mimeType="video/mp4"><Representation id="137" codecs="avc1.64001f" bandwidth="200000" width="320" height="240"><BaseURL>http://{addr}/extra/video.mp4?expire=1&amp;n=solved</BaseURL><SegmentBase indexRange="0-0"><Initialization range="0-0"/></SegmentBase></Representation></AdaptationSet><AdaptationSet mimeType="audio/mp4" lang="en"><Representation id="140" codecs="mp4a.40.2" bandwidth="64000"><BaseURL>http://{addr}/extra/audio.mp4?expire=1</BaseURL><SegmentBase indexRange="0-0"/></Representation></AdaptationSet></Period></MPD>"#
+    );
+    SourceHint {
+        site: Some("youtube".into()),
+        title: Some("A video from the page".into()),
+        manifest: Some(InlineManifest {
+            kind: "dash".into(),
+            body: mpd,
+            base_url: format!("http://{addr}/watch?v=x"),
+        }),
+        subtitles: vec![HintSubtitle {
+            url: format!("http://{addr}/extra/en.vtt?lang=en"),
+            lang: Some("en".into()),
+            label: Some("English".into()),
+        }],
+        chunk_bytes: Some(16 << 10),
+        not_before_ms: None,
+    }
+}
+
+#[tokio::test]
+async fn a_stream_the_page_gave_as_text_is_downloaded_in_ranges() {
+    let ff = need_ffmpeg!();
+    let (addr, s) = spawn_server().await;
+    let t = dir();
+    whole_files(t.path());
+    *s.extra.lock().unwrap() = Some(t.path().to_path_buf());
+    let e = engine(t.path(), &ff).await;
+    let page = url(addr, "watch?v=x");
+    let hint = page_hint(addr);
+
+    let p = e
+        .probe_media(&page, &RequestMeta::default(), Some(&hint))
+        .await
+        .expect("probe");
+    assert_eq!(p.kind, MediaKind::Dash);
+    assert_eq!(p.title.as_deref(), Some("A video from the page"));
+    assert_eq!(p.subtitles.len(), 1, "the page's subtitles are offered");
+    let mut sel = p.default.clone();
+    sel.subtitles = vec![p.subtitles[0].id.clone()];
+    let id = e
+        .add_media(NewMediaDownload {
+            url: page.clone(),
+            hint: Some(hint),
+            selection: Some(sel),
+            container: Some(ContainerChoice::Mkv),
+            subtitles: Some(SubtitleMode::Embed),
+            ..Default::default()
+        })
+        .await
+        .expect("add");
+    let d = wait_done(&e, id).await;
+    assert_eq!(d.status, Status::Completed, "{:?}", d.error);
+    assert_eq!(d.filename.as_deref(), Some("A video from the page.mkv"));
+    assert_eq!(s.hits("/watch"), 0, "the page itself is never fetched");
+    let kinds: Vec<String> = streams(&ff, &output_of(&d))
+        .into_iter()
+        .map(|s| s.0)
+        .collect();
+    assert_eq!(kinds, ["video", "audio", "subtitle"]);
+    // The audio file is the larger one here (about 50 kB): several ranges.
+    let audio_len = std::fs::metadata(t.path().join("audio.mp4"))
+        .expect("len")
+        .len();
+    let ranges: Vec<String> = s
+        .ranges
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(p, _)| p == "/extra/audio.mp4")
+        .map(|(_, r)| r.clone())
+        .collect();
+    assert_eq!(
+        ranges.len() as u64,
+        audio_len.div_ceil(16 << 10),
+        "{ranges:?}"
+    );
+    assert!(ranges.len() >= 3, "{ranges:?}");
+    assert_eq!(ranges[0], "bytes=0-16383");
+    assert_eq!(ranges[1], "bytes=16384-32767");
+    e.shutdown().await;
+}
+
+#[tokio::test]
+async fn expired_links_from_the_page_say_so() {
+    let (addr, s) = spawn_server().await;
+    let t = dir();
+    whole_files(t.path());
+    *s.extra.lock().unwrap() = Some(t.path().to_path_buf());
+    s.faults
+        .lock()
+        .unwrap()
+        .insert("/extra/audio.mp4".into(), (99, Fault::Forbidden));
+    let e = engine_plain(t.path()).await;
+    let page = url(addr, "watch?v=x");
+    let hint = page_hint(addr);
+    let p = e
+        .probe_media(&page, &RequestMeta::default(), Some(&hint))
+        .await
+        .expect("probe");
+    // The audio alone, as it was (no FFmpeg needed).
+    let sel = Selection {
+        video: None,
+        audio: p.default.audio.clone(),
+        subtitles: Vec::new(),
+    };
+    let id = e
+        .add_media(NewMediaDownload {
+            url: page,
+            hint: Some(hint),
+            selection: Some(sel),
+            container: Some(ContainerChoice::Original),
+            ..Default::default()
+        })
+        .await
+        .expect("add");
+    let d = wait_done(&e, id).await;
+    assert_eq!(d.status, Status::Failed);
+    assert_eq!(
+        d.error.as_deref(),
+        Some(MediaError::LinksExpired.to_string().as_str())
+    );
+    assert_eq!(
+        s.hits("/extra/audio.mp4"),
+        1,
+        "an expired link isn't asked again"
+    );
+    e.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_download_waits_until_the_site_allows_it() {
+    let (addr, s) = spawn_server().await;
+    let t = dir();
+    whole_files(t.path());
+    *s.extra.lock().unwrap() = Some(t.path().to_path_buf());
+    let e = engine_plain(t.path()).await;
+    let page = url(addr, "watch?v=x");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("time")
+        .as_millis() as u64;
+    let hint = SourceHint {
+        not_before_ms: Some(now + 1500),
+        ..page_hint(addr)
+    };
+    let p = e
+        .probe_media(&page, &RequestMeta::default(), Some(&hint))
+        .await
+        .expect("probe");
+    let start = Instant::now();
+    let id = e
+        .add_media(NewMediaDownload {
+            url: page,
+            hint: Some(hint),
+            selection: Some(Selection {
+                video: None,
+                audio: p.default.audio.clone(),
+                subtitles: Vec::new(),
+            }),
+            container: Some(ContainerChoice::Original),
+            ..Default::default()
+        })
+        .await
+        .expect("add");
+    let d = wait_done(&e, id).await;
+    assert_eq!(d.status, Status::Completed, "{:?}", d.error);
+    let first = s.first.lock().unwrap()["/extra/audio.mp4"];
+    assert!(
+        first.duration_since(start) >= Duration::from_millis(1300),
+        "fetched after {:?}",
+        first.duration_since(start)
+    );
     e.shutdown().await;
 }

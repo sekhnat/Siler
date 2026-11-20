@@ -11,7 +11,7 @@ use tokio::sync::broadcast;
 use crate::error::MediaError;
 use crate::http::{Http, Limiters};
 use crate::media::{
-    self, FfmpegStatus, JobKind, MediaInfo, MediaProbe, MediaRecord, NewMediaDownload,
+    self, FfmpegStatus, JobKind, MediaInfo, MediaProbe, MediaRecord, NewMediaDownload, SourceHint,
 };
 use crate::net::{Login, Net, host_key};
 use crate::probe::{self, ProbeResult};
@@ -771,7 +771,7 @@ impl Engine {
         if is_media {
             // A stream is checked when it runs: the same tracks must be offered, and the
             // fingerprint tells whether the finished pieces still belong to it.
-            let probe = self.probe_media(url.as_str(), &meta).await?;
+            let probe = self.probe_media(url.as_str(), &meta, None).await?;
             if !matches!(probe.kind, media::MediaKind::Hls | media::MediaKind::Dash) {
                 return Err(Error::LinkMismatch(
                     probe
@@ -784,6 +784,10 @@ impl Engine {
             let rec = st.records.get_mut(&id).ok_or(Error::NotFound)?;
             rec.url = url.to_string();
             rec.meta = meta;
+            // The new link is read from now on, not a manifest the page gave as text.
+            if let Some(h) = rec.media.as_mut().and_then(|m| m.hint.as_mut()) {
+                h.manifest = None;
+            }
             rec.error = None;
             rec.notice = Some("The download link was updated.".into());
             rec.status = Status::Queued;
@@ -1090,8 +1094,15 @@ impl Engine {
 
     /// Looks at a link before anything is downloaded: a plain file, a page, or a stream with
     /// the video, audio and subtitles it offers.
-    pub async fn probe_media(&self, url: &str, meta: &RequestMeta) -> Result<MediaProbe> {
+    pub async fn probe_media(
+        &self,
+        url: &str,
+        meta: &RequestMeta,
+        hint: Option<&SourceHint>,
+    ) -> Result<MediaProbe> {
         let s = self.settings();
+        let lim = ParseLimits::default();
+        let hint = hint.cloned().map(|h| h.checked(&lim)).transpose()?;
         let url = probe::parse_url(&self.inner.strip_login(url)?)?;
         let run_limit = RateLimiter::new(0);
         let io = Limiters {
@@ -1106,7 +1117,7 @@ impl Engine {
             &s.user_agent,
             s.allow_private_media_addresses,
         );
-        let src = media::source(&http, &url, &ParseLimits::default(), &io).await?;
+        let src = media::resolve(&http, &url, hint.as_ref(), &lim, &io).await?;
         Ok(media::probe_view(
             src,
             &media::preferences(&s),
@@ -1118,6 +1129,8 @@ impl Engine {
     /// subtitle tracks, in the chosen container. The stream is read again at every attempt.
     pub async fn add_media(&self, nd: NewMediaDownload) -> Result<i64> {
         let s = self.settings();
+        let lim = ParseLimits::default();
+        let hint = nd.hint.clone().map(|h| h.checked(&lim)).transpose()?;
         let url = probe::parse_url(&self.inner.strip_login(&nd.url)?)?;
         if nd.meta.body.as_ref().is_some_and(|b| b.len() > MAX_BODY) {
             return Err(Error::Protocol(
@@ -1137,7 +1150,7 @@ impl Engine {
             &s.user_agent,
             s.allow_private_media_addresses,
         );
-        let src = media::source(&http, &url, &ParseLimits::default(), &io).await?;
+        let src = media::resolve(&http, &url, hint.as_ref(), &lim, &io).await?;
         let final_url = src.final_url.clone();
         let pres = media::presentation_or_error(src)?;
         let selection = nd
@@ -1190,6 +1203,7 @@ impl Engine {
                 .collect(),
             fingerprint: None,
             sidecars: Vec::new(),
+            hint,
         };
         let mut st = self.inner.state();
         // Two unfinished media downloads never share a name, so never a Work Directory. An

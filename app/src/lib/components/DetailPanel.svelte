@@ -35,6 +35,8 @@
   /** What a media download is doing now, in words. */
   function mediaPhase(m: NonNullable<Download["media_progress"]>): string {
     switch (m.phase) {
+      case "waiting":
+        return "Waiting for the site to allow the download";
       case "resolving":
         return "Reading the stream";
       case "downloading":

@@ -1,0 +1,60 @@
+{
+ "request": {
+  "files": {
+   "hls": {
+    "default_cdn": "akfire_interconnect_quic",
+    "cdns": {
+     "akfire_interconnect_quic": {
+      "url": "https://vod-adaptive-ak.vimeocdn.com/exp=X~acl=X~hmac=X/ccfaa6de-0af0-44cb-a61a-8ecebadb6ad1/psid=X/v2/playlist/drm/cbcs,derivedv2,ccfaa6de-0af0-44cb-a61a-8ecebadb6ad1,ed7ebc7c3bb14eeb8770374ffbd7512b/av/primary/sub/170-de,171-es,140662-en,4678937-fr/playlist.m3u8?ext-subs=1&locale=en&omit=opus&pathsig=X&pssh=0&r=X&rh=4Dvbcs&sf=fmp4"
+     },
+     "fastly_skyfire": {
+      "url": "https://skyfire.vimeocdn.com/1795209525-0xff5cd899a3358f5a4243ef6c7d7d491368d3ed67/ccfaa6de-0af0-44cb-a61a-8ecebadb6ad1/psid=X/v2/playlist/drm/cbcs,derivedv2,ccfaa6de-0af0-44cb-a61a-8ecebadb6ad1,ed7ebc7c3bb14eeb8770374ffbd7512b/av/primary/sub/170-de,171-es,140662-en,4678937-fr/playlist.m3u8?ext-subs=1&locale=en&omit=opus&pathsig=X&pssh=0&r=X&rh=4Dvbcs&sf=fmp4"
+     }
+    }
+   },
+   "dash": {
+    "default_cdn": "akfire_interconnect_quic",
+    "cdns": {
+     "akfire_interconnect_quic": {
+      "url": "https://vod-adaptive-ak.vimeocdn.com/exp=X~acl=X~hmac=X/ccfaa6de-0af0-44cb-a61a-8ecebadb6ad1/psid=X/v2/playlist/drm/cenc,derivedv2,ccfaa6de-0af0-44cb-a61a-8ecebadb6ad1,ed7ebc7c3bb14eeb8770374ffbd7512b/av/primary/sub/170-de,171-es,140662-en,4678937-fr/playlist.mpd?locale=en&omit=opus&pathsig=X&pssh=0&r=X&rh=4Dvbcs"
+     },
+     "fastly_skyfire": {
+      "url": "https://skyfire.vimeocdn.com/1795209525-0xff5cd899a3358f5a4243ef6c7d7d491368d3ed67/ccfaa6de-0af0-44cb-a61a-8ecebadb6ad1/psid=X/v2/playlist/drm/cenc,derivedv2,ccfaa6de-0af0-44cb-a61a-8ecebadb6ad1,ed7ebc7c3bb14eeb8770374ffbd7512b/av/primary/sub/170-de,171-es,140662-en,4678937-fr/playlist.mpd?locale=en&omit=opus&pathsig=X&pssh=0&r=X&rh=4Dvbcs"
+     }
+    }
+   }
+  },
+  "text_tracks": [
+   {
+    "lang": "de",
+    "label": "Deutsch",
+    "url": "https://captions.vimeo.com/captions/170.vtt?expires=X&sig=X",
+    "kind": "subtitles"
+   },
+   {
+    "lang": "es",
+    "label": "Espa\u00f1ol",
+    "url": "https://captions.vimeo.com/captions/171.vtt?expires=X&sig=X",
+    "kind": "subtitles"
+   },
+   {
+    "lang": "en",
+    "label": "English",
+    "url": "https://captions.vimeo.com/captions/140662.vtt?expires=X&sig=X",
+    "kind": "subtitles"
+   },
+   {
+    "lang": "fr",
+    "label": "Fran\u00e7ais",
+    "url": "https://captions.vimeo.com/captions/4678937.vtt?expires=X&sig=X",
+    "kind": "subtitles"
+   }
+  ]
+ },
+ "video": {
+  "id": 76979871,
+  "title": "The New Vimeo Player (You Know, For Videos)",
+  "duration": 62,
+  "url": "https://vimeo.com/76979871"
+ }
+}

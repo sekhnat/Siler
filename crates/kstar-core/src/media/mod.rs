@@ -22,7 +22,7 @@ use crate::{Error, OnConflict, Result};
 
 pub use ffmpeg::FfmpegStatus;
 pub(crate) use ffmpeg::probe as probe_ffmpeg;
-pub(crate) use probe::source;
+pub(crate) use probe::resolve;
 pub(crate) use run::drive;
 
 /// What a download is made of.
@@ -49,8 +49,9 @@ impl JobKind {
     }
 }
 
-/// The stored details of a media download. Never holds URLs, cookies or keys: the manifest
-/// URL is the download's `url`, and the rest is re-read at every attempt.
+/// The stored details of a media download. Holds no cookies or keys: the manifest URL is the
+/// download's `url`, and the rest is re-read at every attempt. A manifest the page gave as
+/// text (in `hint`) can't be read again, so it is kept.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct MediaRecord {
     pub manifest: ManifestKind,
@@ -67,6 +68,105 @@ pub(crate) struct MediaRecord {
     pub fingerprint: Option<String>,
     /// Subtitle files written beside the output.
     pub sidecars: Vec<String>,
+    /// What the browser extension said about the video, when it came from there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<SourceHint>,
+}
+
+/// What the browser extension found out about a video on a page: things the app can't see
+/// from the URL alone. The same shape as the extension's `media` hint (kstar-ipc).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SourceHint {
+    /// The recogniser that found it (`youtube`, `vimeo`, …).
+    pub site: Option<String>,
+    pub title: Option<String>,
+    /// A manifest the page gave as text instead of a URL.
+    pub manifest: Option<InlineManifest>,
+    /// Whole WebVTT files to offer as subtitle tracks.
+    pub subtitles: Vec<HintSubtitle>,
+    /// Fetch whole-file tracks in ranges of at most this many bytes.
+    pub chunk_bytes: Option<u64>,
+    /// Don't fetch anything before this time (ms since the epoch).
+    pub not_before_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InlineManifest {
+    /// `hls` or `dash`.
+    pub kind: String,
+    pub body: String,
+    /// The address relative URLs in the body are resolved against.
+    pub base_url: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HintSubtitle {
+    pub url: String,
+    pub lang: Option<String>,
+    pub label: Option<String>,
+}
+
+/// At most this many subtitle files are taken from a hint.
+const MAX_HINT_SUBTITLES: usize = 64;
+/// Ranged fetching stays within these bounds, whatever a hint asks for.
+const MIN_CHUNK: u64 = 16 << 10;
+const MAX_CHUNK: u64 = 256 << 20;
+/// A start delay further away than this is ignored.
+const MAX_WAIT_MS: u64 = 10 * 60 * 1000;
+
+impl SourceHint {
+    /// Checks a hint from the browser and drops what can't be used: it is untrusted input,
+    /// like a pasted URL.
+    pub(crate) fn checked(mut self, lim: &kstar_media::ParseLimits) -> Result<SourceHint> {
+        if let Some(m) = &self.manifest {
+            if !matches!(m.kind.as_str(), "hls" | "dash") {
+                return Err(Error::Media(MediaError::Unsupported(format!(
+                    "a manifest of kind “{}”",
+                    m.kind
+                ))));
+            }
+            if m.body.len() > lim.max_manifest_bytes {
+                return Err(Error::Media(MediaError::BodyTooLarge(
+                    lim.max_manifest_bytes as u64,
+                )));
+            }
+            let base = Url::parse(&m.base_url).map_err(|e| Error::InvalidUrl(e.to_string()))?;
+            if !matches!(base.scheme(), "http" | "https") {
+                return Err(Error::InvalidUrl(
+                    "only http and https pages are accepted".into(),
+                ));
+            }
+        }
+        self.subtitles
+            .retain(|s| Url::parse(&s.url).is_ok_and(|u| matches!(u.scheme(), "http" | "https")));
+        self.subtitles.truncate(MAX_HINT_SUBTITLES);
+        self.chunk_bytes = self.chunk_bytes.map(|c| c.clamp(MIN_CHUNK, MAX_CHUNK));
+        let now = crate::manager::now_ms() as u64;
+        self.not_before_ms = self
+            .not_before_ms
+            .filter(|t| *t > now && *t - now <= MAX_WAIT_MS);
+        self.title = self
+            .title
+            .map(|t| t.trim().chars().take(300).collect::<String>())
+            .filter(|t| !t.is_empty());
+        Ok(self)
+    }
+
+    /// The subtitle files as the presentation takes them.
+    pub(crate) fn subtitle_files(&self) -> Vec<kstar_media::SubtitleFile> {
+        self.subtitles
+            .iter()
+            .filter_map(|s| {
+                Some(kstar_media::SubtitleFile {
+                    url: Url::parse(&s.url).ok()?,
+                    lang: s.lang.clone(),
+                    label: s.label.clone(),
+                })
+            })
+            .collect()
+    }
 }
 
 /// The media details shown in the list and the detail panel.
@@ -83,7 +183,7 @@ pub struct MediaInfo {
 /// Where a media download is, for its progress line.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct MediaProgress {
-    /// `resolving`, `downloading`, `rebuilding` or `publishing`.
+    /// `waiting`, `resolving`, `downloading`, `rebuilding` or `publishing`.
     pub phase: &'static str,
     pub segments_done: u64,
     pub segments_total: u64,
@@ -179,6 +279,8 @@ pub struct NewMediaDownload {
     pub start_paused: bool,
     pub on_conflict: Option<OnConflict>,
     pub queue_id: Option<i64>,
+    /// What the browser extension found out about the video.
+    pub hint: Option<SourceHint>,
 }
 
 /// A track's view for the UI.
@@ -198,13 +300,19 @@ fn track_view(t: &Track) -> TrackView {
     }
 }
 
-/// A short human label for a track: "1280×720 · 3.0 Mb/s", "English · 5.1", "Deutsch".
+/// A short human label for a track: "1280×720 · H.264 · 3.0 Mb/s", "English · 5.1 · AAC",
+/// "Deutsch". The codec tells apart choices that are otherwise alike (YouTube offers each
+/// size as H.264, VP9 and AV1).
 pub(crate) fn describe(t: &Track) -> String {
     let mut parts: Vec<String> = Vec::new();
+    let codec = t.codecs.as_deref().and_then(|c| codec_name(c, t.kind));
     match t.kind {
         TrackKind::Video => {
             if let Some((w, h)) = t.resolution {
                 parts.push(format!("{w}×{h}"));
+            }
+            if let Some(c) = codec {
+                parts.push(c.into());
             }
             if let Some(bw) = t.bandwidth {
                 parts.push(format!("{:.1} Mb/s", bw as f64 / 1e6));
@@ -234,9 +342,51 @@ pub(crate) fn describe(t: &Track) -> String {
                     n => format!("{n} channels"),
                 });
             }
+            if t.kind == TrackKind::Audio {
+                if let Some(c) = codec {
+                    parts.push(c.into());
+                }
+                // A bandwidth of 1 marks "not stated" (a bare HLS playlist).
+                if let Some(bw) = t.bandwidth.filter(|b| *b > 1) {
+                    parts.push(format!("{} kb/s", (bw as f64 / 1000.0).round()));
+                }
+            }
         }
     }
     parts.join(" · ")
+}
+
+/// The everyday name of a track's codec, from an RFC 6381 `codecs` list ("avc1.640028,
+/// mp4a.40.2"): the first one of the track's kind.
+fn codec_name(codecs: &str, kind: TrackKind) -> Option<&'static str> {
+    codecs.split(',').find_map(|c| {
+        let c = c.trim().to_ascii_lowercase();
+        let family = c.split('.').next().unwrap_or("");
+        let video = match family {
+            "avc1" | "avc3" => Some("H.264"),
+            "hvc1" | "hev1" => Some("HEVC"),
+            "vp09" | "vp9" => Some("VP9"),
+            "vp08" | "vp8" => Some("VP8"),
+            "av01" => Some("AV1"),
+            _ => None,
+        };
+        let audio = match family {
+            "mp4a" if c == "mp4a.40.34" || c == "mp4a.6b" => Some("MP3"),
+            "mp4a" => Some("AAC"),
+            "opus" => Some("Opus"),
+            "vorbis" => Some("Vorbis"),
+            "flac" | "fla" => Some("FLAC"),
+            "ac-3" => Some("Dolby Digital"),
+            "ec-3" => Some("Dolby Digital Plus"),
+            "mp3" => Some("MP3"),
+            _ => None,
+        };
+        match kind {
+            TrackKind::Video => video,
+            TrackKind::Audio => audio,
+            TrackKind::Subtitle => None,
+        }
+    })
 }
 
 /// A few common language codes spelled out; anything else is shown as given.
@@ -392,10 +542,12 @@ const GENERIC: &[&str] = &[
 /// A name for the output when the user gave none: the stream's title, else its URL's name,
 /// else the host. The extension is added and the whole name is sanitised by the caller.
 pub(crate) fn default_name(title: Option<&str>, url: &Url) -> String {
+    // A title is a name, not a path: its slashes become "⧸" (as yt-dlp writes them), so
+    // "http://cnn.it/x | CNN" isn't cut down to "x | CNN" by the sanitiser.
     let title = title
         .map(str::trim)
         .filter(|t| !t.is_empty())
-        .map(str::to_string);
+        .map(|t| t.replace(['/', '\\'], "⧸"));
     title
         .or_else(|| name_from_path(url))
         .unwrap_or_else(|| format!("{} video", url.host_str().unwrap_or("media")))
@@ -491,6 +643,79 @@ mod tests {
             default_name(None, &u("https://cdn.example/")),
             "cdn.example video"
         );
+        assert_eq!(
+            default_name(
+                Some("Vote http://cnn.it/2eERh5f | CNN"),
+                &u("https://x/a.mpd")
+            ),
+            "Vote http:⧸⧸cnn.it⧸2eERh5f | CNN"
+        );
+    }
+
+    #[test]
+    fn labels_name_the_codec_so_alike_choices_differ() {
+        let t = |kind, codecs: &str, res, bw, lang: Option<&str>, ch| Track {
+            id: TrackId::of(&[codecs]),
+            kind,
+            lang: lang.map(str::to_string),
+            name: None,
+            codecs: Some(codecs.into()),
+            container: SegmentContainer::Fmp4,
+            bandwidth: bw,
+            resolution: res,
+            channels: ch,
+            is_default: false,
+            protection: kstar_media::Protection::Clear,
+            plan: Default::default(),
+        };
+        assert_eq!(
+            describe(&t(
+                TrackKind::Video,
+                "avc1.640028,mp4a.40.2",
+                Some((1920, 1080)),
+                Some(3_000_000),
+                None,
+                None
+            )),
+            "1920×1080 · H.264 · 3.0 Mb/s"
+        );
+        assert_eq!(
+            describe(&t(
+                TrackKind::Video,
+                "av01.0.08M.08",
+                Some((1920, 1080)),
+                Some(2_000_000),
+                None,
+                None
+            )),
+            "1920×1080 · AV1 · 2.0 Mb/s"
+        );
+        assert_eq!(
+            describe(&t(
+                TrackKind::Audio,
+                "opus",
+                None,
+                Some(129_000),
+                Some("en"),
+                Some(2)
+            )),
+            "English · stereo · Opus · 129 kb/s"
+        );
+        assert_eq!(
+            describe(&t(TrackKind::Audio, "mp4a.40.2", None, Some(1), None, None)),
+            "Audio · AAC"
+        );
+        assert_eq!(
+            describe(&t(
+                TrackKind::Subtitle,
+                "wvtt",
+                None,
+                None,
+                Some("de"),
+                None
+            )),
+            "Deutsch"
+        );
     }
 
     #[test]
@@ -508,6 +733,52 @@ mod tests {
             workdir(Path::new("/d"), "a.mkv"),
             PathBuf::from("/d/.a.mkv.kstar.media")
         );
+    }
+
+    #[test]
+    fn hints_from_the_browser_are_checked() {
+        let lim = kstar_media::ParseLimits::default();
+        let now = crate::manager::now_ms() as u64;
+        let dash = |kind: &str, base: &str| InlineManifest {
+            kind: kind.into(),
+            body: "<MPD/>".into(),
+            base_url: base.into(),
+        };
+        let h = SourceHint {
+            title: Some("  ".into()),
+            manifest: Some(dash("dash", "https://www.youtube.com/watch?v=x")),
+            subtitles: vec![
+                HintSubtitle {
+                    url: "file:///etc/passwd".into(),
+                    ..Default::default()
+                },
+                HintSubtitle {
+                    url: "https://x/a.vtt".into(),
+                    ..Default::default()
+                },
+            ],
+            chunk_bytes: Some(1),
+            not_before_ms: Some(now + 3_600_000),
+            ..Default::default()
+        }
+        .checked(&lim)
+        .expect("accepted");
+        assert_eq!(h.title, None);
+        assert_eq!(h.subtitles.len(), 1, "only http(s) subtitles");
+        assert_eq!(h.chunk_bytes, Some(MIN_CHUNK));
+        assert_eq!(h.not_before_ms, None, "an hour's wait is ignored");
+        let soon = SourceHint {
+            not_before_ms: Some(now + 5_000),
+            ..Default::default()
+        };
+        assert!(soon.checked(&lim).expect("ok").not_before_ms.is_some());
+        for bad in [dash("smil", "https://x/"), dash("dash", "file:///x")] {
+            let h = SourceHint {
+                manifest: Some(bad),
+                ..Default::default()
+            };
+            assert!(h.checked(&lim).is_err());
+        }
     }
 
     #[test]

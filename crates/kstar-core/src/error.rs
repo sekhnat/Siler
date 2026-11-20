@@ -88,6 +88,10 @@ pub enum MediaError {
     UrlForbidden(String),
     #[error("There isn't enough free disk space for this stream.")]
     DiskSpace,
+    #[error(
+        "The links from the page have expired. Open the page in Firefox and send the video to K-Star again."
+    )]
+    LinksExpired,
 }
 
 fn auth_message(host: &str, rejected: bool) -> String {

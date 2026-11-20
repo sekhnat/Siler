@@ -46,7 +46,8 @@ pub enum SubtitleMode {
 /// What the user prefers, from Settings.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Preferences {
-    /// Highest video height; 0 for no limit.
+    /// Highest video quality, as a height (360, 720, 1080…); 0 for no limit. Portrait
+    /// videos are measured by their shorter side, so a 720×1280 phone video counts as 720p.
     pub max_height: u32,
     pub audio_language: Option<String>,
     pub subtitle_language: Option<String>,
@@ -125,7 +126,12 @@ pub fn default_selection(p: &Presentation, prefs: &Preferences) -> Selection {
     }
 }
 
-/// The highest-bandwidth variant within the height limit; without one that fits, the
+/// A video's quality as people name it ("720p"): the shorter side of its picture.
+fn quality(v: &Variant) -> Option<u32> {
+    v.video.resolution.map(|(w, h)| w.min(h))
+}
+
+/// The highest-bandwidth variant within the quality limit; without one that fits, the
 /// lowest one.
 fn pick_variant(
     p: &Presentation,
@@ -136,7 +142,7 @@ fn pick_variant(
     let fits: Vec<&Variant> = candidates
         .iter()
         .copied()
-        .filter(|v| max_height == 0 || v.video.resolution.is_none_or(|(_, h)| h <= max_height))
+        .filter(|v| max_height == 0 || quality(v).is_none_or(|q| q <= max_height))
         .collect();
     if !fits.is_empty() {
         fits.iter()
@@ -145,7 +151,7 @@ fn pick_variant(
     } else {
         candidates
             .iter()
-            .min_by_key(|v| v.video.resolution.map(|(_, h)| h).unwrap_or(u32::MAX))
+            .min_by_key(|v| quality(v).unwrap_or(u32::MAX))
             .copied()
     }
 }
@@ -532,6 +538,23 @@ mod tests {
             },
         );
         assert_eq!(tiny.video, Some(TrackId::of(&["lo"])));
+    }
+
+    #[test]
+    fn portrait_videos_are_measured_by_their_shorter_side() {
+        let mut p = presentation();
+        // The same ladder turned upright, like a phone video.
+        for v in &mut p.variants {
+            v.video.resolution = v.video.resolution.map(|(w, h)| (h, w));
+        }
+        let capped = default_selection(
+            &p,
+            &Preferences {
+                max_height: 720,
+                ..Default::default()
+            },
+        );
+        assert_eq!(capped.video, Some(TrackId::of(&["mid"])));
     }
 
     #[test]

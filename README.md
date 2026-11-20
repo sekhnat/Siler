@@ -28,7 +28,8 @@ A Linux-first download manager with a Firefox extension. The long-term target is
 - A Firefox extension (also LibreWolf, Waterfox, Floorp, Zen). It captures downloads, form (POST) downloads included, with their cookies and referrer, and:
   - says why when a download stays in Firefox;
   - has a per-site switch;
-  - lets you review "Download all links" in K-Star.
+  - lets you review "Download all links" in K-Star;
+  - finds the videos pages play (HLS, DASH and plain files) and hands them to K-Star from a Download button over the video, the toolbar popup or the right-click menu, with recognisers for YouTube, Vimeo, Facebook, Instagram and TikTok.
 
 ## Architecture
 
@@ -122,7 +123,22 @@ How capture works:
 - **Versions:** the extension and the app exchange a protocol version. If either is out of date, the popup, the options page and K-Star's settings say which one to update.
 - **"Always ask where to save files":** if this Firefox setting is on, the hand-over happens after the save dialog.
 
+### Videos on web pages
+- **Finding them:** the extension watches what a page's player loads. HLS and DASH manifests (by address or content type) and whole video or audio files (512 KB and up; pieces of streams are skipped) are listed per tab, with their number on the toolbar button. An HLS master playlist is listed once, without the playlists it names.
+- **Download button:** pointing at a video (240×135 or larger) shows a **Download** button at its top right. It runs in the extension's own world, in a closed shadow root, so pages can't style or script it. The popup's "Videos on this page" list and the right-click menu's **Download this video with K-Star** do the same.
+- **Hand-over:** the video goes to K-Star's Add window with the page's cookies, referrer and user agent. A stream opens the quality, audio and subtitle picker; a file opens the usual form. The window says which site it came from.
+- **Site recognisers**, each switchable in the options (ported from yt-dlp's extractors, which read the same data):
+  - **YouTube:** the extension asks YouTube's player API from the page, as the clients yt-dlp uses by default without a PO token (`tv_samsung`, then `visionos`). It finishes the signed links with YouTube's own player code, run by yt-dlp's [ejs](https://github.com/yt-dlp/ejs) solver inside a blank frame of the page (`extension/media/youtube/vendor/`, copied unmodified by `scripts/vendor-extension-libs.sh`; see `SOURCES.md`). Before handing over, it checks that one link answers and falls back to the next client. K-Star receives a DASH manifest of every format (up to 4K, H.264/VP9/AV1, AAC/Opus) with captions as WebVTT. It fetches the files in 10 MiB ranges, as yt-dlp does, and waits out a pre-roll ad when YouTube asks for that.
+  - **Vimeo:** the player config's HLS stream, with its subtitle files. Videos whose owners turned on DRM are refused, like any DRM stream.
+  - **Facebook** and **Instagram:** the DASH manifest the page's data carries (read from its embedded JSON and its GraphQL answers), or the plain video file when there is none.
+  - **TikTok:** the best H.264 file of the video, with the page's cookies and referrer, which TikTok's servers require.
+- **Names:** videos are named by their title (slashes become "⧸", as yt-dlp writes them).
+- **Limits:** DRM-protected videos are refused. Live streams aren't recorded. Links from a page expire (YouTube's after a few hours): a download whose links expired says so, and the video has to be sent from the page again. Content that needs a login works only when you are logged in in Firefox. Sites change their players; recogniser fixes come with extension updates.
+- **Mozilla review:** the YouTube solver compiles YouTube's player script with `Function`. `web-ext lint` reports this as `DANGEROUS_EVAL`, a warning that doesn't stop unlisted signing.
+- **Tests:** `node --test extension/tests/` checks the request rules and each recogniser against recorded, scrubbed answers in `extension/tests/fixtures/`. The app's DASH parser reads the same YouTube manifest snapshot in its own tests.
+- **Protocol 2:** the extension 0.3.0 and K-Star 0.6.0 speak protocol 2, which adds these video details to a hand-over. An older app still takes plain downloads.
+
 ## Roadmap
-- **M2 (rest):** videos found by the Firefox extension, with YouTube and other sites (0.6). HLS and DASH downloads with a quality, audio and subtitle picker and a bundled FFmpeg are in 0.5.
+- **M2:** done in 0.6: videos found by the Firefox extension, with YouTube, Vimeo, Facebook, Instagram and TikTok. HLS and DASH downloads with a quality, audio and subtitle picker and a bundled FFmpeg came in 0.5.
 - **M3:** checksum verification, mirrors and multi-source downloads, import/export, site grabber.
 - **M4:** FTP/SFTP, a Chromium extension, Flatpak/AUR packaging (Flatpak Firefox needs another native-host path), autostart.

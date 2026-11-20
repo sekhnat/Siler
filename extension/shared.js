@@ -3,7 +3,7 @@
 
 const KSTAR_HOST = "com.kstar.nmhost";
 // Must match kstar_ipc::PROTOCOL in the app.
-const KSTAR_PROTOCOL = 1;
+const KSTAR_PROTOCOL = 2;
 
 const KSTAR_DEFAULTS = {
   enabled: true,
@@ -20,6 +20,16 @@ const KSTAR_DEFAULTS = {
   blocklist: "",
   // Show a notification when a download can't be handed to K-Star.
   notifyFailures: true,
+  // Look for videos on pages (listed in the popup, counted on the toolbar button).
+  findVideos: true,
+  // Show a Download button over videos on pages.
+  videoButton: true,
+  // Site recognisers, each on or off.
+  site_youtube: true,
+  site_vimeo: true,
+  site_facebook: true,
+  site_instagram: true,
+  site_tiktok: true,
 };
 
 async function kstarConfig() {

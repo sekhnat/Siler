@@ -34,7 +34,16 @@
   }
 
   const batch = $derived<BatchItem[]>(
-    items.map((p) => ({ key: p.id, url: p.url, filename: p.filename, size: p.size, selected: p.selected, pendingId: p.id, queueId: p.queue_id })),
+    items.map((p) => ({
+      key: p.id,
+      url: p.url,
+      filename: p.filename ?? p.title,
+      size: p.size,
+      selected: p.selected,
+      pendingId: p.id,
+      queueId: p.queue_id,
+      stream: p.stream,
+    })),
   );
 
   onMount(() => {

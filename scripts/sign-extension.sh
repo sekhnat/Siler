@@ -41,7 +41,8 @@ artifacts="$root/extension/web-ext-artifacts"
 echo "==> Signing K-Star Integration $version (unlisted)"
 # Credentials go through the environment, not the command line, so they don't show up in ps.
 WEB_EXT_API_KEY="$AMO_JWT_ISSUER" WEB_EXT_API_SECRET="$AMO_JWT_SECRET" \
-  npx --yes web-ext@10 sign --channel=unlisted --source-dir "$root/extension" --artifacts-dir "$artifacts"
+  npx --yes web-ext@10 sign --channel=unlisted --source-dir "$root/extension" --artifacts-dir "$artifacts" \
+    --ignore-files "tests/**"
 
 xpi="$(ls -t "$artifacts"/*.xpi | head -n 1)"
 dest="${XDG_DATA_HOME:-$HOME/.local/share}/kstar"

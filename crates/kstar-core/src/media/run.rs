@@ -28,7 +28,7 @@ use crate::ratelimit::RateLimiter;
 use crate::task::{Outcome, Running, retry_delay};
 use crate::{Error, Event, OnConflict, Result, Status, filename};
 
-use super::{MediaProgress, workdir};
+use super::{MediaProgress, SourceHint, workdir};
 
 /// Everything a piece download needs, shared by its tasks.
 struct Fetch {
@@ -39,6 +39,15 @@ struct Fetch {
     /// that need it meanwhile wait for that fetch instead of starting their own.
     keys: Mutex<HashMap<Url, Arc<OnceCell<Arc<AesKey>>>>>,
     max_key: u64,
+    /// What the browser said about the source (an inline manifest, ranged fetching).
+    hint: Option<SourceHint>,
+}
+
+impl Fetch {
+    /// The links come from a manifest the page gave as text, so they can't be refreshed.
+    fn fixed_links(&self) -> bool {
+        self.hint.as_ref().is_some_and(|h| h.manifest.is_some())
+    }
 }
 
 impl Fetch {
@@ -145,7 +154,11 @@ async fn fetch_job(c: Arc<Fetch>, job: Job) -> Result<()> {
     }
     let io = c.io();
     if job.whole {
-        let size = http::fetch_object(&c.http, &job.url, &job.dest, None, true, &io).await?;
+        let chunk = c.hint.as_ref().and_then(|h| h.chunk_bytes);
+        let size = match chunk {
+            Some(n) => http::fetch_whole_chunked(&c.http, &job.url, &job.dest, n, &io).await?,
+            None => http::fetch_object(&c.http, &job.url, &job.dest, None, true, &io).await?,
+        };
         let head = read_head(&job.dest).await?;
         if classify::looks_like_html(&head) {
             let _ = tokio::fs::remove_file(&job.dest).await;
@@ -333,7 +346,11 @@ async fn fetch_all(
                     Err(e) => {
                         let stale = matches!(e, Error::Http(401 | 403 | 404 | 410))
                             || matches!(e, Error::Media(MediaError::SegmentInvalid));
-                        if stale && refreshes < 3 {
+                        if c.fixed_links() && matches!(e, Error::Http(401 | 403 | 404 | 410)) {
+                            set.shutdown().await;
+                            return Err(Error::Media(MediaError::LinksExpired));
+                        }
+                        if stale && refreshes < 3 && !c.fixed_links() {
                             refreshes += 1;
                             tracing::info!("media {url}: refreshing the playlist ({refreshes} of 3)");
                             let fresh = refresh(c, url, lim).await?;
@@ -370,7 +387,7 @@ async fn fetch_all(
 /// Re-reads the manifest for fresh segment links.
 async fn refresh(c: &Fetch, url: &Url, lim: &ParseLimits) -> Result<Presentation> {
     let io = c.io_uncounted();
-    let src = probe::source(&c.http, url, lim, &io).await?;
+    let src = probe::resolve(&c.http, url, c.hint.as_ref(), lim, &io).await?;
     super::presentation_or_error(src)
 }
 
@@ -406,9 +423,10 @@ async fn build(
     // The subtitles follow the picture: zero where the video (or audio) starts, and no cue
     // past the end of the longest video or audio track.
     let main = resolved.video.or_else(|| resolved.audio.first().copied());
+    // Beside FFmpeg; a bare `ffmpeg` (found on PATH) has a bare `ffprobe` beside it.
     let ffprobe = ffmpeg
         .map(|f| f.with_file_name("ffprobe"))
-        .filter(|p| p.is_file());
+        .filter(|p| p.is_file() || p.components().count() == 1);
     let zero = match main {
         Some(t) if !resolved.subtitles.is_empty() => {
             reconstruct::start_time(work, t, ffprobe.as_deref()).await
@@ -609,13 +627,27 @@ pub(crate) async fn drive(inner: &Arc<Inner>, id: i64, run: &Arc<Running>) -> Re
         run: run.clone(),
         keys: Mutex::new(HashMap::new()),
         max_key: lim.max_key_bytes as u64,
+        hint: mr.hint.clone(),
     });
+
+    // Some sites only serve the video after a wait (YouTube, while its ad would play).
+    if let Some(at) = mr.hint.as_ref().and_then(|h| h.not_before_ms) {
+        let wait = at.saturating_sub(crate::manager::now_ms().max(0) as u64);
+        if wait > 0 {
+            set_media(run, |m| m.phase = "waiting");
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_millis(wait)) => {}
+                _ = run.cancel.cancelled() => return Ok(Outcome::Stopped),
+            }
+            set_media(run, |m| m.phase = "resolving");
+        }
+    }
 
     // Resolve the source: its manifest and playlists.
     let src = {
         let io = c.io_uncounted();
         tokio::select! {
-            r = probe::source(&c.http, &url, &lim, &io) => r?,
+            r = probe::resolve(&c.http, &url, mr.hint.as_ref(), &lim, &io) => r?,
             _ = run.cancel.cancelled() => return Ok(Outcome::Stopped),
         }
     };

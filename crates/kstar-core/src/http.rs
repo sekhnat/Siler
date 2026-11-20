@@ -436,6 +436,84 @@ pub(crate) async fn fetch_object(
     })
 }
 
+/// Fetches a whole file in ranges of at most `chunk` bytes, appended to `dest.part`, which is
+/// renamed on success. Some servers (YouTube's) slow down or refuse long single requests. A
+/// partial file is resumed from its size; a server that ignores ranges sends the whole file.
+pub(crate) async fn fetch_whole_chunked(
+    http: &Http,
+    url: &Url,
+    dest: &Path,
+    chunk: u64,
+    lim: &Limiters<'_>,
+) -> Result<u64> {
+    let part = part_of(dest);
+    let mut have = tokio::fs::metadata(&part).await.map_or(0, |m| m.len());
+    let mut total: Option<u64> = None;
+    let chunk = chunk.max(1);
+    loop {
+        if total.is_some_and(|t| have >= t) {
+            break;
+        }
+        let end = have + chunk - 1;
+        let resp = match request(http, url, Req::Derived, Some(format!("bytes={have}-{end}"))).await
+        {
+            // Everything is already there (a resumed file that was complete).
+            Err(Error::Http(416)) if have > 0 => break,
+            r => r?,
+        };
+        let ranged = resp.status() == StatusCode::PARTIAL_CONTENT;
+        let (mut file, expect) = if ranged {
+            let (start, last, size) = resp
+                .headers()
+                .get(CONTENT_RANGE)
+                .and_then(|v| v.to_str().ok())
+                .and_then(parse_content_range)
+                .filter(|(a, b, _)| *a == have && b >= a)
+                .ok_or_else(|| {
+                    Error::Protocol("The server returned an unexpected byte range".into())
+                })?;
+            total = size.or(total);
+            let file = tokio::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&part)
+                .await?;
+            (file, Some(last - start + 1))
+        } else {
+            // The whole file instead of a range: start over and take all of it.
+            have = 0;
+            (tokio::fs::File::create(&part).await?, None)
+        };
+        let mut written = 0u64;
+        let mut stream = resp.bytes_stream();
+        while let Some(bytes) = stream.next().await {
+            let bytes = bytes.map_err(|e| Error::Network(describe(&e)))?;
+            lim.take(bytes.len() as u64).await;
+            file.write_all(&bytes).await?;
+            written += bytes.len() as u64;
+        }
+        file.flush().await?;
+        drop(file);
+        have += written;
+        if !ranged {
+            total = Some(have);
+            break;
+        }
+        if expect.is_some_and(|n| written != n) {
+            return Err(Error::Network("connection closed early".into()));
+        }
+        if total.is_none() && expect.is_some_and(|n| n < chunk) {
+            // No size given, and the server sent less than asked: that was the end.
+            break;
+        }
+        if written == 0 {
+            return Err(Error::Network("the server sent nothing".into()));
+        }
+    }
+    tokio::fs::rename(&part, dest).await?;
+    Ok(total.unwrap_or(have))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -562,5 +640,117 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert_eq!(get(true).await.expect("allowed").body, b"ok");
+    }
+
+    /// A server for a 100 000-byte file that honours ranges (or not), and the ranges asked.
+    async fn ranged_server(honour: bool) -> (Url, Arc<Mutex<Vec<String>>>, Vec<u8>) {
+        use axum::http::{HeaderMap, StatusCode as S, header};
+        let body: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let (b, a) = (body.clone(), asked.clone());
+        let app = axum::Router::new().route(
+            "/f",
+            axum::routing::get(move |h: HeaderMap| {
+                let (b, a) = (b.clone(), a.clone());
+                async move {
+                    let range = h
+                        .get(header::RANGE)
+                        .and_then(|v| v.to_str().ok())
+                        .map(str::to_string);
+                    let Some(r) = range.filter(|_| honour) else {
+                        return (S::OK, HeaderMap::new(), b);
+                    };
+                    a.lock().unwrap().push(r.clone());
+                    let (x, y) = r.trim_start_matches("bytes=").split_once('-').unwrap();
+                    let x: usize = x.parse().unwrap();
+                    let len = b.len();
+                    let mut out = HeaderMap::new();
+                    if x >= len {
+                        out.insert(
+                            header::CONTENT_RANGE,
+                            format!("bytes */{len}").parse().unwrap(),
+                        );
+                        return (S::RANGE_NOT_SATISFIABLE, out, Vec::new());
+                    }
+                    let y = y.parse::<usize>().map_or(len - 1, |y| y.min(len - 1));
+                    out.insert(
+                        header::CONTENT_RANGE,
+                        format!("bytes {x}-{y}/{len}").parse().unwrap(),
+                    );
+                    (S::PARTIAL_CONTENT, out, b[x..=y].to_vec())
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        (
+            Url::parse(&format!("http://127.0.0.1:{port}/f")).expect("URL"),
+            asked,
+            body,
+        )
+    }
+
+    #[tokio::test]
+    async fn a_whole_file_is_fetched_in_ranges_and_resumed_from_its_part() {
+        let (url, asked, body) = ranged_server(true).await;
+        let net = Arc::new(Net::new(&Default::default(), None).expect("net"));
+        let http = Http::new(net, &url, RequestMeta::default(), "ua", true);
+        let limit = RateLimiter::new(0);
+        let lim = Limiters {
+            global: &limit,
+            run: &limit,
+            count: None,
+        };
+        let t = tempfile::tempdir().expect("tempdir");
+        let dest = t.path().join("whole.bin");
+        // An earlier attempt got this far.
+        std::fs::write(part_of(&dest), &body[..20_000]).expect("part");
+        let n = fetch_whole_chunked(&http, &url, &dest, 32_768, &lim)
+            .await
+            .expect("fetched");
+        assert_eq!(n, 100_000);
+        assert_eq!(std::fs::read(&dest).expect("read"), body);
+        assert!(!part_of(&dest).exists());
+        assert_eq!(
+            *asked.lock().unwrap(),
+            [
+                "bytes=20000-52767",
+                "bytes=52768-85535",
+                "bytes=85536-118303"
+            ]
+        );
+
+        // A part that is already complete: the server says there's nothing more.
+        asked.lock().unwrap().clear();
+        std::fs::write(part_of(&dest), &body).expect("part");
+        fetch_whole_chunked(&http, &url, &dest, 32_768, &lim)
+            .await
+            .expect("done");
+        assert_eq!(std::fs::read(&dest).expect("read"), body);
+        assert_eq!(*asked.lock().unwrap(), ["bytes=100000-132767"]);
+    }
+
+    #[tokio::test]
+    async fn a_server_without_ranges_sends_the_whole_file_once() {
+        let (url, _asked, body) = ranged_server(false).await;
+        let net = Arc::new(Net::new(&Default::default(), None).expect("net"));
+        let http = Http::new(net, &url, RequestMeta::default(), "ua", true);
+        let limit = RateLimiter::new(0);
+        let lim = Limiters {
+            global: &limit,
+            run: &limit,
+            count: None,
+        };
+        let t = tempfile::tempdir().expect("tempdir");
+        let dest = t.path().join("whole.bin");
+        std::fs::write(part_of(&dest), b"stale bytes").expect("part");
+        let n = fetch_whole_chunked(&http, &url, &dest, 32_768, &lim)
+            .await
+            .expect("fetched");
+        assert_eq!(n, 100_000);
+        assert_eq!(std::fs::read(&dest).expect("read"), body);
     }
 }
