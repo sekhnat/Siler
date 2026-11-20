@@ -29,6 +29,23 @@ pub enum Error {
     Exists(String),
     #[error("The file was moved or deleted")]
     FileMissing,
+    /// The server answered 401: it wants a login, or refused the one sent.
+    #[error("{}", auth_message(host, *rejected))]
+    AuthRequired {
+        host: String,
+        realm: Option<String>,
+        rejected: bool,
+    },
+    #[error("The proxy needs a username and password")]
+    ProxyAuth,
+}
+
+fn auth_message(host: &str, rejected: bool) -> String {
+    if rejected {
+        format!("{host} didn't accept the username and password")
+    } else {
+        format!("{host} needs a username and password")
+    }
 }
 
 impl Error {
@@ -38,6 +55,22 @@ impl Error {
             Error::Network(_) | Error::Busy(..) => true,
             Error::Http(code) => *code >= 500 || *code == 408,
             _ => false,
+        }
+    }
+
+    /// The login the server asked for, when this is a 401.
+    pub fn login_request(&self) -> Option<crate::LoginRequest> {
+        match self {
+            Error::AuthRequired {
+                host,
+                realm,
+                rejected,
+            } => Some(crate::LoginRequest {
+                host: host.clone(),
+                realm: realm.clone(),
+                rejected: *rejected,
+            }),
+            _ => None,
         }
     }
 
@@ -90,7 +123,10 @@ pub(crate) fn parse_retry_after(v: &str) -> Option<Duration> {
         return Some(Duration::from_secs(secs));
     }
     let at = httpdate::parse_http_date(v).ok()?;
-    Some(at.duration_since(SystemTime::now()).unwrap_or(Duration::ZERO))
+    Some(
+        at.duration_since(SystemTime::now())
+            .unwrap_or(Duration::ZERO),
+    )
 }
 
 /// Flattens a reqwest error and its source chain into one readable line.

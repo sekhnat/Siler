@@ -13,6 +13,7 @@
     "core:window:allow-hide",
     "core:window:allow-show",
     "core:window:allow-set-focus",
-    "dialog:allow-open"
+    "dialog:allow-open",
+    "drag:default"
   ]
 }

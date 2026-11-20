@@ -5,6 +5,46 @@ export type Category = "video" | "music" | "images" | "documents" | "compressed"
 export type OnConflict = "ask" | "rename" | "overwrite" | "skip";
 export type QueueMove = "up" | "down" | "top" | "bottom";
 
+export interface LoginRequest {
+  host: string;
+  realm: string | null;
+  rejected: boolean;
+}
+
+/** What `probe` rejects with. */
+export interface ProbeError {
+  message: string;
+  login: LoginRequest | null;
+}
+
+export type ProxyMode = "none" | "system" | "manual";
+export type ProxyScheme = "http" | "socks5";
+
+export interface ProxySettings {
+  mode: ProxyMode;
+  scheme: ProxyScheme;
+  host: string;
+  port: number;
+  username: string;
+  no_proxy: string;
+}
+
+/** Where connections go under the saved proxy settings. */
+export interface ProxyRoute {
+  summary: string;
+  note: string | null;
+}
+
+export interface ServerLimit {
+  host: string;
+  connections: number;
+}
+
+export interface SavedLogin {
+  host: string;
+  username: string;
+}
+
 export interface Segment {
   start: number;
   end: number;
@@ -34,6 +74,7 @@ export interface Download {
   position: number;
   on_conflict: OnConflict;
   file_missing: boolean;
+  needs_login: LoginRequest | null;
   speed: number;
   active_connections: number;
   segments: Segment[];
@@ -53,7 +94,8 @@ export type EngineEvent =
   | { type: "removed"; id: number }
   | { type: "progress"; items: ProgressItem[]; total_speed: number }
   | { type: "completed"; id: number; filename: string; path: string }
-  | { type: "failed"; id: number; filename: string | null; error: string };
+  | { type: "failed"; id: number; filename: string | null; error: string }
+  | { type: "login_required"; id: number; filename: string | null; request: LoginRequest };
 
 export interface ProbeResult {
   final_url: string;
@@ -91,6 +133,10 @@ export interface Settings {
   confirm_quit: boolean;
   on_conflict: OnConflict;
   categories: CategoryRule[];
+  max_connections_per_server: number;
+  server_limits: ServerLimit[];
+  proxy: ProxySettings;
+  prevent_sleep: boolean;
 }
 
 export interface Pending {
@@ -103,6 +149,10 @@ export interface Pending {
   mime: string | null;
   method: string | null;
   selected: boolean;
+  dir: string | null;
+  start_paused: boolean;
+  /** The name was given on the command line: don't replace it with the server's. */
+  keep_name: boolean;
   resumable: Download | null;
 }
 
@@ -179,4 +229,18 @@ export const api = {
   showMain: () => invoke<void>("show_main_window"),
   requestQuit: () => invoke<void>("request_quit"),
   quit: (dontAsk: boolean) => invoke<void>("quit_app", { dontAsk }),
+  submitLogin: (host: string, username: string, password: string, remember: boolean) =>
+    invoke<void>("submit_login", { host, username, password, remember }),
+  savedLogins: () => invoke<SavedLogin[]>("saved_logins"),
+  forgetSavedLogin: (host: string) => invoke<void>("forget_saved_login", { host }),
+  keyringAvailable: () => invoke<boolean>("keyring_available"),
+  proxyStatus: () => invoke<ProxyRoute>("proxy_status"),
+  setProxyPassword: (password: string | null) => invoke<void>("set_proxy_password", { password }),
+  proxyPasswordSaved: () => invoke<boolean>("proxy_password_saved"),
 };
+
+/** A readable message from a rejected command (a string, or a `ProbeError`). */
+export function errorText(e: unknown): string {
+  if (e && typeof e === "object" && "message" in e) return String((e as { message: unknown }).message);
+  return String(e);
+}

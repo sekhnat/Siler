@@ -31,6 +31,8 @@ pub(crate) struct Record {
     /// Queue order: lower starts first.
     pub position: i64,
     pub on_conflict: OnConflict,
+    /// Not saved: the server wanted a login the last time this download ran.
+    pub needs_login: Option<crate::LoginRequest>,
 }
 
 const SCHEMA_V1: &str = "
@@ -258,6 +260,7 @@ fn row_to_record(row: &Row) -> rusqlite::Result<Record> {
         segments: serde_json::from_str(&segments).unwrap_or_default(),
         position: row.get("position")?,
         on_conflict: OnConflict::parse(&row.get::<_, String>("on_conflict")?),
+        needs_login: None,
     })
 }
 
@@ -283,7 +286,10 @@ mod tests {
             let conn = Connection::open(&path).unwrap();
             conn.execute_batch(SCHEMA_V1).unwrap();
             conn.pragma_update(None, "user_version", 1).unwrap();
-            for (url, status) in [("https://x/a.iso", "paused"), ("https://x/b.iso", "completed")] {
+            for (url, status) in [
+                ("https://x/a.iso", "paused"),
+                ("https://x/b.iso", "completed"),
+            ] {
                 conn.execute(
                     "INSERT INTO downloads (url, category, status, meta, connections, created_at)
                      VALUES (?1, 'programs', ?2, '{\"referrer\":\"https://x/\",\"cookies\":\"a=b\",\"user_agent\":null,\"headers\":[]}', 8, 1)",

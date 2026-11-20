@@ -1,5 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
-import { api, type Download, type EngineEvent } from "./api";
+import { api, errorText, type Download, type EngineEvent } from "./api";
 
 const HISTORY = 90; // samples at ~4 Hz ≈ 22 s
 
@@ -84,7 +84,7 @@ class Toasts {
   }
 
   error(e: unknown) {
-    this.show(typeof e === "string" ? e : e instanceof Error ? e.message : String(e), "error");
+    this.show(e instanceof Error ? e.message : errorText(e), "error");
   }
 
   dismiss(id: number) {

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { FolderOpen, LoaderCircle, Pause, Play, RotateCw } from "@lucide/svelte";
+  import { FolderOpen, KeyRound, LoaderCircle, Pause, Play, RotateCw } from "@lucide/svelte";
   import { api, type Download } from "../api";
   import { STATUS_COLOR, STATUS_LABEL } from "../categories";
   import { bytes, eta, host, nameFromUrl, percent, relativeTime, speed } from "../format";
@@ -17,7 +17,12 @@
     if (d.total_size) return `${bytes(d.downloaded)} of ${bytes(d.total_size)}`;
     return d.downloaded ? bytes(d.downloaded) : "Unknown size";
   });
-  const statusColor = $derived(STATUS_COLOR[d.status]);
+  const statusColor = $derived(d.needs_login ? "var(--accent)" : STATUS_COLOR[d.status]);
+
+  function askLogin(e: MouseEvent) {
+    e.stopPropagation();
+    window.dispatchEvent(new CustomEvent("kstar-login", { detail: d.id }));
+  }
 </script>
 
 <div class="row" class:selected class:done>
@@ -32,7 +37,7 @@
       {#if !done}
         <span class="pill" style:--c={statusColor}>
           {#if d.status === "probing"}<LoaderCircle size={11} class="spin" />{/if}
-          {STATUS_LABEL[d.status]}
+          {d.needs_login ? "Needs login" : STATUS_LABEL[d.status]}
         </span>
       {/if}
     </div>
@@ -61,6 +66,8 @@
       <button class="icon-btn sm" title="Pause" onclick={(e) => (e.stopPropagation(), attempt(api.pause(d.id)))}><Pause size={15} /></button>
     {:else if d.status === "paused" || d.status === "waiting"}
       <button class="icon-btn sm" title="Resume" onclick={(e) => (e.stopPropagation(), attempt(api.resume(d.id)))}><Play size={15} /></button>
+    {:else if d.needs_login}
+      <button class="icon-btn sm" title="Log in" onclick={askLogin}><KeyRound size={15} /></button>
     {:else if d.status === "failed"}
       <button class="icon-btn sm" title="Retry" onclick={(e) => (e.stopPropagation(), attempt(api.resume(d.id)))}><RotateCw size={15} /></button>
     {/if}

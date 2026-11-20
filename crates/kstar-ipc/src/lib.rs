@@ -96,9 +96,7 @@ pub fn log_dir() -> PathBuf {
     std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
-        .or_else(|| {
-            std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("state"))
-        })
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("state")))
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join("kstar")
         .join("logs")
@@ -210,11 +208,16 @@ mod tests {
                 protocol: None
             }
         ));
-        let new: Request = serde_json::from_str(
-            r#"{"type":"ping","extension_version":"0.2.0","protocol":1}"#,
-        )
-        .unwrap();
-        assert!(matches!(new, Request::Ping { protocol: Some(1), .. }));
+        let new: Request =
+            serde_json::from_str(r#"{"type":"ping","extension_version":"0.2.0","protocol":1}"#)
+                .unwrap();
+        assert!(matches!(
+            new,
+            Request::Ping {
+                protocol: Some(1),
+                ..
+            }
+        ));
         let pong = serde_json::to_string(&Response::Pong {
             version: "0.2.0".into(),
             protocol: PROTOCOL,

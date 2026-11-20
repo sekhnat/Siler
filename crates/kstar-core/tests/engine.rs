@@ -2,14 +2,18 @@
 
 use axum::Router;
 use axum::body::{Body, Bytes};
+use axum::extract::Request;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::get;
+use base64::Engine as _;
 use futures_util::stream;
+use kstar_core::proxy::{ProxyMode, ProxyScheme};
 use kstar_core::{
-    Category, DownloadInfo, EditDownload, Engine, Error, NewDownload, OnConflict, QueueMove,
-    RequestMeta, Settings, Status,
+    Category, DownloadInfo, EditDownload, Engine, Error, Event, Login, LoginRequest, NewDownload,
+    OnConflict, QueueMove, RequestMeta, ServerLimit, Settings, Status,
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -33,6 +37,122 @@ struct Shared {
     probes: AtomicUsize,
     busy_hits: AtomicUsize,
     posts: AtomicUsize,
+    /// Requests that arrived through a proxy (absolute-form request target).
+    proxied: AtomicUsize,
+    /// `Proxy-Authorization` the "proxy" demands, if any.
+    proxy_login: RwLock<Option<String>>,
+    /// Digest: current nonce number, and accepted requests (the nonce rotates after 5).
+    nonce: AtomicU32,
+    digest_ok: AtomicUsize,
+    unauthorized: AtomicUsize,
+}
+
+const USER: &str = "user";
+const PASS: &str = "pa:ss wörd";
+
+fn basic(user: &str, pass: &str) -> String {
+    format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode(format!("{user}:{pass}"))
+    )
+}
+
+fn unauthorized(srv: &Shared, challenge: String) -> Response {
+    srv.unauthorized.fetch_add(1, SeqCst);
+    let mut resp = StatusCode::UNAUTHORIZED.into_response();
+    resp.headers_mut().insert(
+        header::WWW_AUTHENTICATE,
+        HeaderValue::from_str(&challenge).unwrap(),
+    );
+    resp
+}
+
+/// Every request (probe and segments) must carry a valid Basic login.
+async fn serve_basic(
+    State(srv): State<Arc<Shared>>,
+    Query(q): Query<Opts>,
+    headers: HeaderMap,
+) -> Response {
+    let got = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+    if got != Some(basic(USER, PASS).as_str()) {
+        return unauthorized(&srv, "Basic realm=\"test\"".into());
+    }
+    serve_file(State(srv), Query(q), headers).await
+}
+
+/// Like `serve_basic` with Digest; the nonce changes once mid-download (answered `stale`).
+async fn serve_digest(
+    State(srv): State<Arc<Shared>>,
+    Query(q): Query<Opts>,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
+) -> Response {
+    let nonce = format!("n{}", srv.nonce.load(SeqCst));
+    let challenge = |stale: bool| {
+        format!(
+            "Digest realm=\"test\", nonce=\"{nonce}\", qop=\"auth\", algorithm=MD5{}",
+            if stale { ", stale=true" } else { "" }
+        )
+    };
+    let Some(hdr) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| digest_auth::AuthorizationHeader::parse(v).ok())
+    else {
+        return unauthorized(&srv, challenge(false));
+    };
+    let mut check = hdr.clone();
+    check.digest(&digest_auth::AuthContext::new(USER, PASS, hdr.uri.as_str()));
+    let path = uri.path_and_query().map(|p| p.as_str()).unwrap_or("");
+    if check.response != hdr.response || hdr.username != USER || hdr.uri != path {
+        return unauthorized(&srv, challenge(false));
+    }
+    if hdr.nonce != nonce {
+        return unauthorized(&srv, challenge(true));
+    }
+    if srv.digest_ok.fetch_add(1, SeqCst) == 5 {
+        srv.nonce.fetch_add(1, SeqCst);
+    }
+    serve_file(State(srv), Query(q), headers).await
+}
+
+/// Basic login, then a redirect to the same server under another name.
+async fn basic_then_away(
+    State(srv): State<Arc<Shared>>,
+    Query(q): Query<Opts>,
+    headers: HeaderMap,
+) -> Response {
+    let got = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+    if got != Some(basic(USER, PASS).as_str()) {
+        return unauthorized(&srv, "Basic realm=\"test\"".into());
+    }
+    Redirect::temporary(&q.to.unwrap()).into_response()
+}
+
+/// Lets the test server act as an HTTP proxy too: requests in absolute form are counted
+/// and, when configured, must carry the proxy login.
+async fn proxy_layer(State(srv): State<Arc<Shared>>, req: Request, next: Next) -> Response {
+    if req.uri().authority().is_some() {
+        srv.proxied.fetch_add(1, SeqCst);
+        let want = srv.proxy_login.read().unwrap().clone();
+        let got = req
+            .headers()
+            .get(header::PROXY_AUTHORIZATION)
+            .and_then(|v| v.to_str().ok());
+        if want.is_some() && got != want.as_deref() {
+            let mut resp = StatusCode::PROXY_AUTHENTICATION_REQUIRED.into_response();
+            resp.headers_mut().insert(
+                header::PROXY_AUTHENTICATE,
+                HeaderValue::from_static("Basic realm=\"proxy\""),
+            );
+            return resp;
+        }
+    }
+    next.run(req).await
 }
 
 #[derive(Deserialize, Default)]
@@ -60,6 +180,10 @@ struct Opts {
     retryafter: Option<u64>,
     /// Only answer the POST form submission (see `serve_post`).
     needpost: bool,
+    /// Refuse requests that carry an `Authorization` header.
+    noauth: bool,
+    /// Redirect target for `/auth/away`.
+    to: Option<String>,
 }
 
 fn busy_response(retry_after: Option<u64>) -> Response {
@@ -129,6 +253,9 @@ async fn serve_file(
     }
     if q.needpost {
         return StatusCode::METHOD_NOT_ALLOWED.into_response();
+    }
+    if q.noauth && headers.contains_key(header::AUTHORIZATION) {
+        return StatusCode::BAD_REQUEST.into_response();
     }
     if q.needauth {
         let h = |n: header::HeaderName| {
@@ -253,6 +380,11 @@ impl Server {
             probes: AtomicUsize::new(0),
             busy_hits: AtomicUsize::new(0),
             posts: AtomicUsize::new(0),
+            proxied: AtomicUsize::new(0),
+            proxy_login: RwLock::new(None),
+            nonce: AtomicU32::new(1),
+            digest_ok: AtomicUsize::new(0),
+            unauthorized: AtomicUsize::new(0),
         });
         let app = Router::new()
             .route("/file/{name}", get(serve_file).post(serve_post))
@@ -264,6 +396,10 @@ impl Server {
                 "/redirect2",
                 get(|| async { Redirect::temporary("/file/target.bin") }),
             )
+            .route("/auth/basic/{name}", get(serve_basic))
+            .route("/auth/digest/{name}", get(serve_digest))
+            .route("/auth/away", get(basic_then_away))
+            .layer(middleware::from_fn_with_state(shared.clone(), proxy_layer))
             .with_state(shared.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -647,12 +783,23 @@ async fn probe_retries_passing_failures() {
     let tmp = tempfile::tempdir().unwrap();
     let e = engine(tmp.path(), |_| {}).await;
     let started = Instant::now();
-    let id = add(&e, srv.url("/file/a.bin?probefail=2&retryafter=1&size=1048576"));
+    let id = add(
+        &e,
+        srv.url("/file/a.bin?probefail=2&retryafter=1&size=1048576"),
+    );
     let d = wait_finished(&e, id).await;
     assert_complete(&d, &srv.data(1048576));
     // Two refusals, each asking for a second's pause.
-    assert!(started.elapsed() >= Duration::from_millis(1900), "{:?}", started.elapsed());
-    assert!(d.notice.is_none(), "retry notice left behind: {:?}", d.notice);
+    assert!(
+        started.elapsed() >= Duration::from_millis(1900),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(
+        d.notice.is_none(),
+        "retry notice left behind: {:?}",
+        d.notice
+    );
 }
 
 #[tokio::test]
@@ -675,7 +822,11 @@ async fn transfer_honours_retry_after() {
     let id = add(&e, srv.url("/file/a.bin?busy=1&retryafter=2&size=1048576"));
     let d = wait_finished(&e, id).await;
     assert_complete(&d, &srv.data(1048576));
-    assert!(started.elapsed() >= Duration::from_secs(2), "{:?}", started.elapsed());
+    assert!(
+        started.elapsed() >= Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
 }
 
 #[tokio::test]
@@ -697,7 +848,9 @@ async fn refresh_link_keeps_progress() {
     assert_eq!(e.get(id).unwrap().status, Status::Paused);
 
     let served_before = srv.shared.served.load(SeqCst);
-    e.refresh_url(id, &srv.url("/file/mirror.bin"), None).await.unwrap();
+    e.refresh_url(id, &srv.url("/file/mirror.bin"), None)
+        .await
+        .unwrap();
     let d = wait_finished(&e, id).await;
     assert_complete(&d, &srv.data(SIZE));
     assert_eq!(d.filename.as_deref(), Some("a.bin"));
@@ -716,10 +869,16 @@ async fn finds_resumable_download_by_name_and_size() {
     let e = engine(tmp.path(), |_| {}).await;
     let id = add(&e, srv.url("/file/big.bin?rate=1048576"));
     wait_for(&e, id, |d| d.downloaded > 0).await;
-    assert!(e.find_resumable("big.bin", Some(SIZE as u64)).is_none(), "running ones don't count");
+    assert!(
+        e.find_resumable("big.bin", Some(SIZE as u64)).is_none(),
+        "running ones don't count"
+    );
     e.pause(id).unwrap();
     wait_for(&e, id, |d| d.status == Status::Paused).await;
-    assert_eq!(e.find_resumable("big.bin", Some(SIZE as u64)).unwrap().id, id);
+    assert_eq!(
+        e.find_resumable("big.bin", Some(SIZE as u64)).unwrap().id,
+        id
+    );
     assert!(e.find_resumable("big.bin", Some(5)).is_none());
     assert!(e.find_resumable("other.bin", Some(SIZE as u64)).is_none());
 }
@@ -902,7 +1061,10 @@ async fn queue_order_and_start_now() {
     wait_for(&e, x, |d| d.status.is_running()).await;
     e.start_now(y).unwrap();
     wait_for(&e, y, |d| d.status.is_running()).await;
-    assert!(e.get(x).unwrap().status.is_running(), "both run past the limit");
+    assert!(
+        e.get(x).unwrap().status.is_running(),
+        "both run past the limit"
+    );
 }
 
 #[tokio::test]
@@ -920,7 +1082,11 @@ async fn download_later_waits_for_the_queue() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(e.get(id).unwrap().status, Status::Waiting);
     e.resume_all().unwrap();
-    assert_eq!(e.get(id).unwrap().status, Status::Waiting, "resume all leaves the queue alone");
+    assert_eq!(
+        e.get(id).unwrap().status,
+        Status::Waiting,
+        "resume all leaves the queue alone"
+    );
     e.start_queue().unwrap();
     let d = wait_finished(&e, id).await;
     assert_complete(&d, &srv.data(1048576));
@@ -950,7 +1116,10 @@ async fn replays_form_submissions() {
     let d = wait_finished(&e, id).await;
     assert_complete(&d, &srv.data(2097152));
     assert_eq!(d.method.as_deref(), Some("POST"));
-    assert!(srv.shared.posts.load(SeqCst) >= 2, "probe and segments all POST");
+    assert!(
+        srv.shared.posts.load(SeqCst) >= 2,
+        "probe and segments all POST"
+    );
 }
 
 #[tokio::test]
@@ -1000,7 +1169,13 @@ async fn edit_renames_and_moves_files() {
 
     // Never onto an existing file.
     let err = e
-        .edit(id, EditDownload { filename: Some("renamed.bin".into()), dir: None })
+        .edit(
+            id,
+            EditDownload {
+                filename: Some("renamed.bin".into()),
+                dir: None,
+            },
+        )
         .await
         .unwrap_err();
     assert!(matches!(err, Error::Exists(_)), "{err}");
@@ -1048,4 +1223,222 @@ async fn remove_many_at_once() {
     assert_eq!(e.remove_many(&ids, false).unwrap(), 3);
     assert!(e.list().is_empty());
     assert!(files.iter().all(|f| f.exists()), "files kept");
+}
+
+// ---------------------------------------------------------------- logins, proxy, server limits
+
+fn login(pass: &str) -> Login {
+    Login {
+        username: USER.into(),
+        password: pass.into(),
+    }
+}
+
+#[tokio::test]
+async fn basic_login_flow() {
+    let srv = Server::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let e = engine(tmp.path(), |_| {}).await;
+    let host = srv.addr.to_string();
+
+    // The Add dialog's probe reports what's needed.
+    match e
+        .probe(&srv.url("/auth/basic/a.bin"), &RequestMeta::default())
+        .await
+    {
+        Err(Error::AuthRequired {
+            host: h,
+            realm,
+            rejected,
+        }) => {
+            assert_eq!(
+                (h.as_str(), realm.as_deref(), rejected),
+                (host.as_str(), Some("test"), false)
+            );
+        }
+        other => panic!("expected a login request, got {other:?}"),
+    }
+
+    let mut events = e.subscribe();
+    let id = add(&e, srv.url("/auth/basic/a.bin"));
+    let d = wait_finished(&e, id).await;
+    assert_eq!(d.status, Status::Failed);
+    let want = LoginRequest {
+        host: host.clone(),
+        realm: Some("test".into()),
+        rejected: false,
+    };
+    assert_eq!(d.needs_login, Some(want.clone()));
+    let ev = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Ok(Event::LoginRequired { id: i, request, .. }) = events.recv().await {
+                return (i, request);
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(ev, (id, want));
+
+    // A wrong password is reported as refused.
+    e.set_login(&host, login("nope")).unwrap();
+    let d = wait_for(&e, id, |d| {
+        d.needs_login.as_ref().is_some_and(|l| l.rejected)
+    })
+    .await;
+    assert_eq!(d.status, Status::Failed);
+
+    // The right one resumes it; every segment request carries it.
+    e.set_login(&host, login(PASS)).unwrap();
+    let d = wait_finished(&e, id).await;
+    assert_complete(&d, &srv.data(SIZE));
+    assert!(d.needs_login.is_none());
+}
+
+#[tokio::test]
+async fn digest_login_with_nonce_change() {
+    let srv = Server::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let e = engine(tmp.path(), |s| s.connections = 8).await;
+    e.set_login(&srv.addr.to_string(), login(PASS)).unwrap();
+    let id = add(&e, srv.url("/auth/digest/a.bin?rate=4194304"));
+    let d = wait_finished(&e, id).await;
+    assert_complete(&d, &srv.data(SIZE));
+    assert!(srv.shared.nonce.load(SeqCst) > 1, "the nonce never rotated");
+}
+
+#[tokio::test]
+async fn login_in_the_url() {
+    let srv = Server::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let e = engine(tmp.path(), |_| {}).await;
+    let url = format!(
+        "http://{USER}:pa%3Ass%20w%C3%B6rd@{}/auth/basic/a.bin",
+        srv.addr
+    );
+    let id = add(&e, url);
+    let d = wait_finished(&e, id).await;
+    assert_complete(&d, &srv.data(SIZE));
+    assert!(
+        !d.url.contains('@'),
+        "credentials kept in the URL: {}",
+        d.url
+    );
+}
+
+#[tokio::test]
+async fn login_not_sent_to_another_host() {
+    let srv = Server::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let e = engine(tmp.path(), |_| {}).await;
+    e.set_login(&srv.addr.to_string(), login(PASS)).unwrap();
+    let away = format!(
+        "http://localhost:{}/file/b.bin?noauth=true",
+        srv.addr.port()
+    );
+    let id = add(&e, srv.url(&format!("/auth/away?to={}", urlencode(&away))));
+    let d = wait_finished(&e, id).await;
+    assert_complete(&d, &srv.data(SIZE));
+    assert!(d.final_url.unwrap().starts_with("http://localhost:"));
+}
+
+fn urlencode(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn manual_proxy_with_login() {
+    let srv = Server::start().await;
+    *srv.shared.proxy_login.write().unwrap() = Some(basic("proxyuser", "secret"));
+    let tmp = tempfile::tempdir().unwrap();
+    let e = engine(tmp.path(), |s| {
+        s.proxy.mode = ProxyMode::Manual;
+        s.proxy.scheme = ProxyScheme::Http;
+        s.proxy.host = "127.0.0.1".into();
+        s.proxy.port = srv.addr.port();
+        s.proxy.username = "proxyuser".into();
+        s.proxy.no_proxy = String::new();
+    })
+    .await;
+    assert_eq!(
+        e.proxy_route().summary(),
+        format!("http://127.0.0.1:{}", srv.addr.port())
+    );
+
+    // `.invalid` never resolves: only the proxy can serve it.
+    let url = "http://files.invalid/file/a.bin".to_string();
+    let id = add(&e, url.clone());
+    let d = wait_finished(&e, id).await;
+    assert_eq!(d.status, Status::Failed);
+    assert_eq!(
+        d.error.as_deref(),
+        Some("The proxy needs a username and password")
+    );
+
+    e.set_proxy_password(Some("secret".into()));
+    e.resume(id).unwrap();
+    let d = wait_finished(&e, id).await;
+    assert_complete(&d, &srv.data(SIZE));
+    assert!(srv.shared.proxied.load(SeqCst) >= 2);
+}
+
+#[tokio::test]
+async fn connections_shared_per_server() {
+    let srv = Server::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let e = engine(tmp.path(), |s| {
+        s.connections = 8;
+        s.max_concurrent = 3;
+        s.max_connections_per_server = 6;
+    })
+    .await;
+    let size = 6 * MIB as usize;
+    let url = |n: &str| srv.url(&format!("/file/{n}?size={size}&rate=1048576"));
+    let a = add(&e, url("a.bin"));
+    // Alone, a download may use the whole limit but no more.
+    wait_for(&e, a, |d| d.active_connections == 6).await;
+    let b = add(&e, url("b.bin"));
+    wait_for(&e, b, |d| d.status == Status::Downloading).await;
+
+    let active = |e: &Engine| -> u32 {
+        [a, b]
+            .iter()
+            .map(|&i| e.get(i).unwrap().active_connections)
+            .sum()
+    };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while active(&e) > 6 {
+        assert!(Instant::now() < deadline, "never settled under the limit");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    for _ in 0..20 {
+        let (da, db) = (e.get(a).unwrap(), e.get(b).unwrap());
+        if da.status != Status::Downloading || db.status != Status::Downloading {
+            break;
+        }
+        assert!(
+            active(&e) <= 6,
+            "{} + {} connections",
+            da.active_connections,
+            db.active_connections
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    // An exception for this server lifts the limit for both.
+    let mut s = e.settings();
+    s.server_limits = vec![ServerLimit {
+        host: "127.0.0.1".into(),
+        connections: 32,
+    }];
+    e.set_settings(s).unwrap();
+    let da = wait_finished(&e, a).await;
+    let db = wait_finished(&e, b).await;
+    assert_complete(&da, &srv.data(size));
+    assert_complete(&db, &srv.data(size));
 }

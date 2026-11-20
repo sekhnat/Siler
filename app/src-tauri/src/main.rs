@@ -1,24 +1,36 @@
 mod commands;
 mod desktop;
+mod inhibit;
 mod integration;
 mod ipc_server;
 mod logging;
+mod logins;
 mod tray;
 
 use kstar_core::{Engine, Event};
 use kstar_ipc::BrowserItem;
 use serde::Serialize;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_notification::{Action, ActionType, NotificationExt};
 use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::watch;
+
+use ipc_server::AddOptions;
 
 /// A download handed over by the browser that is waiting for the user to confirm it.
 pub struct Pending {
     pub id: u64,
     pub item: BrowserItem,
+    /// Folder given on the command line.
+    pub dir: Option<PathBuf>,
+    /// `--queue`: suggest "Download later".
+    pub start_paused: bool,
+    /// `--filename`: keep the given name.
+    pub keep_name: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -32,6 +44,9 @@ pub struct PendingView {
     pub mime: Option<String>,
     pub method: Option<String>,
     pub selected: bool,
+    pub dir: Option<PathBuf>,
+    pub start_paused: bool,
+    pub keep_name: bool,
     /// A paused or failed download this one looks like, which its link could continue.
     pub resumable: Option<kstar_core::DownloadInfo>,
 }
@@ -56,11 +71,17 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn push_pending(&self, items: Vec<BrowserItem>) {
+    pub fn push_pending(&self, items: Vec<BrowserItem>, opts: &AddOptions) {
         let mut p = self.pending.lock().unwrap();
         for item in items {
             let id = self.next_pending.fetch_add(1, Ordering::Relaxed);
-            p.push(Pending { id, item });
+            p.push(Pending {
+                id,
+                dir: opts.dir.clone(),
+                start_paused: opts.queue,
+                keep_name: opts.keep_name && item.filename.is_some(),
+                item,
+            });
         }
     }
 }
@@ -109,7 +130,13 @@ pub fn open_add_window(app: &AppHandle) {
 
 fn running_count(app: &AppHandle) -> usize {
     app.try_state::<AppState>()
-        .map(|s| s.engine.list().iter().filter(|d| d.status.is_running()).count())
+        .map(|s| {
+            s.engine
+                .list()
+                .iter()
+                .filter(|d| d.status.is_running())
+                .count()
+        })
         .unwrap_or(0)
 }
 
@@ -147,7 +174,9 @@ fn setup_notifications(app: &AppHandle) {
         let Some(id) = n.extra().get("download_id").and_then(|v| v.as_i64()) else {
             return;
         };
-        let failed = n.extra().get("failed").and_then(|v| v.as_bool()) == Some(true);
+        let failed = n.extra().get("failed").and_then(|v| v.as_bool()) == Some(true)
+            || n.extra().get("login").and_then(|v| v.as_bool()) == Some(true);
+        let login = n.extra().get("login").and_then(|v| v.as_bool()) == Some(true);
         let app = handle.clone();
         let action = performed.action_id().to_string();
         // The handler runs on the notification thread; do the work elsewhere.
@@ -156,6 +185,9 @@ fn setup_notifications(app: &AppHandle) {
                 (true, _) => {
                     show_main(&app);
                     let _ = app.emit("select-download", id);
+                    if login {
+                        let _ = app.emit("ask-login", id);
+                    }
                     Ok(())
                 }
                 (false, "open") => commands::open_path(&app, id),
@@ -182,6 +214,45 @@ fn notify(app: &AppHandle, title: &str, body: &str, id: i64, failed: bool) {
         b = b.action_type_id(COMPLETE_ACTIONS);
     }
     let _ = b.show();
+}
+
+/// A server wants a login: use the saved one, or ask (now if the window is on screen,
+/// else through a notification).
+async fn login_required(
+    app: AppHandle,
+    engine: Engine,
+    id: i64,
+    filename: Option<String>,
+    request: kstar_core::LoginRequest,
+) {
+    if !request.rejected
+        && let Some(login) = logins::find(&request.host).await
+    {
+        tracing::info!("using the saved login for {}", request.host);
+        if let Err(e) = engine.set_login(&request.host, login) {
+            tracing::warn!("couldn't resume after logging in: {e}");
+        }
+        return;
+    }
+    let visible = app
+        .try_state::<AppState>()
+        .is_some_and(|s| s.ui_visible.load(Ordering::Relaxed));
+    if visible {
+        let _ = app.emit("ask-login", id);
+    } else {
+        let name = filename.as_deref().unwrap_or("A download");
+        let _ = app
+            .notification()
+            .builder()
+            .title("Login needed")
+            .body(format!(
+                "{name}\n{} asks for a username and password",
+                request.host
+            ))
+            .extra("download_id", id)
+            .extra("login", true)
+            .show();
+    }
 }
 
 fn tray_status(items: &[kstar_core::ProgressItem], total_speed: u64) -> String {
@@ -218,7 +289,7 @@ fn human_bytes(b: u64) -> String {
     }
 }
 
-fn forward_engine_events(app: AppHandle, engine: Engine) {
+fn forward_engine_events(app: AppHandle, engine: Engine, activity: watch::Sender<usize>) {
     let mut rx = engine.subscribe();
     tauri::async_runtime::spawn(async move {
         let mut last_tray = Instant::now() - Duration::from_secs(5);
@@ -248,7 +319,24 @@ fn forward_engine_events(app: AppHandle, engine: Engine) {
                             _ => {}
                         }
                     }
+                    if let Event::LoginRequired {
+                        id,
+                        filename,
+                        request,
+                    } = &ev
+                    {
+                        tauri::async_runtime::spawn(login_required(
+                            app.clone(),
+                            engine.clone(),
+                            *id,
+                            filename.clone(),
+                            request.clone(),
+                        ));
+                        continue;
+                    }
                     if let Event::Progress { items, total_speed } = &ev {
+                        let n = items.len();
+                        activity.send_if_modified(|v| std::mem::replace(v, n) != n);
                         let text = tray_status(items, *total_speed);
                         if text != last_tray_text
                             && (last_tray.elapsed() >= Duration::from_secs(1) || items.is_empty())
@@ -293,60 +381,135 @@ fn exit_on_signals(app: AppHandle) {
     });
 }
 
-/// `kstar [--background] [--silent] [URL…]`
+const USAGE: &str = "\
+Usage: kstar [OPTIONS] [URL…]
+
+  --background       start without showing the window (tray only)
+  --silent           add the URLs without asking
+  --queue            add the URLs to the queue without starting them
+  --start-queue      start the downloads waiting in the queue
+  --dir PATH         save the URLs in this folder
+  --filename NAME    save the URL under this name (one URL only)
+  -h, --help         show this help
+  -V, --version      show the version
+
+When K-Star is already running, the options go to it.
+";
+
+/// The command line, from the first instance or forwarded from a second one.
+#[derive(Debug, Default, PartialEq)]
 struct Args {
     background: bool,
     silent: bool,
+    queue: bool,
+    start_queue: bool,
+    dir: Option<PathBuf>,
+    filename: Option<String>,
     urls: Vec<String>,
+    help: bool,
+    version: bool,
 }
 
-fn parse_args(args: &[String]) -> Args {
-    let mut a = Args {
-        background: false,
-        silent: false,
-        urls: Vec::new(),
-    };
-    for arg in args.iter().skip(1) {
-        match arg.as_str() {
+/// Parses `argv` (program name first); a relative `--dir` is taken from `cwd`.
+fn parse_args(argv: &[String], cwd: &Path) -> Result<Args, String> {
+    let mut a = Args::default();
+    let mut it = argv.iter().skip(1);
+    while let Some(arg) = it.next() {
+        let (flag, inline) = match arg.split_once('=') {
+            Some((f, v)) if f.starts_with("--") => (f, Some(v.to_string())),
+            _ => (arg.as_str(), None),
+        };
+        let mut value = |name: &str| {
+            inline
+                .clone()
+                .or_else(|| it.next().cloned())
+                .filter(|v| !v.trim().is_empty())
+                .ok_or_else(|| format!("{name} needs a value"))
+        };
+        match flag {
             "--background" => a.background = true,
             "--silent" => a.silent = true,
+            "--queue" => a.queue = true,
+            "--start-queue" => a.start_queue = true,
+            "--dir" => a.dir = Some(cwd.join(value("--dir")?)),
+            "--filename" => a.filename = Some(value("--filename")?),
+            "-h" | "--help" => a.help = true,
+            "-V" | "--version" => a.version = true,
             s if s.starts_with("http://") || s.starts_with("https://") => a.urls.push(s.into()),
+            s if s.starts_with('-') => return Err(format!("unknown option {s}")),
             s => tracing::debug!("ignoring argument {s:?}"),
         }
     }
-    a
+    if a.filename.is_some() && a.urls.len() != 1 {
+        return Err("--filename needs exactly one URL".into());
+    }
+    Ok(a)
+}
+
+/// Acts on a command line forwarded from a second `kstar` process.
+fn forwarded_args(app: &AppHandle, argv: &[String], cwd: &str) {
+    let args = match parse_args(argv, Path::new(cwd)) {
+        Ok(a) => a,
+        Err(e) => {
+            tracing::warn!("ignoring the command line {argv:?}: {e}");
+            return;
+        }
+    };
+    add_from_args(app, &args);
+    if args.urls.is_empty() && !args.background && !args.start_queue {
+        show_main(app);
+    }
 }
 
 fn add_from_args(app: &AppHandle, args: &Args) {
-    if args.urls.is_empty() {
-        return;
+    if !args.urls.is_empty() {
+        let items = args
+            .urls
+            .iter()
+            .map(|url| BrowserItem {
+                url: url.clone(),
+                filename: args.filename.clone(),
+                ..Default::default()
+            })
+            .collect();
+        let opts = AddOptions {
+            silent: args.silent,
+            dir: args.dir.clone(),
+            queue: args.queue,
+            keep_name: args.filename.is_some(),
+        };
+        let response = ipc_server::handle_add(app, items, &opts);
+        if let kstar_ipc::Response::Error { message } = response {
+            tracing::warn!("could not add the downloads from the command line: {message}");
+            show_main(app);
+        }
     }
-    let items = args
-        .urls
-        .iter()
-        .map(|url| BrowserItem {
-            url: url.clone(),
-            ..Default::default()
-        })
-        .collect();
-    let response = ipc_server::handle_add(app, items, args.silent);
-    if let kstar_ipc::Response::Error { message } = response {
-        tracing::warn!("could not add the downloads from the command line: {message}");
-        show_main(app);
+    if args.start_queue
+        && let Some(state) = app.try_state::<AppState>()
+        && let Err(e) = state.engine.start_queue()
+    {
+        tracing::warn!("could not start the queue: {e}");
     }
 }
 
 fn open_engine(app: &tauri::App) -> Result<Engine, String> {
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    tauri::async_runtime::block_on(async { Engine::open(&data_dir) })
-        .map_err(|e| {
-            format!(
-                "K-Star couldn't open its database in {}:\n{e}",
-                data_dir.display()
-            )
-        })
-        .inspect(|_| tracing::info!("data in {}", data_dir.display()))
-        .inspect_err(|e| tracing::error!("{e}"))
+    tauri::async_runtime::block_on(async {
+        // The manual proxy's password is the only secret needed before anything runs.
+        let proxy_password = match Engine::peek_settings(&data_dir) {
+            Ok(s) if s.proxy.needs_password() => logins::proxy_password().await,
+            _ => None,
+        };
+        Engine::open_with(&data_dir, proxy_password)
+    })
+    .map_err(|e| {
+        format!(
+            "K-Star couldn't open its database in {}:\n{e}",
+            data_dir.display()
+        )
+    })
+    .inspect(|_| tracing::info!("data in {}", data_dir.display()))
+    .inspect_err(|e| tracing::error!("{e}"))
 }
 
 fn main() {
@@ -370,18 +533,30 @@ fn main() {
         return;
     }
 
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let args = match parse_args(&argv, &cwd) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("kstar: {e}\n\n{USAGE}");
+            std::process::exit(2);
+        }
+    };
+    if args.help {
+        print!("{USAGE}");
+        return;
+    }
+    if args.version {
+        println!("K-Star {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+
     logging::init();
-    let args = parse_args(&argv);
 
     let app = tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-            let args = parse_args(&argv);
-            if !args.urls.is_empty() {
-                add_from_args(app, &args);
-            } else if !args.background {
-                show_main(app);
-            }
+        .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+            forwarded_args(app, &argv, &cwd)
         }))
+        .plugin(tauri_plugin_drag::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -406,7 +581,8 @@ fn main() {
                     });
                     desktop::ensure();
                     setup_notifications(app.handle());
-                    forward_engine_events(app.handle().clone(), engine);
+                    let activity = inhibit::spawn(engine.clone());
+                    forward_engine_events(app.handle().clone(), engine, activity);
                     ipc_server::start(app.handle().clone());
                     exit_on_signals(app.handle().clone());
                     let handle = app.handle().clone();
@@ -490,6 +666,13 @@ fn main() {
             commands::show_main_window,
             commands::request_quit,
             commands::quit_app,
+            commands::submit_login,
+            commands::saved_logins,
+            commands::forget_saved_login,
+            commands::keyring_available,
+            commands::proxy_status,
+            commands::set_proxy_password,
+            commands::proxy_password_saved,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build the K-Star app");
@@ -508,14 +691,47 @@ fn main() {
 mod tests {
     use super::*;
 
+    fn parse(args: &[&str]) -> Result<Args, String> {
+        let argv: Vec<String> = std::iter::once("kstar")
+            .chain(args.iter().copied())
+            .map(String::from)
+            .collect();
+        parse_args(&argv, Path::new("/home/me"))
+    }
+
     #[test]
     fn command_line() {
-        let argv: Vec<String> = ["kstar", "--silent", "https://x/a.iso", "file:///etc", "--background"]
-            .map(String::from)
-            .to_vec();
-        let a = parse_args(&argv);
-        assert!(a.silent && a.background);
+        let a = parse(&["--silent", "https://x/a.iso", "file:///etc", "--background"]).unwrap();
+        assert!(a.silent && a.background && !a.queue);
         assert_eq!(a.urls, ["https://x/a.iso"]);
+
+        let a = parse(&[
+            "--queue",
+            "--dir",
+            "Films",
+            "--filename=b.mkv",
+            "http://x/b",
+        ])
+        .unwrap();
+        assert!(a.queue);
+        assert_eq!(a.dir, Some(PathBuf::from("/home/me/Films")));
+        assert_eq!(a.filename.as_deref(), Some("b.mkv"));
+
+        let a = parse(&["--dir=/mnt/media", "--start-queue"]).unwrap();
+        assert_eq!(a.dir, Some(PathBuf::from("/mnt/media")));
+        assert!(a.start_queue && a.urls.is_empty());
+
+        assert!(parse(&["-h"]).unwrap().help);
+        assert!(parse(&["--version"]).unwrap().version);
+        assert_eq!(parse(&["--dir"]).unwrap_err(), "--dir needs a value");
+        assert_eq!(
+            parse(&["--frobnicate"]).unwrap_err(),
+            "unknown option --frobnicate"
+        );
+        assert_eq!(
+            parse(&["--filename", "x", "http://a/1", "http://a/2"]).unwrap_err(),
+            "--filename needs exactly one URL"
+        );
     }
 
     #[test]

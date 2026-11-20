@@ -75,7 +75,9 @@ fn bundled_host() -> Option<PathBuf> {
 
 /// Where `scripts/sign-extension.sh` puts the signed extension.
 pub fn signed_xpi() -> Option<PathBuf> {
-    let p = dirs::data_dir()?.join("kstar").join("kstar-integration.xpi");
+    let p = dirs::data_dir()?
+        .join("kstar")
+        .join("kstar-integration.xpi");
     p.exists().then_some(p)
 }
 

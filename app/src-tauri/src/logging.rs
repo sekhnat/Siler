@@ -14,9 +14,8 @@ pub fn dir() -> PathBuf {
 }
 
 pub fn init() {
-    let filter = || {
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,kstar_core=info".into())
-    };
+    let filter =
+        || EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,kstar_core=info".into());
     let _ = std::fs::create_dir_all(dir());
     let file = Builder::new()
         .rotation(Rotation::DAILY)
@@ -31,9 +30,11 @@ pub fn init() {
                 .with_writer(appender)
                 .with_filter(filter())
         });
-    let console = std::io::stderr()
-        .is_terminal()
-        .then(|| fmt::layer().with_writer(std::io::stderr).with_filter(filter()));
+    let console = std::io::stderr().is_terminal().then(|| {
+        fmt::layer()
+            .with_writer(std::io::stderr)
+            .with_filter(filter())
+    });
     tracing_subscriber::registry()
         .with(file)
         .with(console)

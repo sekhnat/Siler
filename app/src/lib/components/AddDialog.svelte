@@ -3,11 +3,12 @@
   import { open } from "@tauri-apps/plugin-dialog";
   import { onMount } from "svelte";
   import { slide } from "svelte/transition";
-  import { api, type Category, type Pending, type ProbeResult, type Settings } from "../api";
+  import { api, errorText, type Category, type LoginRequest, type Pending, type ProbeError, type ProbeResult, type Settings } from "../api";
   import { CATEGORIES, categoryMeta } from "../categories";
   import { bytes, host, looksLikeUrl, nameFromUrl, parseUrls, percent } from "../format";
   import { toasts } from "../store.svelte";
   import FileIcon from "./FileIcon.svelte";
+  import LoginForm from "./LoginForm.svelte";
 
   let {
     initialUrl = "",
@@ -32,10 +33,18 @@
   let probe = $state<ProbeResult | null>(null);
   let probing = $state(false);
   let probeError = $state("");
+  /** The server wants a login before it says anything about the file. */
+  let loginNeeded = $state<LoginRequest | null>(null);
   // svelte-ignore state_referenced_locally
   let filename = $state(pending?.filename ?? "");
-  let dir = $state("");
-  let dirEdited = $state(false);
+  // A folder from the command line (`--dir`) is kept.
+  // svelte-ignore state_referenced_locally
+  let dir = $state(pending?.dir ?? "");
+  // svelte-ignore state_referenced_locally
+  let dirEdited = $state(!!pending?.dir);
+  // `--queue`: "Download later" is the main action.
+  // svelte-ignore state_referenced_locally
+  const later = pending?.start_paused ?? false;
   let category = $state<Category>("other");
   let settings = $state<Settings | null>(null);
   let connections = $state<number | null>(null);
@@ -76,13 +85,15 @@
       const p = await api.probe(target, pending?.id);
       if (mine !== seq) return;
       probe = p;
-      filename = p.filename;
+      loginNeeded = null;
+      if (!pending?.keep_name) filename = p.filename;
       category = p.category;
       if (!dirEdited) dir = p.dir;
     } catch (e) {
       if (mine !== seq) return;
       probe = null;
-      probeError = String(e);
+      probeError = errorText(e);
+      loginNeeded = (e as ProbeError)?.login ?? null;
     } finally {
       if (mine === seq) probing = false;
     }
@@ -94,6 +105,7 @@
     if (!looksLikeUrl(target)) {
       probe = null;
       probeError = "";
+      loginNeeded = null;
       return;
     }
     const t = setTimeout(() => runProbe(target), pending ? 0 : 350);
@@ -178,9 +190,11 @@
   }
 
   function onkeydown(e: KeyboardEvent) {
-    if (e.key === "Enter" && (e.target as HTMLElement).tagName === "INPUT") {
+    const target = e.target as HTMLElement;
+    // The login form handles its own Enter.
+    if (e.key === "Enter" && target.tagName === "INPUT" && !target.closest("form")) {
       e.preventDefault();
-      submit(false);
+      submit(later);
     }
   }
 </script>
@@ -216,6 +230,11 @@
     </div>
   </label>
 
+  {#if loginNeeded}
+    <div class="login-box">
+      <LoginForm request={loginNeeded} onloggedin={() => runProbe(url.trim())} />
+    </div>
+  {:else}
   <div class="card" class:loading={probing}>
     <FileIcon {category} size={44} />
     <div class="card-main">
@@ -241,6 +260,8 @@
       {/if}
     </div>
   </div>
+
+  {/if}
 
   <div class="grid">
     <label class="field">
@@ -291,8 +312,8 @@
   <div class="actions">
     <button class="btn btn-ghost" onclick={oncancel}>Cancel</button>
     <span class="grow"></span>
-    <button class="btn" disabled={!valid || busy} onclick={() => submit(true)}>Download later</button>
-    <button class="btn btn-primary" disabled={!valid || busy} onclick={() => submit(false)}>Start download</button>
+    <button class="btn" class:btn-primary={later} disabled={!valid || busy} onclick={() => submit(true)}>Download later</button>
+    <button class="btn" class:btn-primary={!later} disabled={!valid || busy} onclick={() => submit(false)}>Start download</button>
   </div>
 </div>
 
@@ -451,6 +472,12 @@
   .folder {
     display: flex;
     gap: 6px;
+  }
+  .login-box {
+    padding: 14px;
+    border-radius: var(--r-lg);
+    border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
+    background: color-mix(in srgb, var(--accent) 6%, transparent);
   }
   .folder .btn {
     padding: 0 10px;

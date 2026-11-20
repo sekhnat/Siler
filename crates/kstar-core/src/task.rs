@@ -2,7 +2,7 @@
 
 use futures_util::StreamExt;
 use reqwest::header::{CONTENT_RANGE, RANGE};
-use reqwest::{Client, StatusCode, Url};
+use reqwest::{StatusCode, Url};
 use std::collections::HashMap;
 use std::os::unix::fs::FileExt;
 use std::path::PathBuf;
@@ -16,6 +16,7 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::describe;
+use crate::net::{Net, host_key, parse_challenge};
 use crate::probe::{build_request, busy, parse_content_range};
 use crate::ratelimit::RateLimiter;
 use crate::segment::Table;
@@ -34,7 +35,11 @@ pub(crate) struct Running {
     pub stop_reason: AtomicU8,
     /// Connections the user wants; changes take effect while the transfer runs.
     pub target: AtomicUsize,
-    /// Wakes the transfer loop when `target` changes.
+    /// The download's share of its server's connection limit (`usize::MAX` = no limit).
+    pub host_cap: AtomicUsize,
+    /// The server (`host_key` of the final URL), once known.
+    pub host: Mutex<Option<String>>,
+    /// Wakes the transfer loop when `target` or `host_cap` changes.
     pub changed: Notify,
     /// The part file, once created. The task deletes it when the download is removed.
     pub part: Mutex<Option<PathBuf>>,
@@ -54,6 +59,8 @@ impl Running {
             finished: CancellationToken::new(),
             stop_reason: AtomicU8::new(0),
             target: AtomicUsize::new(connections.max(1) as usize),
+            host_cap: AtomicUsize::new(usize::MAX),
+            host: Mutex::new(None),
             changed: Notify::new(),
             part: Mutex::new(None),
             table: Mutex::new(Table::default()),
@@ -74,6 +81,12 @@ impl Running {
     pub fn set_target(&self, connections: u8) {
         self.target.store(connections.max(1) as usize, Relaxed);
         self.changed.notify_one();
+    }
+
+    pub fn set_host_cap(&self, cap: usize) {
+        if self.host_cap.swap(cap.max(1), Relaxed) != cap.max(1) {
+            self.changed.notify_one();
+        }
     }
 
     /// Recomputes the smoothed speed; called by the ticker.
@@ -99,7 +112,7 @@ impl Running {
 }
 
 pub(crate) struct Transfer {
-    pub client: Client,
+    pub net: Arc<Net>,
     pub url: Url,
     pub meta: RequestMeta,
     pub user_agent: String,
@@ -169,7 +182,15 @@ async fn fetch(t: &Transfer, idx: usize) -> Result<(), WorkerError> {
         return Ok(());
     }
 
-    let mut rb = build_request(&t.client, t.url.clone(), &t.meta, &t.user_agent);
+    let auth = t.net.auth_for(&t.url);
+    let sent = auth.as_ref().is_some_and(|a| a.ready());
+    let mut rb = build_request(
+        &t.net.client(),
+        t.url.clone(),
+        &t.meta,
+        &t.user_agent,
+        auth.as_deref(),
+    );
     if t.ranged {
         rb = rb.header(RANGE, format!("bytes={}-{}", pos, end - 1));
     }
@@ -178,8 +199,30 @@ async fn fetch(t: &Transfer, idx: usize) -> Result<(), WorkerError> {
         .await
         .map_err(|e| WorkerError::Transient(describe(&e)))?;
     let status = resp.status();
+    if status == StatusCode::UNAUTHORIZED {
+        let challenge = parse_challenge(resp.headers());
+        let realm = challenge.as_ref().and_then(|c| c.realm.clone());
+        let host = host_key(resp.url());
+        if let Some(c) = challenge
+            && t.net.entry(&host).learn(c, sent)
+        {
+            // A stale Digest nonce: the same login works with the new one.
+            return Err(WorkerError::Transient("login renewed".into()));
+        }
+        return Err(WorkerError::Fatal(Error::AuthRequired {
+            host,
+            realm,
+            rejected: sent,
+        }));
+    }
+    if status == StatusCode::PROXY_AUTHENTICATION_REQUIRED {
+        return Err(WorkerError::Fatal(Error::ProxyAuth));
+    }
     if status == StatusCode::TOO_MANY_REQUESTS || status == StatusCode::SERVICE_UNAVAILABLE {
-        return Err(WorkerError::Throttled(status.as_u16(), busy(&resp).retry_after()));
+        return Err(WorkerError::Throttled(
+            status.as_u16(),
+            busy(&resp).retry_after(),
+        ));
     }
     if !status.is_success() {
         return Err(
@@ -331,7 +374,10 @@ pub(crate) async fn transfer(
     let mut wanted = t.run.target.load(Relaxed);
     let target = |cap: Option<usize>, wanted: usize| {
         if t.ranged {
-            wanted.min(cap.unwrap_or(usize::MAX)).max(1)
+            wanted
+                .min(cap.unwrap_or(usize::MAX))
+                .min(t.run.host_cap.load(Relaxed))
+                .max(1)
         } else {
             1
         }

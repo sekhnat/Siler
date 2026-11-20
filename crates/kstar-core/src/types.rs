@@ -105,7 +105,9 @@ pub const MAX_BODY: usize = 1024 * 1024;
 /// Decodes standard base64 (how the browser extension sends form bodies).
 pub fn decode_base64(s: &str) -> Option<Vec<u8>> {
     use base64::Engine as _;
-    base64::engine::general_purpose::STANDARD.decode(s.trim()).ok()
+    base64::engine::general_purpose::STANDARD
+        .decode(s.trim())
+        .ok()
 }
 
 mod b64 {
@@ -188,9 +190,21 @@ pub struct DownloadInfo {
     pub on_conflict: OnConflict,
     /// A completed download whose file is no longer there.
     pub file_missing: bool,
+    /// Stopped because the server wants a login.
+    pub needs_login: Option<LoginRequest>,
     pub speed: u64,
     pub active_connections: u32,
     pub segments: Vec<Segment>,
+}
+
+/// A server wants a login for a download.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LoginRequest {
+    /// `host` or `host:port`; logins are kept per host.
+    pub host: String,
+    pub realm: Option<String>,
+    /// A login was sent and refused.
+    pub rejected: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -227,5 +241,11 @@ pub enum Event {
         id: i64,
         filename: Option<String>,
         error: String,
+    },
+    /// A download stopped because its server wants a login (instead of `Failed`).
+    LoginRequired {
+        id: i64,
+        filename: Option<String>,
+        request: LoginRequest,
     },
 }

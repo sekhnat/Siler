@@ -1,6 +1,7 @@
+use kstar_core::proxy::ProxyRoute;
 use kstar_core::{
-    Category, DownloadInfo, EditDownload, NewDownload, OnConflict, ProbeResult, QueueMove,
-    RequestMeta, Settings, Status,
+    Category, DownloadInfo, EditDownload, Login, LoginRequest, NewDownload, OnConflict,
+    ProbeResult, QueueMove, RequestMeta, Settings, Status,
 };
 use kstar_ipc::BrowserItem;
 use serde::{Deserialize, Serialize};
@@ -12,6 +13,7 @@ use tauri::{AppHandle, Manager, State};
 use tauri_plugin_opener::OpenerExt;
 
 use crate::integration::{self, IntegrationStatus};
+use crate::logins::{self, SavedLogin};
 use crate::{AppState, PendingView, StartupError};
 
 type Res<T> = Result<T, String>;
@@ -60,14 +62,99 @@ pub fn list_downloads(state: State<'_, AppState>) -> Vec<DownloadInfo> {
     state.engine.list()
 }
 
+/// A failed probe; `login` is set when the server wants a username and password.
+#[derive(Serialize)]
+pub struct ProbeError {
+    message: String,
+    login: Option<LoginRequest>,
+}
+
 #[tauri::command]
 pub async fn probe_url(
     state: State<'_, AppState>,
     url: String,
     pending_id: Option<u64>,
-) -> Res<ProbeResult> {
+) -> Result<ProbeResult, ProbeError> {
     let meta = pending_meta(&state, pending_id).unwrap_or_default();
-    state.engine.probe(&url, &meta).await.map_err(err)
+    let mut result = state.engine.probe(&url, &meta).await;
+    // A saved login is used without asking.
+    if let Err(e) = &result
+        && let Some(req) = e.login_request()
+        && !req.rejected
+        && let Some(login) = logins::find(&req.host).await
+    {
+        let _ = state.engine.set_login(&req.host, login);
+        result = state.engine.probe(&url, &meta).await;
+    }
+    result.map_err(|e| ProbeError {
+        message: e.to_string(),
+        login: e.login_request(),
+    })
+}
+
+/// Uses a login for a server (resuming its downloads), optionally saving it in the keyring.
+#[tauri::command]
+pub async fn submit_login(
+    state: State<'_, AppState>,
+    host: String,
+    username: String,
+    password: String,
+    remember: bool,
+) -> Res<()> {
+    let login = Login { username, password };
+    if remember {
+        // Save first: resuming may need the login again before this returns.
+        let saved = logins::save(&host, &login).await;
+        state.engine.set_login(&host, login).map_err(err)?;
+        saved
+    } else {
+        state.engine.set_login(&host, login).map_err(err)
+    }
+}
+
+#[tauri::command]
+pub async fn saved_logins() -> Vec<SavedLogin> {
+    logins::list().await
+}
+
+#[tauri::command]
+pub async fn forget_saved_login(state: State<'_, AppState>, host: String) -> Res<()> {
+    state.engine.forget_login(&host);
+    logins::forget(&host).await
+}
+
+#[tauri::command]
+pub async fn keyring_available() -> bool {
+    logins::available().await
+}
+
+#[derive(Serialize)]
+pub struct ProxyStatus {
+    summary: String,
+    note: Option<String>,
+}
+
+/// Where connections go now, for the settings screen.
+#[tauri::command]
+pub fn proxy_status(state: State<'_, AppState>) -> ProxyStatus {
+    let route: ProxyRoute = state.engine.proxy_route();
+    ProxyStatus {
+        summary: route.summary(),
+        note: route.note,
+    }
+}
+
+/// Saves the manual proxy's password in the keyring and uses it right away.
+#[tauri::command]
+pub async fn set_proxy_password(state: State<'_, AppState>, password: Option<String>) -> Res<()> {
+    let password = password.filter(|p| !p.is_empty());
+    state.engine.set_proxy_password(password.clone());
+    logins::set_proxy_password(password.as_deref()).await
+}
+
+#[tauri::command]
+pub async fn proxy_password_saved() -> bool {
+    logins::proxy_password_saved().await
 }
 
 #[derive(Serialize)]
@@ -139,6 +226,9 @@ pub fn pending_adds(state: State<'_, AppState>) -> Vec<PendingView> {
                 mime: p.item.mime.clone(),
                 method: p.item.method.clone(),
                 selected: p.item.selected.unwrap_or(true),
+                dir: p.dir.clone(),
+                start_paused: p.start_paused,
+                keep_name: p.keep_name,
                 resumable: if single {
                     name.and_then(|n| state.engine.find_resumable(&n, p.item.size))
                 } else {
@@ -390,9 +480,8 @@ pub fn install_integration(state: State<'_, AppState>) -> Res<IntegrationStatus>
 /// Opens the signed extension with Firefox, which offers to install it.
 #[tauri::command]
 pub fn install_extension() -> Res<()> {
-    let xpi = integration::signed_xpi().ok_or(
-        "No signed extension yet. Run scripts/sign-extension.sh first (see the README).",
-    )?;
+    let xpi = integration::signed_xpi()
+        .ok_or("No signed extension yet. Run scripts/sign-extension.sh first (see the README).")?;
     std::process::Command::new("firefox")
         .arg(&xpi)
         .spawn()

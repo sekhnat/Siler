@@ -113,7 +113,10 @@ impl Category {
     /// uses the user's lists instead.
     pub fn from_filename(name: &str) -> Category {
         Category::classify(name, |c| {
-            c.default_extensions().iter().map(|s| s.to_string()).collect()
+            c.default_extensions()
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
         })
     }
 

@@ -1,8 +1,8 @@
 <script lang="ts">
-  import { CircleCheck, CircleX, FileText, FolderOpen, Monitor, Moon, Puzzle, Sun, TriangleAlert } from "@lucide/svelte";
+  import { CircleCheck, CircleX, FileText, FolderOpen, KeyRound, Monitor, Moon, Plus, Puzzle, Sun, TriangleAlert, X } from "@lucide/svelte";
   import { open } from "@tauri-apps/plugin-dialog";
   import { onMount } from "svelte";
-  import { api, type IntegrationStatus, type Settings } from "../api";
+  import { api, type IntegrationStatus, type ProxyMode, type ProxyRoute, type SavedLogin, type Settings } from "../api";
   import { SPEED_PRESETS, limitLabel, relativeTime } from "../format";
   import { toasts } from "../store.svelte";
   import { theme, type ThemePref } from "../theme.svelte";
@@ -11,17 +11,50 @@
 
   let { settings, onclose, onsaved }: { settings: Settings; onclose: () => void; onsaved: (s: Settings) => void } = $props();
 
-  type Tab = "general" | "transfers" | "categories" | "browser" | "appearance";
+  type Tab = "general" | "transfers" | "network" | "categories" | "browser" | "appearance";
   let tab = $state<Tab>("general");
   // Edit a copy; nothing changes until Save.
   // svelte-ignore state_referenced_locally
   let s = $state<Settings>(structuredClone($state.snapshot(settings)) as Settings);
   let integration = $state<IntegrationStatus | null>(null);
   let saving = $state(false);
+  let route = $state<ProxyRoute | null>(null);
+  let logins = $state<SavedLogin[]>([]);
+  let keyring = $state(true);
+  // Typed proxy password; saved to the keyring on Save. Empty = keep the saved one.
+  let proxyPassword = $state("");
+  let proxyPasswordSaved = $state(false);
 
   onMount(async () => {
     integration = await api.integrationStatus().catch(() => null);
+    route = await api.proxyStatus().catch(() => null);
   });
+
+  // The keyring is only asked when the Network tab is opened.
+  let networkLoaded = false;
+  $effect(() => {
+    if (tab !== "network" || networkLoaded) return;
+    networkLoaded = true;
+    (async () => {
+      keyring = await api.keyringAvailable().catch(() => false);
+      if (!keyring) return;
+      logins = await api.savedLogins().catch(() => []);
+      proxyPasswordSaved = await api.proxyPasswordSaved().catch(() => false);
+    })();
+  });
+
+  async function forgetLogin(host: string) {
+    try {
+      await api.forgetSavedLogin(host);
+      logins = logins.filter((l) => l.host !== host);
+    } catch (e) {
+      toasts.error(e);
+    }
+  }
+
+  function addLimit() {
+    s.server_limits = [...s.server_limits, { host: "", connections: 4 }];
+  }
 
   async function browse() {
     const picked = await open({ directory: true, defaultPath: s.download_dir, title: "Download folder" });
@@ -56,7 +89,11 @@
   async function save() {
     saving = true;
     try {
-      onsaved(await api.setSettings(s));
+      const saved = await api.setSettings(s);
+      if (proxyPassword && saved.proxy.mode === "manual" && saved.proxy.username.trim()) {
+        await api.setProxyPassword(proxyPassword);
+      }
+      onsaved(saved);
       onclose();
     } catch (e) {
       toasts.error(e);
@@ -68,6 +105,7 @@
   const tabs: { key: Tab; label: string }[] = [
     { key: "general", label: "General" },
     { key: "transfers", label: "Transfers" },
+    { key: "network", label: "Network" },
     { key: "categories", label: "Categories" },
     { key: "browser", label: "Browser" },
     { key: "appearance", label: "Appearance" },
@@ -78,6 +116,13 @@
     { key: "dark", label: "Dark", icon: Moon },
   ];
   const customLimit = $derived(!SPEED_PRESETS.includes(s.global_speed_limit));
+  const proxyModes: { key: ProxyMode; label: string }[] = [
+    { key: "none", label: "No proxy" },
+    { key: "system", label: "System" },
+    { key: "manual", label: "Manual" },
+  ];
+  // The status line describes the saved settings; say so while they're being edited.
+  const proxyEdited = $derived(JSON.stringify(s.proxy) !== JSON.stringify(settings.proxy));
 </script>
 
 {#snippet toggle(label: string, hint: string, value: boolean, set: (v: boolean) => void)}
@@ -125,6 +170,7 @@
       {@render toggle("Ask before quitting", "Confirm when quitting would pause running downloads", s.confirm_quit, (v) => (s.confirm_quit = v))}
       {@render toggle("Notifications", "Notify when a download finishes or fails", s.notify_on_complete, (v) => (s.notify_on_complete = v))}
       {@render toggle("Resume on startup", "Continue unfinished downloads when K-Star starts", s.resume_on_startup, (v) => (s.resume_on_startup = v))}
+      {@render toggle("Keep the computer awake", "Don't let it go to sleep while downloads are running", s.prevent_sleep, (v) => (s.prevent_sleep = v))}
       <div class="logs">
         <FileText size={15} />
         <span class="hint grow truncate" title={integration?.log_dir}>Logs: {integration?.log_dir ?? "~/.local/state/kstar/logs"}</span>
@@ -139,6 +185,19 @@
       <div class="field">
         <span class="label">Simultaneous downloads <b>{s.max_concurrent}</b></span>
         <input type="range" min="1" max="10" bind:value={s.max_concurrent} />
+      </div>
+      <div class="field">
+        <span class="label">Connections per server <b>{s.max_connections_per_server || "No limit"}</b></span>
+        <input type="range" min="0" max="64" bind:value={s.max_connections_per_server} />
+        <div class="hint">Shared by all downloads from one server, so busy servers don't refuse or ban you.</div>
+        {#each s.server_limits as limit, i (i)}
+          <div class="limit">
+            <input class="input" bind:value={limit.host} placeholder="example.com" spellcheck="false" />
+            <input class="input num" type="number" min="1" max="128" bind:value={limit.connections} title="Connections" />
+            <button class="icon-btn sm" title="Remove" onclick={() => (s.server_limits = s.server_limits.filter((_, j) => j !== i))}><X size={15} /></button>
+          </div>
+        {/each}
+        <button class="btn btn-sm add-limit" onclick={addLimit}><Plus size={14} /> Different limit for a server</button>
       </div>
       <div class="row2">
         <div class="field">
@@ -160,6 +219,82 @@
         <span class="label">User agent</span>
         <input class="input mono" bind:value={s.user_agent} spellcheck="false" />
         <div class="hint">Used for links added by hand. Browser downloads use the browser's own user agent.</div>
+      </div>
+    {:else if tab === "network"}
+      <div class="field">
+        <span class="label">Proxy</span>
+        <div class="seg">
+          {#each proxyModes as m (m.key)}
+            <button class:on={s.proxy.mode === m.key} onclick={() => (s.proxy.mode = m.key)}>{m.label}</button>
+          {/each}
+        </div>
+      </div>
+      {#if s.proxy.mode === "manual"}
+        <div class="proxy">
+          <label class="field">
+            <span class="label">Type</span>
+            <select class="input" bind:value={s.proxy.scheme}>
+              <option value="http">HTTP</option>
+              <option value="socks5">SOCKS5</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="label">Address</span>
+            <input class="input" bind:value={s.proxy.host} placeholder="proxy.example.com" spellcheck="false" />
+          </label>
+          <label class="field">
+            <span class="label">Port</span>
+            <input class="input" type="number" min="1" max="65535" bind:value={s.proxy.port} />
+          </label>
+        </div>
+        <div class="row2">
+          <label class="field">
+            <span class="label">Username <span class="hint">(optional)</span></span>
+            <input class="input" bind:value={s.proxy.username} autocomplete="off" spellcheck="false" />
+          </label>
+          <label class="field">
+            <span class="label">Password</span>
+            <input
+              class="input"
+              type="password"
+              bind:value={proxyPassword}
+              disabled={!s.proxy.username.trim() || !keyring}
+              placeholder={!keyring ? "No keyring available" : proxyPasswordSaved ? "Saved in the keyring" : ""}
+              autocomplete="new-password"
+            />
+          </label>
+        </div>
+        <label class="field">
+          <span class="label">Connect directly to</span>
+          <input class="input" bind:value={s.proxy.no_proxy} placeholder="localhost, 127.0.0.1, .lan" spellcheck="false" />
+        </label>
+      {/if}
+      {#if route && !proxyEdited}
+        <div class="route hint">
+          <span>Now: {route.summary}</span>
+          {#if route.note}<span class="warn"><TriangleAlert size={13} /> {route.note}</span>{/if}
+        </div>
+      {:else if proxyEdited}
+        <div class="route hint">Applies when you save.</div>
+      {/if}
+
+      <div class="field">
+        <span class="label">Saved logins</span>
+        {#if !keyring}
+          <div class="hint">No keyring service (KWallet, GNOME Keyring…) is running, so logins last until K-Star quits.</div>
+        {:else if logins.length === 0}
+          <div class="hint">When a server asks for a username and password, you can save it here.</div>
+        {:else}
+          <div class="logins">
+            {#each logins as l (l.host)}
+              <div class="login-row">
+                <KeyRound size={14} />
+                <span class="grow truncate"><b>{l.host}</b> <span class="hint">{l.username}</span></span>
+                <button class="btn btn-sm btn-ghost" onclick={() => forgetLogin(l.host)}>Forget</button>
+              </div>
+            {/each}
+          </div>
+        {/if}
       </div>
     {:else if tab === "categories"}
       <CategoryEditor bind:s />
@@ -282,6 +417,53 @@
   .label b {
     float: right;
     color: var(--accent-text);
+  }
+  .limit {
+    display: grid;
+    grid-template-columns: 1fr 90px auto;
+    gap: 6px;
+    align-items: center;
+    margin-top: 8px;
+  }
+  .add-limit {
+    margin-top: 8px;
+  }
+  .proxy {
+    display: grid;
+    grid-template-columns: 110px 1fr 100px;
+    gap: 12px;
+  }
+  .route {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: -6px;
+  }
+  .route .warn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--warn);
+  }
+  .logins {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--border);
+    border-radius: var(--r);
+  }
+  .login-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 8px 6px 12px;
+    color: var(--muted);
+  }
+  .login-row + .login-row {
+    border-top: 1px solid var(--border);
+  }
+  .login-row b {
+    color: var(--text);
+    font-weight: 600;
   }
   input[type="range"] {
     width: 100%;

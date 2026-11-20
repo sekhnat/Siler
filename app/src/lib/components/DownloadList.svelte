@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Download } from "../api";
+  import { draggable } from "../drag";
   import DownloadRow from "./DownloadRow.svelte";
 
   let {
@@ -8,13 +9,28 @@
     onrowclick,
     onrowopen,
     onrowmenu,
+    ondragout,
   }: {
     items: Download[];
     selected: Set<number>;
     onrowclick: (d: Download, e: MouseEvent) => void;
     onrowopen: (d: Download) => void;
     onrowmenu: (d: Download, e: MouseEvent) => void;
+    /** A finished row was dragged: start dragging its file out of the window. */
+    ondragout?: (d: Download) => void;
   } = $props();
+
+  // A press on a finished row becomes a file drag once the pointer moves a little.
+  let press: { id: number; x: number; y: number } | null = null;
+  function pointerdown(d: Download, e: PointerEvent) {
+    press = e.button === 0 && ondragout && draggable(d) ? { id: d.id, x: e.clientX, y: e.clientY } : null;
+  }
+  function pointermove(d: Download, e: PointerEvent) {
+    if (!press || press.id !== d.id || !(e.buttons & 1)) return;
+    if (Math.hypot(e.clientX - press.x, e.clientY - press.y) < 6) return;
+    press = null;
+    ondragout?.(d);
+  }
 
   const ROW = 72;
   const OVERSCAN = 6;
@@ -50,6 +66,10 @@
         tabindex="-1"
         onclick={(e) => onrowclick(d, e)}
         ondblclick={() => onrowopen(d)}
+        onpointerdown={(e) => pointerdown(d, e)}
+        onpointermove={(e) => pointermove(d, e)}
+        onpointerup={() => (press = null)}
+        ondragstart={(e) => e.preventDefault()}
         oncontextmenu={(e) => {
           e.preventDefault();
           onrowmenu(d, e);

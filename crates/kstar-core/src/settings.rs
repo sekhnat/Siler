@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+use crate::proxy::ProxySettings;
 use crate::{Category, OnConflict};
 
 pub const DEFAULT_USER_AGENT: &str =
@@ -31,6 +32,13 @@ impl CategoryRule {
             folder: None,
         }
     }
+}
+
+/// A different connection limit for one server (and its subdomains).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ServerLimit {
+    pub host: String,
+    pub connections: u8,
 }
 
 pub fn default_categories() -> Vec<CategoryRule> {
@@ -66,6 +74,12 @@ pub struct Settings {
     /// What to do when the target file already exists.
     pub on_conflict: OnConflict,
     pub categories: Vec<CategoryRule>,
+    /// Connections to one server across all its downloads; 0 = no limit.
+    pub max_connections_per_server: u8,
+    pub server_limits: Vec<ServerLimit>,
+    pub proxy: ProxySettings,
+    /// Keep the computer from sleeping while downloads run.
+    pub prevent_sleep: bool,
 }
 
 impl Default for Settings {
@@ -89,6 +103,10 @@ impl Default for Settings {
             confirm_quit: true,
             on_conflict: OnConflict::Ask,
             categories: default_categories(),
+            max_connections_per_server: 16,
+            server_limits: Vec::new(),
+            proxy: ProxySettings::default(),
+            prevent_sleep: true,
         }
     }
 }
@@ -116,8 +134,25 @@ impl Settings {
     /// The category of a file name according to the user's extension lists.
     pub fn category_for(&self, filename: &str) -> Category {
         Category::classify(filename, |c| {
-            self.rule(c).map(|r| r.extensions.clone()).unwrap_or_default()
+            self.rule(c)
+                .map(|r| r.extensions.clone())
+                .unwrap_or_default()
         })
+    }
+
+    /// The connection limit for a server (host name without port); 0 = no limit.
+    /// The most specific matching exception wins.
+    pub fn connection_limit(&self, host: &str) -> usize {
+        let host = host.trim_end_matches('.').to_ascii_lowercase();
+        self.server_limits
+            .iter()
+            .filter(|l| {
+                let h = l.host.as_str();
+                host == h || host.ends_with(&format!(".{h}"))
+            })
+            .max_by_key(|l| l.host.len())
+            .map(|l| l.connections)
+            .unwrap_or(self.max_connections_per_server) as usize
     }
 
     /// A conflict policy for downloads added without a dialog, where nobody can be asked.
@@ -132,6 +167,20 @@ impl Settings {
         self.max_concurrent = self.max_concurrent.clamp(1, 20);
         self.connections = self.connections.clamp(1, 32);
         self.min_split_size = self.min_split_size.max(16 * 1024);
+        self.max_connections_per_server = self.max_connections_per_server.min(128);
+        let mut hosts = HashSet::new();
+        self.server_limits = std::mem::take(&mut self.server_limits)
+            .into_iter()
+            .filter_map(|mut l| {
+                let h = l.host.trim().to_ascii_lowercase();
+                // Accept pasted URLs and `host:port`.
+                let h = h.split("://").last().unwrap_or(&h);
+                let h = h.split(['/', ':']).next().unwrap_or("").trim_matches('.');
+                l.host = h.strip_prefix("www.").unwrap_or(h).to_string();
+                l.connections = l.connections.clamp(1, 128);
+                (!l.host.is_empty() && hosts.insert(l.host.clone())).then_some(l)
+            })
+            .collect();
         if self.user_agent.trim().is_empty() {
             self.user_agent = DEFAULT_USER_AGENT.to_string();
         }
@@ -186,10 +235,50 @@ mod tests {
                 .extensions
                 .contains(&"iso".to_string())
         );
-        assert_eq!(s.category_dir(Category::Video), PathBuf::from("/media/films"));
+        assert_eq!(
+            s.category_dir(Category::Video),
+            PathBuf::from("/media/films")
+        );
         assert_eq!(s.category_dir(Category::Music), PathBuf::from("/dl/Music"));
         assert_eq!(s.category_for("a.tar.gz"), Category::Compressed);
         assert_eq!(s.category_for("README"), Category::Other);
+    }
+
+    #[test]
+    fn per_server_limits() {
+        let s = Settings {
+            max_connections_per_server: 12,
+            server_limits: vec![
+                ServerLimit {
+                    host: "https://www.Example.com/x".into(),
+                    connections: 4,
+                },
+                ServerLimit {
+                    host: "cdn.example.com:8443".into(),
+                    connections: 2,
+                },
+                ServerLimit {
+                    host: "  ".into(),
+                    connections: 9,
+                },
+            ],
+            ..Default::default()
+        }
+        .normalized();
+        assert_eq!(s.server_limits.len(), 2);
+        assert_eq!(s.server_limits[0].host, "example.com");
+        assert_eq!(s.connection_limit("example.com"), 4);
+        assert_eq!(s.connection_limit("dl.example.com"), 4);
+        assert_eq!(s.connection_limit("a.cdn.example.com"), 2);
+        assert_eq!(s.connection_limit("notexample.com"), 12);
+        assert_eq!(
+            Settings {
+                max_connections_per_server: 0,
+                ..Default::default()
+            }
+            .connection_limit("x"),
+            0
+        );
     }
 
     #[test]

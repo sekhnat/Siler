@@ -36,7 +36,10 @@ fn exe() -> io::Result<PathBuf> {
 }
 
 fn entry(exe: &Path) -> String {
-    let exec = exe.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+    let exec = exe
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
     format!(
         "[Desktop Entry]
 Type=Application

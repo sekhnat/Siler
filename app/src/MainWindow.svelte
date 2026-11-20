@@ -7,6 +7,7 @@
     Copy,
     ExternalLink,
     FolderOpen,
+    KeyRound,
     Link2,
     Pause,
     Play,
@@ -20,6 +21,7 @@
   import { onMount } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
   import { api, type Download, type QueueMove, type Settings } from "./lib/api";
+  import { draggable, startFileDrag } from "./lib/drag";
   import { CATEGORIES, canPause, canResume, isActive } from "./lib/categories";
   import { nameFromUrl, parseUrls, percent, speed } from "./lib/format";
   import { attempt, store, toasts } from "./lib/store.svelte";
@@ -32,6 +34,7 @@
   import DownloadList from "./lib/components/DownloadList.svelte";
   import EmptyState from "./lib/components/EmptyState.svelte";
   import Modal from "./lib/components/Modal.svelte";
+  import LoginDialog from "./lib/components/LoginDialog.svelte";
   import PropertiesDialog from "./lib/components/PropertiesDialog.svelte";
   import RefreshLinkDialog from "./lib/components/RefreshLinkDialog.svelte";
   import SettingsDialog from "./lib/components/SettingsDialog.svelte";
@@ -64,6 +67,7 @@
   let removeItems = $state<Download[] | null>(null);
   let propsFor = $state<number | null>(null);
   let refreshFor = $state<number | null>(null);
+  let loginFor = $state<number | null>(null);
   let restartItems = $state<Download[] | null>(null);
   let redownloadFor = $state<Download | null>(null);
   let replaceOld = $state(false);
@@ -94,6 +98,8 @@
     store.init();
     api.getSettings().then((s) => (settings = s));
     window.addEventListener("focus", reloadSoon);
+    const askLogin = (e: Event) => (loginFor = (e as CustomEvent<number>).detail);
+    window.addEventListener("kstar-login", askLogin);
     const unlisten = [
       listen<number>("select-download", (e) => {
         filter = "all";
@@ -101,6 +107,12 @@
         select(e.payload);
       }),
       listen<number>("confirm-quit", (e) => (quitCount = e.payload)),
+      listen<number>("ask-login", async (e) => {
+        // One prompt at a time; the other downloads keep their "Log in…" menu item.
+        if (loginDownload) return;
+        if (!store.items[e.payload]?.needs_login) await store.reload();
+        loginFor = e.payload;
+      }),
       listen<{ id: number; error: string | null }>("refresh-done", (e) => {
         if (refreshFor === e.payload.id) return; // the dialog reports it
         if (e.payload.error) toasts.show(e.payload.error, "error");
@@ -109,6 +121,7 @@
     ];
     return () => {
       window.removeEventListener("focus", reloadSoon);
+      window.removeEventListener("kstar-login", askLogin);
       unlisten.forEach((u) => u.then((f) => f()));
     };
   });
@@ -160,6 +173,7 @@
   const detail = $derived(selection.length === 1 ? selection[0] : null);
   const propsDownload = $derived(propsFor != null ? store.items[propsFor] : null);
   const refreshDownload = $derived(refreshFor != null ? store.items[refreshFor] : null);
+  const loginDownload = $derived(loginFor != null && store.items[loginFor]?.needs_login ? store.items[loginFor] : null);
   const waitingCount = $derived(store.list.filter((d) => d.status === "waiting").length);
   const queuedCount = $derived(store.list.filter((d) => d.status === "queued").length);
 
@@ -239,6 +253,12 @@
       if (sort !== "queue") toasts.show("Moved in the queue — sort by queue order to see it");
     });
 
+  /** Drags the file of `d`, or of every selected finished download when `d` is one of them. */
+  function dragOut(d: Download) {
+    const items = selected.has(d.id) ? selection.filter(draggable) : [d];
+    startFileDrag(items.length ? items : [d]).catch((e) => toasts.error(e));
+  }
+
   async function copyLinks(items: Download[]) {
     try {
       await navigator.clipboard.writeText(items.map((d) => d.url).join("\n"));
@@ -286,6 +306,9 @@
         disabled: !(one && one.status === "completed"),
         run: () => one && (redownloadFor = one),
       },
+      ...(one?.needs_login
+        ? [{ label: "Log in…", icon: KeyRound, run: () => (loginFor = one.id) } satisfies MenuEntry]
+        : []),
       {
         label: "Refresh link…",
         icon: Link2,
@@ -468,7 +491,7 @@
         {#if !store.loaded}
           <div></div>
         {:else if filtered.length}
-          <DownloadList bind:this={list} items={filtered} {selected} onrowclick={rowclick} onrowopen={rowopen} onrowmenu={openMenu} />
+          <DownloadList bind:this={list} items={filtered} {selected} onrowclick={rowclick} onrowopen={rowopen} onrowmenu={openMenu} ondragout={dragOut} />
         {:else}
           <EmptyState filtered={store.list.length > 0} onadd={() => (addOpen = { url: "" })} />
         {/if}
@@ -523,6 +546,10 @@
       propsFor = null;
     }}
   />
+{/if}
+
+{#if loginDownload}
+  <LoginDialog d={loginDownload} onclose={() => (loginFor = null)} />
 {/if}
 
 {#if refreshDownload}

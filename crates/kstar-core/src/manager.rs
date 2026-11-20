@@ -1,4 +1,4 @@
-use reqwest::{Client, Url};
+use reqwest::Url;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
@@ -8,7 +8,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::runtime::Handle;
 use tokio::sync::broadcast;
 
+use crate::net::{Login, Net, host_key};
 use crate::probe::{self, ProbeResult};
+use crate::proxy::ProxyRoute;
 use crate::ratelimit::RateLimiter;
 use crate::segment::{self, Segment, Table};
 use crate::store::{Record, Store};
@@ -26,7 +28,8 @@ pub struct Engine {
 
 struct Inner {
     store: Mutex<Store>,
-    client: Client,
+    net: Arc<Net>,
+    proxy_password: Mutex<Option<String>>,
     settings: RwLock<Settings>,
     global: Arc<RateLimiter>,
     state: Mutex<State>,
@@ -42,6 +45,8 @@ struct State {
     forced: HashSet<i64>,
     /// Downloads whose files are being moved; they don't start until that's done.
     moving: HashSet<i64>,
+    /// Running downloads per server (`host_key`), oldest first, for the connection limit.
+    hosts: HashMap<String, Vec<i64>>,
     shutting_down: bool,
     idle_reported: bool,
 }
@@ -110,6 +115,25 @@ fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
     }
 }
 
+/// Splits `limit` connections among downloads wanting `wants` each (0 = no limit). Everyone
+/// gets at least one, so many downloads on one server can go over the limit.
+fn share_connections(limit: usize, wants: &[usize]) -> Vec<usize> {
+    if limit == 0 {
+        return vec![usize::MAX; wants.len()];
+    }
+    // Smallest wants first; among equals the oldest goes last and gets any remainder.
+    let mut order: Vec<usize> = (0..wants.len()).collect();
+    order.sort_by_key(|&i| (wants[i], std::cmp::Reverse(i)));
+    let mut caps = vec![1; wants.len()];
+    let mut left = limit;
+    for (k, &i) in order.iter().enumerate() {
+        let share = (left / (wants.len() - k)).max(1);
+        caps[i] = wants[i].clamp(1, share);
+        left = left.saturating_sub(caps[i]);
+    }
+    caps
+}
+
 fn visible_segments(segs: &[Segment]) -> Vec<Segment> {
     if segs.iter().any(|s| s.end == u64::MAX) {
         Vec::new()
@@ -122,6 +146,24 @@ impl Engine {
     /// Opens (or creates) the engine database in `data_dir` and starts any queued
     /// downloads. Must be called from within a Tokio runtime.
     pub fn open(data_dir: impl AsRef<Path>) -> Result<Engine> {
+        Self::open_with(data_dir, None)
+    }
+
+    /// The saved settings, without opening the engine (e.g. to fetch the proxy password
+    /// from the keyring before [`Engine::open_with`]).
+    pub fn peek_settings(data_dir: impl AsRef<Path>) -> Result<Settings> {
+        let path = data_dir.as_ref().join("kstar.db");
+        if !path.exists() {
+            return Ok(Settings::default());
+        }
+        Ok(Store::open(&path)?
+            .load_settings()?
+            .unwrap_or_default()
+            .normalized())
+    }
+
+    /// Like [`Engine::open`], with the password of the manual proxy.
+    pub fn open_with(data_dir: impl AsRef<Path>, proxy_password: Option<String>) -> Result<Engine> {
         use std::os::unix::fs::PermissionsExt;
         let dir = data_dir.as_ref();
         std::fs::create_dir_all(dir)?;
@@ -146,16 +188,12 @@ impl Engine {
             records.insert(r.id, r);
         }
 
-        let client = Client::builder()
-            .connect_timeout(Duration::from_secs(20))
-            .read_timeout(Duration::from_secs(60))
-            .pool_idle_timeout(Duration::from_secs(30))
-            .build()
-            .map_err(|e| Error::Network(e.to_string()))?;
+        let net = Arc::new(Net::new(&settings.proxy, proxy_password.as_deref())?);
 
         let inner = Arc::new(Inner {
             store: Mutex::new(store),
-            client,
+            net,
+            proxy_password: Mutex::new(proxy_password),
             global: Arc::new(RateLimiter::new(settings.global_speed_limit)),
             settings: RwLock::new(settings),
             state: Mutex::new(State {
@@ -198,6 +236,19 @@ impl Engine {
             self.inner.global.set_rate(new.global_speed_limit);
         }
         *self.inner.settings.write().unwrap() = new.clone();
+        if old.proxy != new.proxy {
+            let pw = self.inner.proxy_password.lock().unwrap().clone();
+            self.inner.net.configure(&new.proxy, pw.as_deref());
+        }
+        if old.max_connections_per_server != new.max_connections_per_server
+            || old.server_limits != new.server_limits
+        {
+            let st = self.inner.state();
+            let hosts: Vec<String> = st.hosts.keys().cloned().collect();
+            for h in hosts {
+                self.inner.rebalance(&st, &h);
+            }
+        }
         if old.connections != new.connections {
             // Unfinished downloads still on the old default follow the new one.
             let ids: Vec<i64> = self
@@ -237,7 +288,8 @@ impl Engine {
     /// Asks the server about `url` and suggests a filename and folder, without adding anything.
     pub async fn probe(&self, url: &str, meta: &RequestMeta) -> Result<ProbeResult> {
         let s = self.settings();
-        let mut p = probe::probe(&self.inner.client, url, meta, &s.user_agent).await?;
+        let url = self.inner.strip_login(url)?;
+        let mut p = probe::probe(&self.inner.net, &url, meta, &s.user_agent).await?;
         p.category = s.category_for(&p.filename);
         p.dir = s.category_dir(p.category);
         (p.exists, p.suggested) = self.name_status(&p.dir, &p.filename);
@@ -248,14 +300,13 @@ impl Engine {
     pub fn name_status(&self, dir: &Path, name: &str) -> (bool, String) {
         let st = self.inner.state();
         let taken = |n: &str| name_claimed(&st, dir, n, None);
-        let exists = taken(name)
-            || dir.join(name).exists()
-            || filename::part_path(dir, name).exists();
+        let exists =
+            taken(name) || dir.join(name).exists() || filename::part_path(dir, name).exists();
         (exists, filename::unique_name(dir, name, taken))
     }
 
     pub fn add(&self, nd: NewDownload) -> Result<i64> {
-        let url = probe::parse_url(&nd.url)?;
+        let url = probe::parse_url(&self.inner.strip_login(&nd.url)?)?;
         let s = self.settings();
         if nd.meta.body.as_ref().is_some_and(|b| b.len() > MAX_BODY) {
             return Err(Error::Protocol(
@@ -300,6 +351,7 @@ impl Engine {
             segments: Vec::new(),
             position,
             on_conflict,
+            needs_login: None,
         };
         rec.id = self.inner.store.lock().unwrap().insert(&rec)?;
         let id = rec.id;
@@ -335,7 +387,10 @@ impl Engine {
                 return Ok(());
             }
             let rec = st.records.get_mut(&id).ok_or(Error::NotFound)?;
-            if matches!(rec.status, Status::Paused | Status::Failed | Status::Waiting) {
+            if matches!(
+                rec.status,
+                Status::Paused | Status::Failed | Status::Waiting
+            ) {
                 rec.status = Status::Queued;
                 rec.error = None;
                 self.inner.persist_and_emit(rec, None)?;
@@ -515,7 +570,7 @@ impl Engine {
     /// Points an unfinished download at a new link (e.g. after the old one expired),
     /// keeping the progress. Refused if the new link is evidently a different file.
     pub async fn refresh_url(&self, id: i64, url: &str, meta: Option<RequestMeta>) -> Result<()> {
-        let url = probe::parse_url(url)?;
+        let url = probe::parse_url(&self.inner.strip_login(url)?)?;
         let (old_size, old_meta) = {
             let st = self.inner.state();
             let rec = st.records.get(&id).ok_or(Error::NotFound)?;
@@ -527,7 +582,7 @@ impl Engine {
         let meta = meta.unwrap_or(old_meta);
         let s = self.settings();
         // Probe first, so a bad link doesn't interrupt a running download.
-        let p = probe::probe(&self.inner.client, url.as_str(), &meta, &s.user_agent).await?;
+        let p = probe::probe(&self.inner.net, url.as_str(), &meta, &s.user_agent).await?;
         match (old_size, p.total_size) {
             (Some(a), Some(b)) if a != b => {
                 return Err(Error::LinkMismatch(format!(
@@ -593,11 +648,51 @@ impl Engine {
         } = &mut *st;
         let rec = records.get_mut(&id).ok_or(Error::NotFound)?;
         rec.connections = connections;
-        let run = running.get(&id);
-        if let Some(run) = run {
+        let run = running.get(&id).cloned();
+        if let Some(run) = &run {
             run.set_target(connections);
         }
-        self.inner.persist_and_emit(rec, run.map(|a| a.as_ref()))
+        self.inner.persist_and_emit(rec, run.as_deref())?;
+        if let Some(host) = run.and_then(|r| r.host.lock().unwrap().clone()) {
+            self.inner.rebalance(&st, &host);
+        }
+        Ok(())
+    }
+
+    /// Uses `login` for a server from now on (kept in memory only), and resumes the
+    /// downloads that stopped because that server wanted a login.
+    pub fn set_login(&self, host: &str, login: Login) -> Result<()> {
+        self.inner.net.set_login(host, Some(login));
+        let ids: Vec<i64> = self
+            .inner
+            .state()
+            .records
+            .values()
+            .filter(|r| r.needs_login.as_ref().is_some_and(|l| l.host == host))
+            .map(|r| r.id)
+            .collect();
+        for id in ids {
+            self.resume(id)?;
+        }
+        Ok(())
+    }
+
+    /// Stops sending a login to a server.
+    pub fn forget_login(&self, host: &str) {
+        self.inner.net.set_login(host, None);
+    }
+
+    /// Where connections go under the current proxy settings.
+    pub fn proxy_route(&self) -> ProxyRoute {
+        self.inner.net.route()
+    }
+
+    /// The password for the manual proxy (from the keyring); applies immediately.
+    pub fn set_proxy_password(&self, password: Option<String>) {
+        *self.inner.proxy_password.lock().unwrap() = password.clone();
+        self.inner
+            .net
+            .configure(&self.settings().proxy, password.as_deref());
     }
 
     /// Renames a download or moves it to another folder, together with its file
@@ -619,7 +714,8 @@ impl Engine {
             let moved = name != rec.filename || dir != rec.dir;
             let mut planned = None;
             if moved
-                && let (Some(od), Some(on), Some(nd), Some(nn)) = (&rec.dir, &rec.filename, &dir, &name)
+                && let (Some(od), Some(on), Some(nd), Some(nn)) =
+                    (&rec.dir, &rec.filename, &dir, &name)
             {
                 let completed = rec.status == Status::Completed;
                 let (from, to) = if completed {
@@ -872,6 +968,7 @@ impl Inner {
             position: r.position,
             on_conflict: r.on_conflict,
             file_missing,
+            needs_login: r.needs_login.clone(),
             speed,
             active_connections: active,
             segments: visible_segments(&segments),
@@ -919,6 +1016,49 @@ impl Inner {
     }
 
     /// Starts queued downloads while there are free slots.
+    /// Moves `user:password@` from a URL into the login for its server.
+    fn strip_login(&self, url: &str) -> Result<String> {
+        let mut u = probe::parse_url(url)?;
+        self.net.take_userinfo(&mut u);
+        Ok(u.to_string())
+    }
+
+    fn join_host(&self, id: i64, run: &Running, host: String) {
+        let mut st = self.state();
+        if !st.running.contains_key(&id) {
+            return;
+        }
+        *run.host.lock().unwrap() = Some(host.clone());
+        st.hosts.entry(host.clone()).or_default().push(id);
+        self.rebalance(&st, &host);
+    }
+
+    /// Shares a server's connection limit among its running downloads: water-filling, so
+    /// a download that wants few connections leaves the rest to the others.
+    fn rebalance(&self, st: &State, host: &str) {
+        let Some(ids) = st.hosts.get(host) else {
+            return;
+        };
+        let runs: Vec<&Arc<Running>> = ids.iter().filter_map(|i| st.running.get(i)).collect();
+        let name = host.rsplit_once(':').map_or(host, |(h, p)| {
+            if p.chars().all(|c| c.is_ascii_digit()) {
+                h
+            } else {
+                host
+            }
+        });
+        let limit = self.settings.read().unwrap().connection_limit(name);
+        for (run, cap) in runs.iter().zip(share_connections(
+            limit,
+            &runs
+                .iter()
+                .map(|r| r.target.load(Relaxed))
+                .collect::<Vec<_>>(),
+        )) {
+            run.set_host_cap(cap);
+        }
+    }
+
     fn schedule(self: &Arc<Self>) {
         let max = self.settings.read().unwrap().max_concurrent;
         let mut st = self.state();
@@ -936,7 +1076,9 @@ impl Inner {
         let mut queued: Vec<(bool, i64, i64)> = records
             .values()
             .filter(|r| {
-                r.status == Status::Queued && !running.contains_key(&r.id) && !moving.contains(&r.id)
+                r.status == Status::Queued
+                    && !running.contains_key(&r.id)
+                    && !moving.contains(&r.id)
             })
             .map(|r| (!forced.contains(&r.id), r.position, r.id))
             .collect();
@@ -949,6 +1091,7 @@ impl Inner {
             let rec = records.get_mut(&id).expect("queued id exists");
             rec.status = Status::Probing;
             rec.error = None;
+            rec.needs_login = None;
             let run = Arc::new(Running::new(rec.speed_limit, rec.connections));
             running.insert(id, run.clone());
             if let Err(e) = self.persist_and_emit(rec, Some(&run)) {
@@ -967,6 +1110,15 @@ impl Inner {
         {
             let mut st = self.state();
             st.running.remove(&id);
+            if let Some(host) = run.host.lock().unwrap().take() {
+                if let Some(ids) = st.hosts.get_mut(&host) {
+                    ids.retain(|&i| i != id);
+                    if ids.is_empty() {
+                        st.hosts.remove(&host);
+                    }
+                }
+                self.rebalance(&st, &host);
+            }
             removed = !st.records.contains_key(&id);
             if let Some(rec) = st.records.get_mut(&id)
                 && !matches!(result, Ok(Outcome::Done))
@@ -991,10 +1143,18 @@ impl Inner {
                             tracing::info!("download {id} failed: {e}");
                             rec.status = Status::Failed;
                             rec.error = Some(e.to_string());
-                            failed = Some(Event::Failed {
-                                id,
-                                filename: rec.filename.clone(),
-                                error: e.to_string(),
+                            rec.needs_login = e.login_request();
+                            failed = Some(match e.login_request() {
+                                Some(request) => Event::LoginRequired {
+                                    id,
+                                    filename: rec.filename.clone(),
+                                    request,
+                                },
+                                None => Event::Failed {
+                                    id,
+                                    filename: rec.filename.clone(),
+                                    error: e.to_string(),
+                                },
                             });
                             let _ = self.persist_and_emit(rec, None);
                         }
@@ -1038,7 +1198,7 @@ impl Inner {
         let mut attempt = 0;
         loop {
             let r = tokio::select! {
-                r = probe::probe(&self.client, &rec.url, &rec.meta, &s.user_agent) => r,
+                r = probe::probe(&self.net, &rec.url, &rec.meta, &s.user_agent) => r,
                 _ = run.cancel.cancelled() => return Ok(None),
             };
             match r {
@@ -1077,6 +1237,9 @@ impl Inner {
         let Some(probe) = self.probe_with_retries(id, run, &rec, &s).await? else {
             return Ok(Outcome::Stopped);
         };
+        if let Ok(u) = Url::parse(&probe.final_url) {
+            self.join_host(id, run, host_key(&u));
+        }
 
         let mut segments = rec.segments.clone();
         let mut notice: Option<&str> = None;
@@ -1130,9 +1293,9 @@ impl Inner {
                 match rec.on_conflict {
                     OnConflict::Skip if on_disk || claimed => return Err(Error::Exists(name)),
                     OnConflict::Overwrite if !claimed => name,
-                    _ => filename::unique_name(&dir, &name, |n| {
-                        name_claimed(&st, &dir, n, Some(id))
-                    }),
+                    _ => {
+                        filename::unique_name(&dir, &name, |n| name_claimed(&st, &dir, n, Some(id)))
+                    }
                 }
             };
             let part = filename::part_path(&dir, &name);
@@ -1183,7 +1346,7 @@ impl Inner {
 
         let url = Url::parse(&probe.final_url).map_err(|e| Error::InvalidUrl(e.to_string()))?;
         let t = Arc::new(Transfer {
-            client: self.client.clone(),
+            net: self.net.clone(),
             url,
             meta: rec.meta.clone(),
             user_agent: s.user_agent.clone(),
@@ -1225,14 +1388,12 @@ impl Inner {
                     // Removed in the last moment; run() deletes the part file.
                     return Ok(Outcome::Stopped);
                 };
-                let final_name =
-                    if dir.join(&name).exists() && on_conflict != OnConflict::Overwrite {
-                        filename::unique_name(&dir, &name, |n| {
-                            name_claimed(&st, &dir, n, Some(id))
-                        })
-                    } else {
-                        name
-                    };
+                let final_name = if dir.join(&name).exists() && on_conflict != OnConflict::Overwrite
+                {
+                    filename::unique_name(&dir, &name, |n| name_claimed(&st, &dir, n, Some(id)))
+                } else {
+                    name
+                };
                 let path = dir.join(&final_name);
                 std::fs::rename(&part, &path)?;
                 run.part.lock().unwrap().take();
@@ -1253,5 +1414,21 @@ impl Inner {
                 Ok(Outcome::Done)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::share_connections;
+
+    #[test]
+    fn sharing_connections() {
+        assert_eq!(share_connections(6, &[8, 8]), vec![3, 3]);
+        assert_eq!(share_connections(7, &[8, 8]).iter().sum::<usize>(), 7);
+        assert_eq!(share_connections(10, &[8, 2]), vec![8, 2]);
+        assert_eq!(share_connections(9, &[8, 2, 8]), vec![4, 2, 3]);
+        assert_eq!(share_connections(2, &[4, 4, 4]), vec![1, 1, 1]);
+        assert_eq!(share_connections(0, &[4]), vec![usize::MAX]);
+        assert_eq!(share_connections(16, &[]), Vec::<usize>::new());
     }
 }

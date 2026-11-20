@@ -4,6 +4,7 @@ use serde::Serialize;
 use std::path::PathBuf;
 
 use crate::error::{describe, parse_retry_after};
+use crate::net::{HostAuth, Net, host_key, parse_challenge};
 use crate::{Category, Error, RequestMeta, Result, filename};
 
 /// What the server told us about a URL, plus where K-Star would save it.
@@ -40,6 +41,7 @@ pub(crate) fn build_request(
     url: Url,
     meta: &RequestMeta,
     default_ua: &str,
+    auth: Option<&HostAuth>,
 ) -> RequestBuilder {
     let ua = meta
         .user_agent
@@ -52,6 +54,7 @@ pub(crate) fn build_request(
         .and_then(|m| Method::from_bytes(m.trim().to_ascii_uppercase().as_bytes()).ok())
         .unwrap_or(Method::GET);
     let body = meta.body.clone().filter(|_| method != Method::GET);
+    let authorization = auth.and_then(|a| a.header(&method, &url, body.as_deref()));
     let mut rb = client
         .request(method, url)
         .header(header::ACCEPT, "*/*")
@@ -80,9 +83,13 @@ pub(crate) fn build_request(
             header::REFERER,
             header::USER_AGENT,
         ];
-        if !reserved.contains(&name) {
+        if !reserved.contains(&name) && !(authorization.is_some() && name == header::AUTHORIZATION)
+        {
             rb = rb.header(name, value);
         }
+    }
+    if let Some(v) = authorization {
+        rb = rb.header(header::AUTHORIZATION, v);
     }
     if let Some(body) = body {
         rb = rb.body(body);
@@ -119,17 +126,46 @@ pub(crate) fn parse_content_range(s: &str) -> Option<(u64, u64, Option<u64>)> {
 /// Asks for the first byte only: a 206 answer proves the server supports ranges and
 /// tells us the full size in one round trip, without downloading the body.
 pub(crate) async fn probe(
-    client: &Client,
+    net: &Net,
     url: &str,
     meta: &RequestMeta,
     ua: &str,
 ) -> Result<ProbeResult> {
     let url = parse_url(url)?;
-    let resp = build_request(client, url.clone(), meta, ua)
-        .header(header::RANGE, "bytes=0-0")
-        .send()
-        .await
-        .map_err(|e| Error::Network(describe(&e)))?;
+    let mut target = url.clone();
+    let mut attempts = 0;
+    let resp = loop {
+        let auth = net.auth_for(&target);
+        let sent = auth.as_ref().is_some_and(|a| a.ready());
+        let resp = build_request(&net.client(), target.clone(), meta, ua, auth.as_deref())
+            .header(header::RANGE, "bytes=0-0")
+            .send()
+            .await
+            .map_err(|e| Error::Network(describe(&e)))?;
+        match resp.status() {
+            StatusCode::UNAUTHORIZED => {
+                // Possibly after redirects: the login belongs to the server that asked.
+                let at = resp.url().clone();
+                let sent_here = sent && host_key(&at) == host_key(&target);
+                let challenge = parse_challenge(resp.headers());
+                let realm = challenge.as_ref().and_then(|c| c.realm.clone());
+                let retry =
+                    challenge.is_some_and(|c| net.entry(&host_key(&at)).learn(c, sent_here));
+                attempts += 1;
+                if retry && attempts < 3 {
+                    target = at;
+                    continue;
+                }
+                return Err(Error::AuthRequired {
+                    host: host_key(&at),
+                    realm,
+                    rejected: sent_here,
+                });
+            }
+            StatusCode::PROXY_AUTHENTICATION_REQUIRED => return Err(Error::ProxyAuth),
+            _ => break resp,
+        }
+    };
 
     let status = resp.status();
     let get = |name: HeaderName| {

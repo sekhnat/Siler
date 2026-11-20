@@ -2,7 +2,7 @@
   import { ExternalLink, LoaderCircle, MousePointerClick, TriangleAlert } from "@lucide/svelte";
   import { listen } from "@tauri-apps/api/event";
   import { onMount } from "svelte";
-  import { api, type Download } from "../api";
+  import { api, errorText, type Download } from "../api";
   import { bytes, host, looksLikeUrl, nameFromUrl } from "../format";
   import { toasts } from "../store.svelte";
   import Modal from "./Modal.svelte";
@@ -41,7 +41,7 @@
       await api.refreshUrl(d.id, url.trim());
       done();
     } catch (e) {
-      error = String(e);
+      error = errorText(e);
     } finally {
       busy = false;
     }
@@ -53,7 +53,7 @@
       await api.awaitRefresh(d.id);
       waiting = true;
     } catch (e) {
-      error = String(e);
+      error = errorText(e);
     }
   }
 

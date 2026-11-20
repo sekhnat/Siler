@@ -5,6 +5,7 @@ use kstar_ipc::nonblocking::{read_frame, write_frame};
 use kstar_ipc::{BrowserItem, PROTOCOL, Request, Response, socket_path};
 use std::io;
 use std::os::unix::fs::PermissionsExt;
+use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
@@ -113,7 +114,14 @@ fn dispatch(app: &AppHandle, req: Request) -> Response {
                 speed: list.iter().map(|d| d.speed).sum(),
             }
         }
-        Request::AddDownloads { items, silent } => handle_add(app, items, silent),
+        Request::AddDownloads { items, silent } => handle_add(
+            app,
+            items,
+            &AddOptions {
+                silent,
+                ..Default::default()
+            },
+        ),
     }
 }
 
@@ -124,9 +132,23 @@ fn likely_name(item: &BrowserItem) -> Option<String> {
         .or_else(|| kstar_core::filename::name_from_url(&item.url))
 }
 
+/// How downloads from the browser or the command line are added.
+#[derive(Debug, Default, Clone)]
+pub struct AddOptions {
+    /// Add without the dialog.
+    pub silent: bool,
+    /// Save into this folder instead of the category folder.
+    pub dir: Option<PathBuf>,
+    /// Add to the queue without starting ("Download later").
+    pub queue: bool,
+    /// The file names were chosen by the user (`--filename`).
+    pub keep_name: bool,
+}
+
 /// Adds downloads from the browser, the command line or a second instance: shows the Add
 /// window, or enqueues directly when `silent` or "start browser downloads automatically".
-pub fn handle_add(app: &AppHandle, items: Vec<BrowserItem>, silent: bool) -> Response {
+pub fn handle_add(app: &AppHandle, items: Vec<BrowserItem>, opts: &AddOptions) -> Response {
+    let silent = opts.silent;
     let Some(state) = app.try_state::<AppState>() else {
         return Response::Error {
             message: "K-Star couldn't start; open it to see why".into(),
@@ -144,12 +166,16 @@ pub fn handle_add(app: &AppHandle, items: Vec<BrowserItem>, silent: bool) -> Res
     }
 
     // "Refresh link": the user opened the page to get a fresh link for a download.
-    if count == 1 && let Some(id) = take_refresh_target(&state, &items[0]) {
+    if count == 1
+        && let Some(id) = take_refresh_target(&state, &items[0])
+    {
         let item = items.into_iter().next().expect("one item");
         let engine = state.engine.clone();
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
-            let result = engine.refresh_url(id, &item.url, Some(meta_of(&item))).await;
+            let result = engine
+                .refresh_url(id, &item.url, Some(meta_of(&item)))
+                .await;
             crate::show_main(&app);
             let _ = app.emit(
                 "refresh-done",
@@ -167,7 +193,10 @@ pub fn handle_add(app: &AppHandle, items: Vec<BrowserItem>, silent: bool) -> Res
         settings.on_conflict == OnConflict::Ask
             && !silent
             && likely_name(item).is_some_and(|name| {
-                let dir = settings.category_dir(settings.category_for(&name));
+                let dir = opts
+                    .dir
+                    .clone()
+                    .unwrap_or_else(|| settings.category_dir(settings.category_for(&name)));
                 state.engine.name_status(&dir, &name).0
             })
     };
@@ -179,6 +208,8 @@ pub fn handle_add(app: &AppHandle, items: Vec<BrowserItem>, silent: bool) -> Res
                 filename: item.filename.clone(),
                 meta: meta_of(item),
                 on_conflict: Some(settings.unattended_conflict()),
+                dir: opts.dir.clone(),
+                start_paused: opts.queue,
                 ..Default::default()
             };
             if let Err(e) = state.engine.add(nd) {
@@ -194,7 +225,7 @@ pub fn handle_add(app: &AppHandle, items: Vec<BrowserItem>, silent: bool) -> Res
             count: count - errors.len(),
         }
     } else {
-        state.push_pending(items);
+        state.push_pending(items, opts);
         let _ = app.emit("pending-changed", ());
         crate::open_add_window(app);
         Response::Accepted { count }

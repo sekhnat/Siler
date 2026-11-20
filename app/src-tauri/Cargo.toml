@@ -26,3 +26,6 @@ dirs = "7"
 ksni = "0.3.7"
 tracing-appender = "0.2.5"
 tauri-plugin-window-state = "2.5.0"
+oo7 = "0.7"
+tauri-plugin-drag = "2.1"
+zbus = { version = "5.19", default-features = false, features = ["tokio"] }
