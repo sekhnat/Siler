@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="../ui.css" />
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <img src="../icons/icon-32.png" alt="" width="28" height="28" />
+      <div>
+        <div class="title">K-Star</div>
+        <div class="status"><span id="dot" class="dot"></span><span id="status">Checking…</span></div>
+      </div>
+    </header>
+
+    <div id="stats" class="stats" hidden>
+      <div><b id="active">0</b><span class="muted">active</span></div>
+      <div><b id="queued">0</b><span class="muted">queued</span></div>
+      <div><b id="speed">0 B/s</b><span class="muted">speed</span></div>
+    </div>
+
+    <div id="outdated" class="banner warn" hidden></div>
+    <div id="error" class="banner err" hidden>
+      <span id="error-text"></span>
+      <button id="error-close" class="link" aria-label="Dismiss">Dismiss</button>
+    </div>
+
+    <label class="row">
+      <span>
+        <span class="label">Capture downloads</span>
+        <span class="muted small">Hold <kbd>Alt</kbd> while clicking to skip</span>
+      </span>
+      <button id="enabled" class="switch" role="switch" aria-checked="true"></button>
+    </label>
+
+    <label id="site-row" class="row" hidden>
+      <span>
+        <span class="label">Capture on <span id="site"></span></span>
+        <span class="muted small" id="site-hint">Turn off to let Firefox handle this site's downloads</span>
+      </span>
+      <button id="site-on" class="switch" role="switch" aria-checked="true"></button>
+    </label>
+
+    <form id="add" class="add">
+      <input id="url" type="url" placeholder="Paste a link to download" autocomplete="off" />
+      <button class="btn" type="submit">Add</button>
+    </form>
+
+    <div id="setup" class="setup" hidden>
+      The K-Star app isn't registered with Firefox yet. Open K-Star → Settings → Browser and click <b>Install</b>.
+    </div>
+
+    <footer>
+      <button id="open" class="btn btn-primary">Open K-Star</button>
+      <button id="options" class="btn">Options</button>
+    </footer>
+    <script src="../shared.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

@@ -1,0 +1,109 @@
+:root {
+  --grad: linear-gradient(135deg, #7c5cff 0%, #5b6cff 55%, #22d3ee 100%);
+  --accent: #6d5cff;
+  --ok: #16a34a;
+  --warn: #d97706;
+  --err: #dc2626;
+  --bg: #ffffff;
+  --surface: #f6f7fb;
+  --border: rgba(20, 24, 40, 0.1);
+  --text: #121521;
+  --muted: #7a8196;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --accent: #8b7bff;
+    --ok: #34d399;
+    --warn: #fbbf24;
+    --err: #f87171;
+    --bg: #141720;
+    --surface: #1b1f2a;
+    --border: rgba(255, 255, 255, 0.08);
+    --text: #e9ebf1;
+    --muted: #8a90a3;
+  }
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 13.5px/1.45 "Inter", system-ui, -apple-system, sans-serif;
+}
+button {
+  font: inherit;
+  cursor: pointer;
+}
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 600;
+}
+.btn-primary {
+  border: none;
+  background: var(--grad);
+  color: #fff;
+}
+.switch {
+  position: relative;
+  width: 36px;
+  height: 21px;
+  flex: none;
+  border-radius: 99px;
+  border: none;
+  background: var(--border);
+  transition: background 0.2s;
+}
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 2.5px;
+  left: 2.5px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  transition: transform 0.2s;
+}
+.switch[aria-checked="true"] {
+  background: var(--accent);
+}
+.switch[aria-checked="true"]::after {
+  transform: translateX(15px);
+}
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--muted);
+}
+.dot.ok {
+  background: var(--ok);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 25%, transparent);
+}
+.dot.warn {
+  background: var(--warn);
+}
+.dot.err {
+  background: var(--err);
+}
+.muted {
+  color: var(--muted);
+}
+
+[hidden] {
+  display: none !important;
+}
