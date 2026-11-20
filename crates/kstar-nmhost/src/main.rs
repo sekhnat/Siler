@@ -115,11 +115,19 @@ fn app_binary() -> PathBuf {
     if let Some(p) = std::env::var_os("KSTAR_APP") {
         return p.into();
     }
-    if let Some(sibling) = std::env::current_exe()
+    let dir = std::env::current_exe()
         .ok()
-        .and_then(|exe| exe.parent().map(|d| d.join("kstar")))
-        .filter(|p| p.exists())
+        .and_then(|exe| exe.parent().map(PathBuf::from));
+    // Copied out of an AppImage: the AppImage to start is noted beside this host.
+    if let Some(app) = dir
+        .as_ref()
+        .and_then(|d| std::fs::read_to_string(d.join("kstar-app")).ok())
+        .map(|s| PathBuf::from(s.trim()))
+        .filter(|p| p.is_absolute() && p.exists())
     {
+        return app;
+    }
+    if let Some(sibling) = dir.map(|d| d.join("kstar")).filter(|p| p.exists()) {
         return sibling;
     }
     PathBuf::from("kstar")

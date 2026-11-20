@@ -31,8 +31,13 @@ pub fn entry_path() -> PathBuf {
         .join(format!("{APP_ID}.desktop"))
 }
 
+/// The program the menu entry starts: the AppImage file when K-Star runs from one (the
+/// executable itself sits in a mount that changes every run), else this executable.
 fn exe() -> io::Result<PathBuf> {
-    std::env::current_exe()
+    match crate::integration::appimage() {
+        Some(file) => Ok(file),
+        None => std::env::current_exe(),
+    }
 }
 
 fn entry(exe: &Path) -> String {

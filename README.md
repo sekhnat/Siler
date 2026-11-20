@@ -82,6 +82,12 @@ cd app && pnpm check
 ./scripts/sign-extension.sh
 ```
 
+### Releases
+Each GitHub release carries:
+- **The AppImage** (`K-Star-<version>-x86_64.AppImage`), built by the `AppImage` workflow (`.github/workflows/appimage.yml`) when a release is published, with the native host and the bundled FFmpeg inside. Make it executable, run it once with `--install-integration` (or use Settings → Browser → Install), and keep it where it is: the menu entry and the browser host point at the file. The host is copied to `~/.local/share/kstar/bin/`, because the AppImage's own files disappear when it closes. K-Star updates that copy and the AppImage path on every start, so moving the file or replacing it with a newer one only needs one start. The workflow can also be run by hand for an existing tag; the tag must match the app's version.
+- **A tarball** of the same programs, for running from a folder (`INSTALL.txt` inside).
+- **The signed extension** (`kstar-integration-<version>.xpi`, signed by Mozilla as unlisted).
+
 ### Using K-Star
 - **Command line:** `kstar [OPTIONS] [URL…]` adds links to a running K-Star, or starts it (`kstar --help` lists the options). The `.desktop` entry passes links dropped on the launcher the same way.
   - `--silent` adds without the Add window; `--background` starts in the tray.

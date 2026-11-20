@@ -7,3 +7,4 @@ node_modules/
 /extension/web-ext-artifacts/
 /extension/.amo-upload-uuid
 /app/src-tauri/resources/
+/app/src-tauri/binaries/

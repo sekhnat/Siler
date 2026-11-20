@@ -680,6 +680,7 @@ fn main() {
                         power: power::PowerState::default(),
                     });
                     desktop::ensure();
+                    integration::refresh_appimage();
                     setup_notifications(app.handle());
                     let activity = inhibit::spawn(engine.clone());
                     forward_engine_events(app.handle().clone(), engine, activity);

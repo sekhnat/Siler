@@ -121,14 +121,80 @@ pub fn status(
     }
 }
 
-/// Writes the host manifest for every browser found; returns the paths written.
-pub fn install() -> std::io::Result<Vec<PathBuf>> {
-    let host = bundled_host().ok_or_else(|| {
+/// The AppImage file K-Star runs from, if it runs from one (`$APPIMAGE`, set by the
+/// AppImage runtime).
+pub fn appimage() -> Option<PathBuf> {
+    std::env::var_os("APPIMAGE")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute() && p.is_file())
+}
+
+/// Where the host is copied when K-Star runs as an AppImage: its own copy lives in the
+/// AppImage's mount, which is gone when K-Star quits.
+fn stable_host_dir() -> Option<PathBuf> {
+    Some(dirs::data_dir()?.join("kstar").join("bin"))
+}
+
+/// Copies the host out of the AppImage, with a note of the AppImage's path beside it
+/// (`kstar-app`), which the host starts when K-Star isn't running.
+fn stable_host(app: &Path) -> std::io::Result<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    let from = bundled_host().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::NotFound,
-            "kstar-nmhost was not found next to the K-Star executable",
+            "kstar-nmhost was not found inside the AppImage",
         )
     })?;
+    let dir = stable_host_dir().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "no data folder")
+    })?;
+    std::fs::create_dir_all(&dir)?;
+    let host = dir.join("kstar-nmhost");
+    // Through a temporary name: the browser may be running the old copy.
+    let tmp = dir.join(".kstar-nmhost.new");
+    std::fs::copy(&from, &tmp)?;
+    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
+    std::fs::rename(&tmp, &host)?;
+    std::fs::write(dir.join("kstar-app"), app.as_os_str().as_encoded_bytes())?;
+    Ok(host)
+}
+
+/// On start-up from an AppImage: if the browsers use the copied host, update it and the
+/// AppImage path it starts (the AppImage may have been moved or replaced by a newer one).
+pub fn refresh_appimage() {
+    let (Some(app), Some(dir)) = (appimage(), stable_host_dir()) else {
+        return;
+    };
+    let firefox = manifest_in(&home().join(".mozilla"));
+    if host_of(&firefox).as_deref() != Some(dir.join("kstar-nmhost").to_string_lossy().as_ref()) {
+        return;
+    }
+    let current = std::fs::read(dir.join("kstar-app")).ok();
+    let same_app = current.as_deref() == Some(app.as_os_str().as_encoded_bytes());
+    let same_host = bundled_host()
+        .and_then(|b| std::fs::read(b).ok())
+        .zip(std::fs::read(dir.join("kstar-nmhost")).ok())
+        .is_some_and(|(a, b)| a == b);
+    if same_app && same_host {
+        return;
+    }
+    match stable_host(&app) {
+        Ok(_) => tracing::info!("updated the browser host for {}", app.display()),
+        Err(e) => tracing::warn!("could not update the browser host: {e}"),
+    }
+}
+
+/// Writes the host manifest for every browser found; returns the paths written.
+pub fn install() -> std::io::Result<Vec<PathBuf>> {
+    let host = match appimage() {
+        Some(app) => stable_host(&app)?,
+        None => bundled_host().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "kstar-nmhost was not found next to the K-Star executable",
+            )
+        })?,
+    };
     let manifest = serde_json::json!({
         "name": HOST_NAME,
         "description": "K-Star download manager",
