@@ -93,3 +93,31 @@ export const SPEED_UNITS = [
   { label: "KB/s", factor: 1024 },
   { label: "MB/s", factor: 1024 ** 2 },
 ];
+
+/** "22:00–06:00, weekdays" (empty when the queue has no schedule). */
+export function describeSchedule(s: import("./api").Schedule): string {
+  if (!s.enabled || s.start_at == null) return "";
+  const hm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+  const time = s.stop_at == null ? `from ${hm(s.start_at)}` : `${hm(s.start_at)}–${hm(s.stop_at)}`;
+  const key = s.days.map((d) => (d ? "1" : "0")).join("");
+  const names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  const days = s.once
+    ? "once"
+    : key === "1111111"
+      ? "every day"
+      : key === "1111100"
+        ? "weekdays"
+        : key === "0000011"
+          ? "weekends"
+          : names.filter((_, i) => s.days[i]).join(" ");
+  return `${time}, ${days}`;
+}
+
+/** "every hour", "every day"… for keeping a file up to date. */
+export function syncLabel(secs: number): string {
+  if (!secs) return "";
+  if (secs % 604800 === 0) return secs === 604800 ? "every week" : `every ${secs / 604800} weeks`;
+  if (secs % 86400 === 0) return secs === 86400 ? "every day" : `every ${secs / 86400} days`;
+  if (secs % 3600 === 0) return secs === 3600 ? "every hour" : `every ${secs / 3600} hours`;
+  return `every ${Math.round(secs / 60)} min`;
+}

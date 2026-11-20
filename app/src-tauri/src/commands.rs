@@ -1,7 +1,7 @@
 use kstar_core::proxy::ProxyRoute;
 use kstar_core::{
-    Category, DownloadInfo, EditDownload, Login, LoginRequest, NewDownload, OnConflict,
-    ProbeResult, QueueMove, RequestMeta, Settings, Status,
+    AfterDone, Category, DownloadInfo, EditDownload, Login, LoginRequest, NewDownload, OnConflict,
+    ProbeResult, Queue, QueueMove, RequestMeta, Settings, Status,
 };
 use kstar_ipc::BrowserItem;
 use serde::{Deserialize, Serialize};
@@ -9,12 +9,13 @@ use std::fmt::Display;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
 
 use crate::integration::{self, IntegrationStatus};
 use crate::logins::{self, SavedLogin};
 use crate::{AppState, PendingView, StartupError};
+use crate::{power, sound};
 
 type Res<T> = Result<T, String>;
 
@@ -182,6 +183,7 @@ pub struct AddArgs {
     connections: Option<u8>,
     on_conflict: Option<OnConflict>,
     pending_id: Option<u64>,
+    queue_id: Option<i64>,
 }
 
 #[tauri::command]
@@ -198,6 +200,7 @@ pub fn add_download(state: State<'_, AppState>, args: AddArgs) -> Res<i64> {
             start_paused: args.start_paused,
             connections: args.connections,
             on_conflict: args.on_conflict,
+            queue_id: args.queue_id,
         })
         .map_err(err)?;
     forget_pending(&state, args.pending_id);
@@ -228,6 +231,7 @@ pub fn pending_adds(state: State<'_, AppState>) -> Vec<PendingView> {
                 selected: p.item.selected.unwrap_or(true),
                 dir: p.dir.clone(),
                 start_paused: p.start_paused,
+                queue_id: p.queue_id,
                 keep_name: p.keep_name,
                 resumable: if single {
                     name.and_then(|n| state.engine.find_resumable(&n, p.item.size))
@@ -280,13 +284,114 @@ pub fn start_now(state: State<'_, AppState>, id: i64) -> Res<()> {
 }
 
 #[tauri::command]
-pub fn start_queue(state: State<'_, AppState>) -> Res<()> {
-    state.engine.start_queue().map_err(err)
+pub fn start_queue(state: State<'_, AppState>, queue_id: i64) -> Res<()> {
+    state.engine.start_queue(queue_id).map_err(err)
+}
+
+/// Stopping a queue by hand only holds back what hasn't started (like before);
+/// the schedule's stop also pauses running downloads.
+#[tauri::command]
+pub fn stop_queue(
+    state: State<'_, AppState>,
+    queue_id: i64,
+    pause_running: Option<bool>,
+) -> Res<()> {
+    state
+        .engine
+        .stop_queue(queue_id, pause_running.unwrap_or(false))
+        .map_err(err)
 }
 
 #[tauri::command]
-pub fn stop_queue(state: State<'_, AppState>) -> Res<()> {
-    state.engine.stop_queue().map_err(err)
+pub fn list_queues(state: State<'_, AppState>) -> Vec<Queue> {
+    state.engine.queues()
+}
+
+#[tauri::command]
+pub fn create_queue(state: State<'_, AppState>, queue: Queue) -> Res<i64> {
+    state.engine.create_queue(queue).map_err(err)
+}
+
+#[tauri::command]
+pub fn update_queue(state: State<'_, AppState>, queue: Queue) -> Res<()> {
+    state.engine.update_queue(queue).map_err(err)
+}
+
+#[tauri::command]
+pub fn delete_queue(state: State<'_, AppState>, queue_id: i64) -> Res<()> {
+    state.engine.delete_queue(queue_id).map_err(err)
+}
+
+#[tauri::command]
+pub fn move_to_queue(state: State<'_, AppState>, ids: Vec<i64>, queue_id: i64) -> Res<()> {
+    state.engine.move_to_queue(&ids, queue_id).map_err(err)
+}
+
+/// Keep a finished download up to date: check every `every_secs` seconds (0 = off).
+#[tauri::command]
+pub fn set_sync(state: State<'_, AppState>, id: i64, every_secs: u64) -> Res<()> {
+    state.engine.set_sync(id, every_secs).map_err(err)
+}
+
+#[tauri::command]
+pub fn check_for_update(state: State<'_, AppState>, id: i64) -> Res<()> {
+    state.engine.check_for_update(id).map_err(err)
+}
+
+#[tauri::command]
+pub async fn power_caps() -> power::PowerCaps {
+    power::caps(&power::Logind).await
+}
+
+#[tauri::command]
+pub fn power_pending(state: State<'_, AppState>) -> Option<power::PendingPowerView> {
+    state.power.view()
+}
+
+#[tauri::command]
+pub fn power_cancel(app: AppHandle, state: State<'_, AppState>) {
+    if state.power.cancel() {
+        tracing::info!("cancelled the action after downloads");
+    }
+    if let Some(w) = app.get_webview_window("countdown") {
+        let _ = w.close();
+    }
+    let _ = app.emit("power-countdown", None::<power::PendingPowerView>);
+}
+
+#[tauri::command]
+pub async fn power_now(app: AppHandle) {
+    power::run_now(&app).await;
+}
+
+#[tauri::command]
+pub fn get_when_done(state: State<'_, AppState>) -> AfterDone {
+    *state.power.when_done.lock().unwrap()
+}
+
+/// "When all downloads finish": a one-off action, cleared once it has run.
+pub fn set_when_done_action(app: &AppHandle, action: AfterDone) {
+    if let Some(state) = app.try_state::<AppState>() {
+        *state.power.when_done.lock().unwrap() = action;
+        tracing::info!("when all downloads finish: {action:?}");
+        let _ = app.emit("when-done-changed", action);
+        crate::tray::refresh();
+    }
+}
+
+#[tauri::command]
+pub fn set_when_done(app: AppHandle, action: AfterDone) {
+    set_when_done_action(&app, action);
+}
+
+#[tauri::command]
+pub fn test_sound(
+    state: State<'_, AppState>,
+    sound: sound::Sound,
+    settings: Option<kstar_core::SoundSettings>,
+) {
+    let s = settings.unwrap_or_else(|| state.engine.settings().sounds);
+    sound::play(&s, sound);
 }
 
 #[tauri::command]

@@ -3,12 +3,13 @@
   import { open } from "@tauri-apps/plugin-dialog";
   import { onMount } from "svelte";
   import { slide } from "svelte/transition";
-  import { api, errorText, type Category, type LoginRequest, type Pending, type ProbeError, type ProbeResult, type Settings } from "../api";
+  import { api, errorText, MAIN_QUEUE, type Category, type LoginRequest, type Pending, type ProbeError, type ProbeResult, type Settings } from "../api";
   import { CATEGORIES, categoryMeta } from "../categories";
   import { bytes, host, looksLikeUrl, nameFromUrl, parseUrls, percent } from "../format";
   import { toasts } from "../store.svelte";
   import FileIcon from "./FileIcon.svelte";
   import LoginForm from "./LoginForm.svelte";
+  import QueuePicker from "./QueuePicker.svelte";
 
   let {
     initialUrl = "",
@@ -45,6 +46,9 @@
   // `--queue`: "Download later" is the main action.
   // svelte-ignore state_referenced_locally
   const later = pending?.start_paused ?? false;
+  // `--queue=NAME`: the queue to put it in.
+  // svelte-ignore state_referenced_locally
+  let queueId = $state(pending?.queue_id ?? MAIN_QUEUE);
   let category = $state<Category>("other");
   let settings = $state<Settings | null>(null);
   let connections = $state<number | null>(null);
@@ -165,6 +169,7 @@
         connections,
         onConflict: clash ? choice : null,
         pendingId: pending?.id ?? null,
+        queueId,
       });
       ondone();
     } catch (e) {
@@ -312,6 +317,7 @@
   <div class="actions">
     <button class="btn btn-ghost" onclick={oncancel}>Cancel</button>
     <span class="grow"></span>
+    <QueuePicker bind:value={queueId} />
     <button class="btn" class:btn-primary={later} disabled={!valid || busy} onclick={() => submit(true)}>Download later</button>
     <button class="btn" class:btn-primary={!later} disabled={!valid || busy} onclick={() => submit(false)}>Start download</button>
   </div>

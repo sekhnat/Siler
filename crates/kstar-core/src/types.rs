@@ -144,6 +144,8 @@ pub struct NewDownload {
     pub connections: Option<u8>,
     /// What to do if the file exists; the setting when absent.
     pub on_conflict: Option<OnConflict>,
+    /// The queue to put it in; the main queue when absent.
+    pub queue_id: Option<i64>,
 }
 
 /// Changes to an existing download.
@@ -188,6 +190,11 @@ pub struct DownloadInfo {
     /// Queue order: lower starts first.
     pub position: i64,
     pub on_conflict: OnConflict,
+    pub queue_id: i64,
+    /// Checked for a newer version this often (seconds); 0 = not kept up to date.
+    pub sync_every: u64,
+    /// The last check for a newer version (ms since the epoch).
+    pub sync_checked_at: Option<i64>,
     /// A completed download whose file is no longer there.
     pub file_missing: bool,
     /// Stopped because the server wants a login.
@@ -241,6 +248,18 @@ pub enum Event {
         id: i64,
         filename: Option<String>,
         error: String,
+    },
+    /// The list of queues changed (added, edited, removed, started or stopped).
+    Queues {
+        queues: Vec<crate::Queue>,
+    },
+    /// A started queue has nothing left to run.
+    QueueDone {
+        queue_id: i64,
+        name: String,
+        after_done: crate::AfterDone,
+        completed: usize,
+        failed: usize,
     },
     /// A download stopped because its server wants a login (instead of `Failed`).
     LoginRequired {

@@ -11,8 +11,17 @@
 </script>
 
 <script lang="ts">
-  import { ArrowDownUp, Ellipsis, ListEnd, ListStart, Pause, Play, Search, Trash2, X } from "@lucide/svelte";
+  import { ArrowDownUp, Ellipsis, ListEnd, ListStart, Pause, Play, Power, Search, Trash2, X } from "@lucide/svelte";
+  import type { AfterDone } from "../api";
   import Menu from "./Menu.svelte";
+
+  const WHEN_DONE: { label: string; value: AfterDone }[] = [
+    { label: "Do nothing", value: "nothing" },
+    { label: "Quit K-Star", value: "quit" },
+    { label: "Sleep", value: "sleep" },
+    { label: "Hibernate", value: "hibernate" },
+    { label: "Shut down", value: "power_off" },
+  ];
 
   let {
     search = $bindable(),
@@ -32,6 +41,8 @@
     onremove,
     onresumeall,
     onpauseall,
+    whenDone,
+    onwhendone,
   }: {
     search: string;
     sort: SortKey;
@@ -50,7 +61,11 @@
     onremove: () => void;
     onresumeall: () => void;
     onpauseall: () => void;
+    /** What happens once all downloads have finished (a one-off choice). */
+    whenDone: AfterDone;
+    onwhendone: (a: AfterDone) => void;
   } = $props();
+  let whenMenu = $state(false);
 
   let sortMenu = $state(false);
   let moreMenu = $state(false);
@@ -59,7 +74,7 @@
 <div class="bar">
   <div class="heading">
     <h1>{title}</h1>
-    <div class="sub">{subtitle}</div>
+    <div class="sub" title={subtitle}>{subtitle}</div>
   </div>
 
   <div class="actions">
@@ -83,6 +98,17 @@
     {/if}
 
     <div class="group">
+      <div class="anchor">
+        <button
+          class="icon-btn"
+          class:armed={whenDone !== "nothing"}
+          title={whenDone === "nothing" ? "When all downloads finish…" : `When all downloads finish: ${WHEN_DONE.find((w) => w.value === whenDone)?.label}`}
+          onclick={() => (whenMenu = !whenMenu)}><Power size={16} /></button
+        >
+        {#if whenMenu}
+          <Menu align="right" value={whenDone} items={WHEN_DONE} onselect={onwhendone} onclose={() => (whenMenu = false)} />
+        {/if}
+      </div>
       <div class="anchor">
         <button class="icon-btn" title="Sort: {SORTS.find((s) => s.value === sort)?.label}" onclick={() => (sortMenu = !sortMenu)}><ArrowDownUp size={16} /></button>
         {#if sortMenu}
@@ -114,6 +140,10 @@
 </div>
 
 <style>
+  .armed {
+    color: var(--warn);
+    background: color-mix(in srgb, var(--warn) 14%, transparent);
+  }
   .bar {
     display: flex;
     align-items: center;
@@ -126,10 +156,20 @@
     font-size: 20px;
     font-weight: 720;
     letter-spacing: -0.025em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .heading {
+    min-width: 0;
+    flex: 1;
   }
   .sub {
     color: var(--muted);
     font-size: 12.5px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .actions {
     display: flex;

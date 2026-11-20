@@ -41,6 +41,33 @@ pub struct ServerLimit {
     pub connections: u8,
 }
 
+/// Sounds for download events. Each plays the desktop theme's sound unless a file is chosen.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SoundSettings {
+    pub enabled: bool,
+    pub on_complete: bool,
+    pub on_failed: bool,
+    pub on_queue_done: bool,
+    pub complete_file: Option<PathBuf>,
+    pub failed_file: Option<PathBuf>,
+    pub queue_done_file: Option<PathBuf>,
+}
+
+impl Default for SoundSettings {
+    fn default() -> Self {
+        SoundSettings {
+            enabled: false,
+            on_complete: true,
+            on_failed: true,
+            on_queue_done: true,
+            complete_file: None,
+            failed_file: None,
+            queue_done_file: None,
+        }
+    }
+}
+
 pub fn default_categories() -> Vec<CategoryRule> {
     Category::ALL
         .into_iter()
@@ -80,6 +107,9 @@ pub struct Settings {
     pub proxy: ProxySettings,
     /// Keep the computer from sleeping while downloads run.
     pub prevent_sleep: bool,
+    /// Offer links to downloadable files when they are copied.
+    pub clipboard_monitor: bool,
+    pub sounds: SoundSettings,
 }
 
 impl Default for Settings {
@@ -107,6 +137,8 @@ impl Default for Settings {
             server_limits: Vec::new(),
             proxy: ProxySettings::default(),
             prevent_sleep: true,
+            clipboard_monitor: false,
+            sounds: SoundSettings::default(),
         }
     }
 }

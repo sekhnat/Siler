@@ -5,7 +5,12 @@ A Linux-first download manager with a Firefox extension. The long-term target is
 **Milestone 1 (this code)** includes:
 - Segmented, multi-connection HTTP(S) downloads with dynamic splitting. The connection count can be changed while a download runs.
 - Pause and resume, including after a restart or crash. Passing network failures are retried, honouring the server's `Retry-After`.
-- A persistent queue: "Download later", Start/Stop queue, reordering, and Start now.
+- Named queues, each with its own limit on downloads at a time: "Download later", Start/Stop queue, reordering, Start now, and moving downloads between queues.
+- Scheduled queues: start (and optionally stop) at set times on chosen days of the week, or once. A queue whose time has come starts when K-Star starts.
+- When a queue (or everything) has finished: quit K-Star, or put the computer to sleep, hibernate or shut it down after a one-minute countdown that can be cancelled.
+- Keeping files up to date: a finished download can be checked every hour, day or week, and a newer version on the server replaces the file once it has downloaded.
+- Clipboard monitoring (off by default): copying a link to a file with a known extension offers it in the Add window. Works on KDE/wlroots Wayland (data-control protocol) and X11.
+- Sounds for a finished or failed download and a finished queue, from the desktop's sound theme or chosen files (off by default).
 - Expired links can be replaced without losing progress ("Refresh link"). There are also Restart and Download again actions.
 - Categories with editable file types and folders.
 - A rule for when a file already exists: ask, keep both, replace, or skip.
@@ -49,6 +54,7 @@ Firefox extension ──native messaging (stdio)──► kstar-nmhost ──Uni
 - The HTTP client is HTTP/1.1 only and sends `Accept-Encoding: identity`. This makes each connection a real TCP connection, and keeps byte ranges pointing at the file itself.
 - The database (`~/.local/share/app.kstar.KStar/kstar.db`) is mode 0600 because it stores forwarded cookies, which are needed to resume. Cookies are never sent to the UI.
 - The socket is mode 0600 and only accepts peers with the same UID.
+- Scheduling runs while K-Star is running (in the tray is fine). It can't wake a sleeping or switched-off computer: that needs root (rtcwake) and is left out.
 - Logins are kept in memory and, when you choose to save them, in the keyring; they are never written to the database. A login is only sent to the server it belongs to (redirects to another host don't carry it). The keyring is read only when a server asks for a login, or at start when a manual proxy has a username.
 
 ## Development
@@ -77,10 +83,11 @@ cd app && pnpm check
 - **Command line:** `kstar [OPTIONS] [URL…]` adds links to a running K-Star, or starts it (`kstar --help` lists the options). The `.desktop` entry passes links dropped on the launcher the same way.
   - `--silent` adds without the Add window; `--background` starts in the tray.
   - `--dir PATH` and `--filename NAME` choose where a link is saved (`--filename` needs exactly one link).
-  - `--queue` adds the links as "Download later"; `--start-queue` starts everything waiting in the queue.
-  - Example: `kstar --queue --silent --dir ~/ISOs https://example.com/a.iso`, and later `kstar --start-queue`.
+  - `--queue` adds the links as "Download later"; `--start-queue` starts everything waiting in the main queue.
+  - `--queue=NAME` and `--start-queue=NAME` do the same for a named queue (only the `=` form takes a name, any case). An unknown name is refused.
+  - Example: `kstar --queue=Night --silent --dir ~/ISOs https://example.com/a.iso`, and later `kstar --start-queue=Night`.
 - **Logs:** written to `~/.local/state/kstar/logs/`, as `kstar.<date>.log` (kept for a week), `nmhost.log`, and `kstar-stderr.log` when the browser started K-Star. Settings → General → **Open log folder** opens the folder.
-- **Data:** stored in `~/.local/share/app.kstar.KStar/kstar.db`. The schema migrates on start (v1 → v2 adds the queue position and conflict policy).
+- **Data:** stored in `~/.local/share/app.kstar.KStar/kstar.db`. The schema migrates on start (v1 → v2 adds the queue position and conflict policy; v2 → v3 adds named queues and keeping files up to date).
 - **If K-Star can't start** (e.g. the database can't be opened), the window shows the error instead of the app disappearing.
 
 ### Firefox extension
@@ -108,6 +115,6 @@ How capture works:
 - **"Always ask where to save files":** if this Firefox setting is on, the hand-over happens after the save dialog.
 
 ## Roadmap
-- **M2:** video grabber (yt-dlp/ffmpeg) and HLS/DASH, clipboard monitoring, scheduler and named queues, post-download actions.
+- **M2 (rest):** the video grabber: HLS/DASH with a quality, audio and subtitle picker and a bundled FFmpeg (0.5), then videos found by the Firefox extension (0.6).
 - **M3:** checksum verification, mirrors and multi-source downloads, import/export, site grabber.
 - **M4:** FTP/SFTP, a Chromium extension, Flatpak/AUR packaging (Flatpak Firefox needs another native-host path), autostart.

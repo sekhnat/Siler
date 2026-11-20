@@ -5,6 +5,54 @@ export type Category = "video" | "music" | "images" | "documents" | "compressed"
 export type OnConflict = "ask" | "rename" | "overwrite" | "skip";
 export type QueueMove = "up" | "down" | "top" | "bottom";
 
+export type AfterDone = "nothing" | "quit" | "sleep" | "hibernate" | "power_off";
+
+export interface Schedule {
+  enabled: boolean;
+  /** Minutes after midnight. */
+  start_at: number | null;
+  stop_at: number | null;
+  /** Monday first. */
+  days: boolean[];
+  once: boolean;
+}
+
+export interface Queue {
+  id: number;
+  name: string;
+  /** 0 = only the global limit. */
+  max_concurrent: number;
+  schedule: Schedule;
+  after_done: AfterDone;
+  active: boolean;
+}
+
+export const MAIN_QUEUE = 1;
+
+export interface PowerCaps {
+  sleep: boolean;
+  hibernate: boolean;
+  power_off: boolean;
+}
+
+export interface PendingPower {
+  action: AfterDone;
+  reason: string;
+  seconds_left: number;
+}
+
+export type SoundEvent = "complete" | "failed" | "queue_done";
+
+export interface SoundSettings {
+  enabled: boolean;
+  on_complete: boolean;
+  on_failed: boolean;
+  on_queue_done: boolean;
+  complete_file: string | null;
+  failed_file: string | null;
+  queue_done_file: string | null;
+}
+
 export interface LoginRequest {
   host: string;
   realm: string | null;
@@ -73,6 +121,10 @@ export interface Download {
   completed_at: number | null;
   position: number;
   on_conflict: OnConflict;
+  queue_id: number;
+  /** Checked for a newer version this often (seconds); 0 = not kept up to date. */
+  sync_every: number;
+  sync_checked_at: number | null;
   file_missing: boolean;
   needs_login: LoginRequest | null;
   speed: number;
@@ -95,7 +147,16 @@ export type EngineEvent =
   | { type: "progress"; items: ProgressItem[]; total_speed: number }
   | { type: "completed"; id: number; filename: string; path: string }
   | { type: "failed"; id: number; filename: string | null; error: string }
-  | { type: "login_required"; id: number; filename: string | null; request: LoginRequest };
+  | { type: "login_required"; id: number; filename: string | null; request: LoginRequest }
+  | { type: "queues"; queues: Queue[] }
+  | {
+      type: "queue_done";
+      queue_id: number;
+      name: string;
+      after_done: AfterDone;
+      completed: number;
+      failed: number;
+    };
 
 export interface ProbeResult {
   final_url: string;
@@ -137,6 +198,8 @@ export interface Settings {
   server_limits: ServerLimit[];
   proxy: ProxySettings;
   prevent_sleep: boolean;
+  clipboard_monitor: boolean;
+  sounds: SoundSettings;
 }
 
 export interface Pending {
@@ -151,6 +214,7 @@ export interface Pending {
   selected: boolean;
   dir: string | null;
   start_paused: boolean;
+  queue_id: number | null;
   /** The name was given on the command line: don't replace it with the server's. */
   keep_name: boolean;
   resumable: Download | null;
@@ -188,6 +252,7 @@ export interface AddArgs {
   connections?: number | null;
   onConflict?: OnConflict | null;
   pendingId?: number | null;
+  queueId?: number | null;
 }
 
 export const api = {
@@ -205,8 +270,22 @@ export const api = {
   pauseAll: () => invoke<void>("pause_all"),
   resumeAll: () => invoke<void>("resume_all"),
   startNow: (id: number) => invoke<void>("start_now", { id }),
-  startQueue: () => invoke<void>("start_queue"),
-  stopQueue: () => invoke<void>("stop_queue"),
+  startQueue: (queueId: number = MAIN_QUEUE) => invoke<void>("start_queue", { queueId }),
+  stopQueue: (queueId: number = MAIN_QUEUE) => invoke<void>("stop_queue", { queueId }),
+  queues: () => invoke<Queue[]>("list_queues"),
+  createQueue: (queue: Queue) => invoke<number>("create_queue", { queue }),
+  updateQueue: (queue: Queue) => invoke<void>("update_queue", { queue }),
+  deleteQueue: (queueId: number) => invoke<void>("delete_queue", { queueId }),
+  moveToQueue: (ids: number[], queueId: number) => invoke<void>("move_to_queue", { ids, queueId }),
+  setSync: (id: number, everySecs: number) => invoke<void>("set_sync", { id, everySecs }),
+  checkForUpdate: (id: number) => invoke<void>("check_for_update", { id }),
+  powerCaps: () => invoke<PowerCaps>("power_caps"),
+  powerPending: () => invoke<PendingPower | null>("power_pending"),
+  powerCancel: () => invoke<void>("power_cancel"),
+  powerNow: () => invoke<void>("power_now"),
+  getWhenDone: () => invoke<AfterDone>("get_when_done"),
+  setWhenDone: (action: AfterDone) => invoke<void>("set_when_done", { action }),
+  testSound: (sound: SoundEvent, settings?: SoundSettings) => invoke<void>("test_sound", { sound, settings }),
   moveInQueue: (ids: number[], to: QueueMove) => invoke<void>("move_in_queue", { ids, to }),
   restart: (id: number) => invoke<void>("restart", { id }),
   redownload: (id: number, replace: boolean) => invoke<void>("redownload", { id, replace }),

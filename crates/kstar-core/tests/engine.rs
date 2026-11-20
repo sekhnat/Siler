@@ -12,8 +12,9 @@ use base64::Engine as _;
 use futures_util::stream;
 use kstar_core::proxy::{ProxyMode, ProxyScheme};
 use kstar_core::{
-    Category, DownloadInfo, EditDownload, Engine, Error, Event, Login, LoginRequest, NewDownload,
-    OnConflict, QueueMove, RequestMeta, ServerLimit, Settings, Status,
+    AfterDone, Category, DownloadInfo, EditDownload, Engine, Error, Event, Login, LoginRequest,
+    MAIN_QUEUE, NewDownload, OnConflict, Queue, QueueMove, RequestMeta, ServerLimit, Settings,
+    Status,
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -1087,7 +1088,7 @@ async fn download_later_waits_for_the_queue() {
         Status::Waiting,
         "resume all leaves the queue alone"
     );
-    e.start_queue().unwrap();
+    e.start_queue(MAIN_QUEUE).unwrap();
     let d = wait_finished(&e, id).await;
     assert_complete(&d, &srv.data(1048576));
 }
@@ -1441,4 +1442,211 @@ async fn connections_shared_per_server() {
     let db = wait_finished(&e, b).await;
     assert_complete(&da, &srv.data(size));
     assert_complete(&db, &srv.data(size));
+}
+
+// ---------------------------------------------------------------- queues
+
+fn add_to(e: &Engine, url: String, queue_id: i64, later: bool) -> i64 {
+    e.add(NewDownload {
+        url,
+        queue_id: Some(queue_id),
+        start_paused: later,
+        ..Default::default()
+    })
+    .unwrap()
+}
+
+#[tokio::test]
+async fn queues_have_their_own_limits() {
+    let srv = Server::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let e = engine(tmp.path(), |s| {
+        s.max_concurrent = 10;
+        s.connections = 2;
+    })
+    .await;
+    let one = e
+        .create_queue(Queue {
+            name: "One".into(),
+            max_concurrent: 1,
+            ..Default::default()
+        })
+        .unwrap();
+    let two = e
+        .create_queue(Queue {
+            name: "Two".into(),
+            max_concurrent: 2,
+            ..Default::default()
+        })
+        .unwrap();
+    let url = |n: &str| srv.url(&format!("/file/{n}?size=1048576&rate=1048576"));
+    let mut ids = Vec::new();
+    for (q, n) in [
+        (one, "a"),
+        (one, "b"),
+        (one, "c"),
+        (two, "d"),
+        (two, "e"),
+        (two, "f"),
+    ] {
+        ids.push((q, add_to(&e, url(&format!("{n}.bin")), q, false)));
+    }
+    let mut peak = 0;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let running = |q: i64| {
+            ids.iter()
+                .filter(|(qq, id)| *qq == q && e.get(*id).unwrap().status.is_running())
+                .count()
+        };
+        let (r1, r2) = (running(one), running(two));
+        assert!(r1 <= 1 && r2 <= 2, "{r1} and {r2} running");
+        peak = peak.max(r1 + r2);
+        if ids
+            .iter()
+            .all(|(_, id)| e.get(*id).unwrap().status == Status::Completed)
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "timed out");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(peak, 3);
+}
+
+#[tokio::test]
+async fn stopping_a_queue_holds_its_downloads() {
+    let srv = Server::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let e = engine(tmp.path(), |s| s.connections = 4).await;
+    let q = e
+        .create_queue(Queue {
+            name: "Night".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let id = add_to(&e, srv.url("/file/n.bin?rate=2097152"), q, true);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(e.get(id).unwrap().status, Status::Waiting);
+    e.start_queue(q).unwrap();
+    assert!(e.queues().iter().any(|x| x.id == q && x.active));
+    wait_for(&e, id, |d| d.downloaded > MIB).await;
+
+    // A scheduled stop: the running download goes back to waiting, not paused.
+    e.stop_queue(q, true).unwrap();
+    let d = wait_for(&e, id, |d| d.status == Status::Waiting).await;
+    assert!(d.downloaded > MIB);
+    assert!(!e.queues().iter().any(|x| x.id == q && x.active));
+    e.resume_all().unwrap();
+    assert_eq!(e.get(id).unwrap().status, Status::Waiting);
+
+    let before = srv.shared.served.load(SeqCst);
+    e.start_queue(q).unwrap();
+    let d = wait_finished(&e, id).await;
+    assert_complete(&d, &srv.data(SIZE));
+    let fetched = srv.shared.served.load(SeqCst) - before;
+    assert!(fetched < SIZE as u64, "fetched {fetched} bytes again");
+}
+
+#[tokio::test]
+async fn queue_done_is_reported_once() {
+    let srv = Server::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let e = engine(tmp.path(), |_| {}).await;
+    let q = e
+        .create_queue(Queue {
+            name: "Evening".into(),
+            after_done: AfterDone::Sleep,
+            ..Default::default()
+        })
+        .unwrap();
+    let mut events = e.subscribe();
+    let a = add_to(&e, srv.url("/file/qa.bin?size=65536"), q, true);
+    let b = add_to(&e, srv.url("/file/qb.bin?status=404"), q, true);
+    e.start_queue(q).unwrap();
+    wait_finished(&e, a).await;
+    wait_finished(&e, b).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let mut done = Vec::new();
+    while let Ok(ev) = events.try_recv() {
+        if let Event::QueueDone {
+            queue_id,
+            after_done,
+            completed,
+            failed,
+            ..
+        } = ev
+        {
+            done.push((queue_id, after_done, completed, failed));
+        }
+    }
+    assert_eq!(done, vec![(q, AfterDone::Sleep, 1, 1)]);
+
+    // Deleting a queue moves its downloads to the main queue; the main queue stays.
+    e.delete_queue(q).unwrap();
+    assert_eq!(e.get(a).unwrap().queue_id, MAIN_QUEUE);
+    assert!(e.delete_queue(MAIN_QUEUE).is_err());
+    assert_eq!(e.queues().len(), 1);
+}
+
+#[tokio::test]
+async fn queues_survive_a_restart() {
+    let srv = Server::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let (q, id) = {
+        let e = engine(tmp.path(), |_| {}).await;
+        let mut night = Queue {
+            name: "  Night  ".into(),
+            max_concurrent: 2,
+            after_done: AfterDone::PowerOff,
+            ..Default::default()
+        };
+        night.schedule.enabled = true;
+        let q = e.create_queue(night).unwrap();
+        let id = add_to(&e, srv.url("/file/r.bin?size=65536"), q, true);
+        e.shutdown().await;
+        (q, id)
+    };
+    let e = Engine::open(tmp.path().join("data")).unwrap();
+    let saved = e.queues().into_iter().find(|x| x.id == q).unwrap();
+    assert_eq!(saved.name, "Night");
+    assert_eq!(saved.max_concurrent, 2);
+    assert_eq!(saved.after_done, AfterDone::PowerOff);
+    assert!(saved.schedule.enabled);
+    assert_eq!(e.get(id).unwrap().queue_id, q);
+}
+
+#[tokio::test]
+async fn keeps_files_up_to_date() {
+    let srv = Server::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let e = engine(tmp.path(), |s| s.connections = 4).await;
+    let id = add(&e, srv.url("/file/sync.bin"));
+    let d = wait_finished(&e, id).await;
+    assert_complete(&d, &srv.data(SIZE));
+    e.set_sync(id, 3600).unwrap();
+    let first = e.get(id).unwrap().sync_checked_at.unwrap();
+
+    // Unchanged: nothing is downloaded.
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    let served = srv.shared.served.load(SeqCst);
+    e.check_for_update(id).unwrap();
+    let d = wait_for(&e, id, |d| d.sync_checked_at > Some(first)).await;
+    assert_eq!(d.status, Status::Completed);
+    assert!(srv.shared.served.load(SeqCst) - served < 1024);
+
+    // Changed: the new version replaces the file under the same name.
+    let done_at = d.completed_at;
+    srv.bump_version();
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    e.check_for_update(id).unwrap();
+    let d = wait_for(&e, id, |d| {
+        d.status == Status::Completed && d.completed_at > done_at
+    })
+    .await;
+    assert_complete(&d, &srv.data(SIZE));
+    assert_eq!(d.filename.as_deref(), Some("sync.bin"));
+    assert_eq!(d.sync_every, 3600);
+    let dir = d.dir.unwrap();
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
 }

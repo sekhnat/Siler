@@ -11,7 +11,9 @@ use tokio::sync::broadcast;
 use crate::net::{Login, Net, host_key};
 use crate::probe::{self, ProbeResult};
 use crate::proxy::ProxyRoute;
+use crate::queue::{MAIN_QUEUE, Queue};
 use crate::ratelimit::RateLimiter;
+use crate::scheduler::{self, Edge};
 use crate::segment::{self, Segment, Table};
 use crate::store::{Record, Store};
 use crate::task::{self, Limits, Outcome, Running, STOP_PAUSE, STOP_SHUTDOWN, Transfer};
@@ -47,6 +49,13 @@ struct State {
     moving: HashSet<i64>,
     /// Running downloads per server (`host_key`), oldest first, for the connection limit.
     hosts: HashMap<String, Vec<i64>>,
+    queues: BTreeMap<i64, Queue>,
+    /// Finished and failed downloads per active queue, for `QueueDone`.
+    queue_results: HashMap<i64, (usize, usize)>,
+    /// Running downloads stopped by their queue; they go back to Waiting, not Paused.
+    hold: HashSet<i64>,
+    /// Downloads being checked for a newer version.
+    checking: HashSet<i64>,
     shutting_down: bool,
     idle_reported: bool,
 }
@@ -188,6 +197,18 @@ impl Engine {
             records.insert(r.id, r);
         }
 
+        let mut queues: BTreeMap<i64, Queue> = store
+            .load_queues()?
+            .into_iter()
+            .map(|q| (q.id, q))
+            .collect();
+        queues.entry(MAIN_QUEUE).or_insert_with(Queue::main);
+        for r in records.values_mut() {
+            if !queues.contains_key(&r.queue_id) {
+                r.queue_id = MAIN_QUEUE;
+            }
+        }
+
         let net = Arc::new(Net::new(&settings.proxy, proxy_password.as_deref())?);
 
         let inner = Arc::new(Inner {
@@ -198,6 +219,7 @@ impl Engine {
             settings: RwLock::new(settings),
             state: Mutex::new(State {
                 records,
+                queues,
                 ..Default::default()
             }),
             events: broadcast::channel(1024).0,
@@ -213,6 +235,26 @@ impl Engine {
                     Some(inner) => inner.tick(),
                     None => break,
                 }
+            }
+        });
+
+        // Scheduled queues and keeping files up to date.
+        let weak = Arc::downgrade(&inner);
+        inner.rt.spawn(async move {
+            let mut last = jiff::Timestamp::now();
+            if let Some(inner) = weak.upgrade() {
+                inner.catch_up_schedules(last);
+            }
+            let mut iv = tokio::time::interval(Duration::from_secs(15));
+            iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            iv.tick().await;
+            loop {
+                iv.tick().await;
+                let Some(inner) = weak.upgrade() else { break };
+                let now = jiff::Timestamp::now();
+                inner.run_schedules(last, now);
+                inner.check_due_updates();
+                last = now;
             }
         });
 
@@ -323,6 +365,10 @@ impl Engine {
             p => p,
         };
         let mut st = self.inner.state();
+        let queue_id = nd
+            .queue_id
+            .filter(|q| st.queues.contains_key(q))
+            .unwrap_or(MAIN_QUEUE);
         let position = st.records.values().map(|r| r.position).max().unwrap_or(0) + 1;
         let mut rec = Record {
             id: 0,
@@ -351,6 +397,9 @@ impl Engine {
             segments: Vec::new(),
             position,
             on_conflict,
+            queue_id,
+            sync_every: 0,
+            sync_checked_at: None,
             needs_login: None,
         };
         rec.id = self.inner.store.lock().unwrap().insert(&rec)?;
@@ -423,29 +472,131 @@ impl Engine {
         Ok(())
     }
 
-    /// Releases every "Download later" item to the queue.
-    pub fn start_queue(&self) -> Result<()> {
-        self.set_status_where(|s| s == Status::Waiting, Status::Queued)?;
+    /// Starts a queue: its waiting downloads ("Download later") start as slots free up.
+    pub fn start_queue(&self, queue_id: i64) -> Result<()> {
+        self.inner.start_queue(queue_id)
+    }
+
+    /// Stops a queue: downloads that haven't started go back to waiting. With
+    /// `pause_running`, its running downloads stop too and wait for the next start.
+    pub fn stop_queue(&self, queue_id: i64, pause_running: bool) -> Result<()> {
+        self.inner.stop_queue(queue_id, pause_running)
+    }
+
+    pub fn queues(&self) -> Vec<Queue> {
+        self.inner.state().queues.values().cloned().collect()
+    }
+
+    /// Adds a queue and returns its id.
+    pub fn create_queue(&self, q: Queue) -> Result<i64> {
+        let mut q = Queue { id: 0, ..q }.normalized();
+        q.active = false;
+        let mut st = self.inner.state();
+        q.id = self.inner.store.lock().unwrap().save_queue(&q)?;
+        let id = q.id;
+        st.queues.insert(id, q);
+        self.inner.emit_queues(&st);
+        Ok(id)
+    }
+
+    /// Changes a queue's name, limit, schedule or action when done.
+    pub fn update_queue(&self, q: Queue) -> Result<()> {
+        {
+            let mut st = self.inner.state();
+            let old = st.queues.get(&q.id).ok_or(Error::NotFound)?;
+            let mut q = q.normalized();
+            q.active = old.active;
+            self.inner.store.lock().unwrap().save_queue(&q)?;
+            st.queues.insert(q.id, q);
+            self.inner.emit_queues(&st);
+        }
         self.inner.schedule();
         Ok(())
     }
 
-    /// Holds back queued downloads that haven't started yet.
-    pub fn stop_queue(&self) -> Result<()> {
-        self.set_status_where(|s| s == Status::Queued, Status::Waiting)
+    /// Deletes a queue; its downloads move to the main queue.
+    pub fn delete_queue(&self, id: i64) -> Result<()> {
+        if id == MAIN_QUEUE {
+            return Err(Error::Protocol("The main queue can't be deleted".into()));
+        }
+        {
+            let mut st = self.inner.state();
+            if !st.queues.contains_key(&id) {
+                return Err(Error::NotFound);
+            }
+            self.inner.store.lock().unwrap().delete_queue(id)?;
+            st.queues.remove(&id);
+            st.queue_results.remove(&id);
+            let State {
+                records, running, ..
+            } = &mut *st;
+            for rec in records.values_mut().filter(|r| r.queue_id == id) {
+                rec.queue_id = MAIN_QUEUE;
+                self.inner.emit(Event::Upsert {
+                    download: Box::new(
+                        self.inner
+                            .info(rec, running.get(&rec.id).map(|a| a.as_ref())),
+                    ),
+                });
+            }
+            self.inner.emit_queues(&st);
+        }
+        self.inner.schedule();
+        Ok(())
     }
 
-    fn set_status_where(&self, pred: impl Fn(Status) -> bool, to: Status) -> Result<()> {
-        let mut st = self.inner.state();
-        let State {
-            records, running, ..
-        } = &mut *st;
-        for rec in records.values_mut() {
-            if pred(rec.status) && !running.contains_key(&rec.id) {
-                rec.status = to;
-                self.inner.persist_and_emit(rec, None)?;
+    /// Puts downloads into another queue.
+    pub fn move_to_queue(&self, ids: &[i64], queue_id: i64) -> Result<()> {
+        {
+            let mut st = self.inner.state();
+            if !st.queues.contains_key(&queue_id) {
+                return Err(Error::NotFound);
+            }
+            let State {
+                records, running, ..
+            } = &mut *st;
+            for id in ids {
+                if let Some(rec) = records.get_mut(id)
+                    && rec.queue_id != queue_id
+                {
+                    rec.queue_id = queue_id;
+                    self.inner
+                        .persist_and_emit(rec, running.get(id).map(|a| a.as_ref()))?;
+                }
             }
         }
+        self.inner.schedule();
+        Ok(())
+    }
+
+    /// Checks a finished download for a newer version every `every_secs` seconds
+    /// (0 = stop checking). A newer version replaces the file once it is downloaded.
+    pub fn set_sync(&self, id: i64, every_secs: u64) -> Result<()> {
+        let mut st = self.inner.state();
+        let rec = st.records.get_mut(&id).ok_or(Error::NotFound)?;
+        rec.sync_every = i64::try_from(every_secs).unwrap_or(i64::MAX);
+        if rec.sync_checked_at.is_none() {
+            rec.sync_checked_at = Some(now_ms());
+        }
+        self.inner.persist_and_emit(rec, None)
+    }
+
+    /// Checks a finished download for a newer version right away.
+    pub fn check_for_update(&self, id: i64) -> Result<()> {
+        {
+            let mut st = self.inner.state();
+            let rec = st.records.get(&id).ok_or(Error::NotFound)?;
+            if rec.status != Status::Completed {
+                return Err(Error::Protocol("This download hasn't finished yet".into()));
+            }
+            if !st.checking.insert(id) {
+                return Ok(());
+            }
+        }
+        let me = self.inner.clone();
+        self.inner
+            .rt
+            .spawn(async move { me.check_update(id).await });
         Ok(())
     }
 
@@ -967,6 +1118,9 @@ impl Inner {
             completed_at: r.completed_at,
             position: r.position,
             on_conflict: r.on_conflict,
+            queue_id: r.queue_id,
+            sync_every: u64::try_from(r.sync_every).unwrap_or(0),
+            sync_checked_at: r.sync_checked_at,
             file_missing,
             needs_login: r.needs_login.clone(),
             speed,
@@ -1070,8 +1224,17 @@ impl Inner {
             running,
             forced,
             moving,
+            queues,
+            queue_results,
             ..
         } = &mut *st;
+        let mut per_queue: HashMap<i64, usize> = HashMap::new();
+        for id in running.keys() {
+            if let Some(r) = records.get(id) {
+                *per_queue.entry(r.queue_id).or_default() += 1;
+            }
+        }
+        let mut queues_changed = false;
         // "Start now" first, then by queue position.
         let mut queued: Vec<(bool, i64, i64)> = records
             .values()
@@ -1087,6 +1250,20 @@ impl Inner {
             if unforced && running.len() >= max {
                 break;
             }
+            let qid = records[&id].queue_id;
+            let queue_max = queues.get(&qid).map_or(0, |q| q.max_concurrent as usize);
+            let in_queue = per_queue.entry(qid).or_default();
+            if unforced && queue_max > 0 && *in_queue >= queue_max {
+                continue;
+            }
+            *in_queue += 1;
+            if let Some(q) = queues.get_mut(&qid)
+                && !q.active
+            {
+                q.active = true;
+                queue_results.insert(qid, (0, 0));
+                queues_changed = true;
+            }
             forced.remove(&id);
             let rec = records.get_mut(&id).expect("queued id exists");
             rec.status = Status::Probing;
@@ -1100,6 +1277,232 @@ impl Inner {
             let me = self.clone();
             self.rt.spawn(async move { me.run(id, run).await });
         }
+        if queues_changed {
+            self.emit_queues(&st);
+        }
+    }
+
+    fn emit_queues(&self, st: &State) {
+        self.emit(Event::Queues {
+            queues: st.queues.values().cloned().collect(),
+        });
+    }
+
+    fn start_queue(self: &Arc<Self>, queue_id: i64) -> Result<()> {
+        {
+            let mut st = self.state();
+            let State {
+                records,
+                running,
+                queues,
+                queue_results,
+                ..
+            } = &mut *st;
+            let q = queues.get_mut(&queue_id).ok_or(Error::NotFound)?;
+            for rec in records.values_mut() {
+                if rec.queue_id == queue_id
+                    && rec.status == Status::Waiting
+                    && !running.contains_key(&rec.id)
+                {
+                    rec.status = Status::Queued;
+                    self.persist_and_emit(rec, None)?;
+                }
+            }
+            if !q.active {
+                q.active = true;
+                queue_results.insert(queue_id, (0, 0));
+            }
+            self.emit_queues(&st);
+        }
+        self.schedule();
+        // Nothing to run: it is done straight away, without an event.
+        let mut st = self.state();
+        self.finish_queues(&mut st, false);
+        Ok(())
+    }
+
+    fn stop_queue(&self, queue_id: i64, pause_running: bool) -> Result<()> {
+        let mut st = self.state();
+        let State {
+            records,
+            running,
+            queues,
+            hold,
+            ..
+        } = &mut *st;
+        let q = queues.get_mut(&queue_id).ok_or(Error::NotFound)?;
+        q.active = false;
+        for rec in records.values_mut().filter(|r| r.queue_id == queue_id) {
+            match running.get(&rec.id) {
+                Some(run) if pause_running => {
+                    hold.insert(rec.id);
+                    run.stop(STOP_PAUSE);
+                }
+                Some(_) => {}
+                None if rec.status == Status::Queued => {
+                    rec.status = Status::Waiting;
+                    self.persist_and_emit(rec, None)?;
+                }
+                None => {}
+            }
+        }
+        self.emit_queues(&st);
+        Ok(())
+    }
+
+    /// Ends active queues with nothing left to run. With `announce`, a queue that ran
+    /// something reports `QueueDone`; otherwise (the user stopped things) it ends quietly.
+    fn finish_queues(&self, st: &mut State, announce: bool) {
+        let State {
+            records,
+            running,
+            queues,
+            queue_results,
+            ..
+        } = st;
+        let mut changed = false;
+        for q in queues.values_mut().filter(|q| q.active) {
+            let busy = records.values().any(|r| {
+                r.queue_id == q.id && (r.status == Status::Queued || running.contains_key(&r.id))
+            });
+            if busy {
+                continue;
+            }
+            q.active = false;
+            changed = true;
+            let (completed, failed) = queue_results.remove(&q.id).unwrap_or_default();
+            if announce && completed + failed > 0 {
+                self.emit(Event::QueueDone {
+                    queue_id: q.id,
+                    name: q.name.clone(),
+                    after_done: q.after_done,
+                    completed,
+                    failed,
+                });
+            }
+        }
+        if changed {
+            self.emit_queues(st);
+        }
+    }
+
+    /// Starts scheduled queues whose window is open (after K-Star was started).
+    fn catch_up_schedules(self: &Arc<Self>, now: jiff::Timestamp) {
+        let tz = scheduler::local_tz();
+        let open: Vec<i64> = self
+            .state()
+            .queues
+            .values()
+            .filter(|q| q.schedule.is_open(&tz, now))
+            .map(|q| q.id)
+            .collect();
+        for id in open {
+            tracing::info!("queue {id}: inside its scheduled time, starting");
+            let _ = self.start_queue(id);
+        }
+    }
+
+    fn run_schedules(self: &Arc<Self>, last: jiff::Timestamp, now: jiff::Timestamp) {
+        let tz = scheduler::local_tz();
+        let due: Vec<(i64, Edge, bool)> = self
+            .state()
+            .queues
+            .values()
+            .filter_map(|q| {
+                let edge = q.schedule.edges(&tz, last, now).last()?.1;
+                // A one-off schedule is used up when its window closes.
+                let used_up =
+                    q.schedule.once && (edge == Edge::Stop || q.schedule.stop_at.is_none());
+                Some((q.id, edge, used_up))
+            })
+            .collect();
+        for (id, edge, used_up) in due {
+            tracing::info!("queue {id}: scheduled {edge:?}");
+            let _ = match edge {
+                Edge::Start => self.start_queue(id),
+                Edge::Stop => self.stop_queue(id, true),
+            };
+            if used_up {
+                let mut st = self.state();
+                if let Some(q) = st.queues.get_mut(&id) {
+                    q.schedule.enabled = false;
+                    let q = q.clone();
+                    let _ = self.store.lock().unwrap().save_queue(&q);
+                    self.emit_queues(&st);
+                }
+            }
+        }
+    }
+
+    /// Starts checks for downloads that are due to be checked for a newer version.
+    fn check_due_updates(self: &Arc<Self>) {
+        let now = now_ms();
+        let due: Vec<i64> = {
+            let mut st = self.state();
+            let due: Vec<i64> = st
+                .records
+                .values()
+                .filter(|r| {
+                    r.status == Status::Completed
+                        && r.sync_every > 0
+                        && !st.checking.contains(&r.id)
+                        && now - r.sync_checked_at.or(r.completed_at).unwrap_or(0)
+                            >= r.sync_every.saturating_mul(1000)
+                })
+                .map(|r| r.id)
+                .collect();
+            st.checking.extend(&due);
+            due
+        };
+        for id in due {
+            let me = self.clone();
+            self.rt.spawn(async move { me.check_update(id).await });
+        }
+    }
+
+    /// Asks the server whether a finished download changed, and downloads it again if so.
+    async fn check_update(self: Arc<Self>, id: i64) {
+        let Some(rec) = self.state().records.get(&id).cloned() else {
+            self.state().checking.remove(&id);
+            return;
+        };
+        let s = self.settings();
+        let result = probe::probe(&self.net, &rec.url, &rec.meta, &s.user_agent).await;
+        let mut changed = false;
+        {
+            let mut st = self.state();
+            st.checking.remove(&id);
+            let Some(r) = st.records.get_mut(&id) else {
+                return;
+            };
+            if r.status != Status::Completed {
+                return;
+            }
+            r.sync_checked_at = Some(now_ms());
+            match result {
+                Ok(p) => {
+                    changed = matches!((r.total_size, p.total_size), (Some(a), Some(b)) if a != b)
+                        || differs(&r.etag, &p.etag)
+                        || differs(&r.last_modified, &p.last_modified);
+                    if changed {
+                        tracing::info!("download {id}: newer version on the server");
+                        reset_progress(r);
+                        r.on_conflict = OnConflict::Overwrite;
+                        r.status = Status::Queued;
+                        r.notice = Some("A newer version is on the server; downloading it.".into());
+                    } else {
+                        r.notice = None;
+                    }
+                }
+                Err(e) => {
+                    r.notice = Some(format!("Couldn't check for a newer version: {e}"));
+                }
+            }
+            let _ = self.persist_and_emit(r, None);
+        }
+        if changed {
+            self.schedule();
+        }
     }
 
     async fn run(self: Arc<Self>, id: i64, run: Arc<Running>) {
@@ -1110,6 +1513,15 @@ impl Inner {
         {
             let mut st = self.state();
             st.running.remove(&id);
+            let held = st.hold.remove(&id);
+            let qid = st.records.get(&id).map(|r| r.queue_id);
+            if let Some(counts) = qid.and_then(|q| st.queue_results.get_mut(&q)) {
+                match (&result, reason) {
+                    (Ok(Outcome::Done), _) => counts.0 += 1,
+                    (Err(_), 0) => counts.1 += 1,
+                    _ => {}
+                }
+            }
             if let Some(host) = run.host.lock().unwrap().take() {
                 if let Some(ids) = st.hosts.get_mut(&host) {
                     ids.retain(|&i| i != id);
@@ -1159,7 +1571,11 @@ impl Inner {
                             let _ = self.persist_and_emit(rec, None);
                         }
                         _ => {
-                            rec.status = Status::Paused;
+                            rec.status = if held {
+                                Status::Waiting
+                            } else {
+                                Status::Paused
+                            };
                             let _ = self.persist_and_emit(rec, None);
                         }
                     }
@@ -1175,6 +1591,9 @@ impl Inner {
         }
         if reason != STOP_SHUTDOWN {
             self.schedule();
+            // Stopped by the user (or the queue): end the queue quietly if nothing is left.
+            let announce = reason == 0;
+            self.finish_queues(&mut self.state(), announce);
         }
     }
 

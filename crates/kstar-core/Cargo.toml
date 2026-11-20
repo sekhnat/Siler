@@ -23,6 +23,7 @@ fastrand = "2"
 base64 = "0.22"
 httpdate = "1"
 digest_auth = "0.3"
+jiff = "1"
 
 [dev-dependencies]
 axum = "0.8"

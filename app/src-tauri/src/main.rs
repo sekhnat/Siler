@@ -1,3 +1,4 @@
+mod clipboard;
 mod commands;
 mod desktop;
 mod inhibit;
@@ -5,9 +6,11 @@ mod integration;
 mod ipc_server;
 mod logging;
 mod logins;
+mod power;
+mod sound;
 mod tray;
 
-use kstar_core::{Engine, Event};
+use kstar_core::{Engine, Event, MAIN_QUEUE};
 use kstar_ipc::BrowserItem;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -29,6 +32,8 @@ pub struct Pending {
     pub dir: Option<PathBuf>,
     /// `--queue`: suggest "Download later".
     pub start_paused: bool,
+    /// `--queue=NAME`: the queue to suggest.
+    pub queue_id: Option<i64>,
     /// `--filename`: keep the given name.
     pub keep_name: bool,
 }
@@ -46,6 +51,7 @@ pub struct PendingView {
     pub selected: bool,
     pub dir: Option<PathBuf>,
     pub start_paused: bool,
+    pub queue_id: Option<i64>,
     pub keep_name: bool,
     /// A paused or failed download this one looks like, which its link could continue.
     pub resumable: Option<kstar_core::DownloadInfo>,
@@ -68,6 +74,7 @@ pub struct AppState {
     /// skipped otherwise.
     pub ui_visible: AtomicBool,
     pub tray_available: AtomicBool,
+    pub power: power::PowerState,
 }
 
 impl AppState {
@@ -78,7 +85,8 @@ impl AppState {
             p.push(Pending {
                 id,
                 dir: opts.dir.clone(),
-                start_paused: opts.queue,
+                start_paused: opts.later,
+                queue_id: opts.queue_id,
                 keep_name: opts.keep_name && item.filename.is_some(),
                 item,
             });
@@ -297,7 +305,43 @@ fn forward_engine_events(app: AppHandle, engine: Engine, activity: watch::Sender
         loop {
             match rx.recv().await {
                 Ok(ev) => {
-                    if engine.settings().notify_on_complete {
+                    let settings = engine.settings();
+                    match &ev {
+                        Event::Completed { .. } => {
+                            sound::event(&settings.sounds, sound::Sound::Complete);
+                            power::check_all_done(&app);
+                        }
+                        Event::Failed { .. } => {
+                            sound::event(&settings.sounds, sound::Sound::Failed);
+                            power::check_all_done(&app);
+                        }
+                        Event::QueueDone {
+                            queue_id,
+                            name,
+                            after_done,
+                            completed,
+                            failed,
+                        } => {
+                            tracing::info!(
+                                "queue {name} done: {completed} finished, {failed} failed"
+                            );
+                            // The main queue "finishes" whenever the list empties; only a
+                            // chosen action makes that worth a sound.
+                            if *queue_id != MAIN_QUEUE
+                                || *after_done != kstar_core::AfterDone::Nothing
+                            {
+                                sound::event(&settings.sounds, sound::Sound::QueueDone);
+                            }
+                            power::schedule(
+                                &app,
+                                *after_done,
+                                format!("The queue “{name}” has finished"),
+                            );
+                            power::check_all_done(&app);
+                        }
+                        _ => {}
+                    }
+                    if settings.notify_on_complete {
                         match &ev {
                             Event::Completed { id, filename, .. } => {
                                 notify(&app, "Download complete", filename, *id, false)
@@ -386,8 +430,9 @@ Usage: kstar [OPTIONS] [URL…]
 
   --background       start without showing the window (tray only)
   --silent           add the URLs without asking
-  --queue            add the URLs to the queue without starting them
-  --start-queue      start the downloads waiting in the queue
+  --queue[=NAME]     add the URLs to a queue (the main one) without starting them
+  --start-queue[=NAME]
+                     start the downloads waiting in a queue (the main one)
   --dir PATH         save the URLs in this folder
   --filename NAME    save the URL under this name (one URL only)
   -h, --help         show this help
@@ -402,7 +447,9 @@ struct Args {
     background: bool,
     silent: bool,
     queue: bool,
+    queue_name: Option<String>,
     start_queue: bool,
+    start_queue_name: Option<String>,
     dir: Option<PathBuf>,
     filename: Option<String>,
     urls: Vec<String>,
@@ -429,8 +476,14 @@ fn parse_args(argv: &[String], cwd: &Path) -> Result<Args, String> {
         match flag {
             "--background" => a.background = true,
             "--silent" => a.silent = true,
-            "--queue" => a.queue = true,
-            "--start-queue" => a.start_queue = true,
+            "--queue" => {
+                a.queue = true;
+                a.queue_name = inline.clone().filter(|v| !v.trim().is_empty());
+            }
+            "--start-queue" => {
+                a.start_queue = true;
+                a.start_queue_name = inline.clone().filter(|v| !v.trim().is_empty());
+            }
             "--dir" => a.dir = Some(cwd.join(value("--dir")?)),
             "--filename" => a.filename = Some(value("--filename")?),
             "-h" | "--help" => a.help = true,
@@ -455,13 +508,35 @@ fn forwarded_args(app: &AppHandle, argv: &[String], cwd: &str) {
             return;
         }
     };
-    add_from_args(app, &args);
+    if let Err(e) = add_from_args(app, &args) {
+        tracing::warn!("{e}");
+        let _ = app.notification().builder().title("K-Star").body(e).show();
+        return;
+    }
     if args.urls.is_empty() && !args.background && !args.start_queue {
         show_main(app);
     }
 }
 
-fn add_from_args(app: &AppHandle, args: &Args) {
+/// The queue called `name` (any case), or the main queue without a name.
+fn queue_named(engine: &Engine, name: Option<&str>) -> Result<i64, String> {
+    let Some(name) = name else {
+        return Ok(MAIN_QUEUE);
+    };
+    engine
+        .queues()
+        .iter()
+        .find(|q| q.name.trim().eq_ignore_ascii_case(name.trim()))
+        .map(|q| q.id)
+        .ok_or_else(|| format!("there's no queue called “{name}”"))
+}
+
+fn add_from_args(app: &AppHandle, args: &Args) -> Result<(), String> {
+    let Some(state) = app.try_state::<AppState>() else {
+        return Ok(());
+    };
+    let queue_id = queue_named(&state.engine, args.queue_name.as_deref())?;
+    let start_queue = queue_named(&state.engine, args.start_queue_name.as_deref())?;
     if !args.urls.is_empty() {
         let items = args
             .urls
@@ -475,7 +550,8 @@ fn add_from_args(app: &AppHandle, args: &Args) {
         let opts = AddOptions {
             silent: args.silent,
             dir: args.dir.clone(),
-            queue: args.queue,
+            later: args.queue,
+            queue_id: args.queue_name.is_some().then_some(queue_id),
             keep_name: args.filename.is_some(),
         };
         let response = ipc_server::handle_add(app, items, &opts);
@@ -485,11 +561,11 @@ fn add_from_args(app: &AppHandle, args: &Args) {
         }
     }
     if args.start_queue
-        && let Some(state) = app.try_state::<AppState>()
-        && let Err(e) = state.engine.start_queue()
+        && let Err(e) = state.engine.start_queue(start_queue)
     {
         tracing::warn!("could not start the queue: {e}");
     }
+    Ok(())
 }
 
 fn open_engine(app: &tauri::App) -> Result<Engine, String> {
@@ -578,12 +654,14 @@ fn main() {
                         awaiting_refresh: Mutex::new(None),
                         ui_visible: AtomicBool::new(false),
                         tray_available: AtomicBool::new(false),
+                        power: power::PowerState::default(),
                     });
                     desktop::ensure();
                     setup_notifications(app.handle());
                     let activity = inhibit::spawn(engine.clone());
                     forward_engine_events(app.handle().clone(), engine, activity);
                     ipc_server::start(app.handle().clone());
+                    clipboard::spawn(app.handle().clone());
                     exit_on_signals(app.handle().clone());
                     let handle = app.handle().clone();
                     let has_tray = tauri::async_runtime::block_on(tray::spawn(handle.clone()));
@@ -594,7 +672,10 @@ fn main() {
                     if !args.background || !has_tray {
                         show_main(app.handle());
                     }
-                    add_from_args(app.handle(), &args);
+                    if let Err(e) = add_from_args(app.handle(), &args) {
+                        eprintln!("kstar: {e}");
+                        std::process::exit(2);
+                    }
                 }
                 Err(message) => {
                     app.manage(StartupError(message));
@@ -673,6 +754,20 @@ fn main() {
             commands::proxy_status,
             commands::set_proxy_password,
             commands::proxy_password_saved,
+            commands::list_queues,
+            commands::create_queue,
+            commands::update_queue,
+            commands::delete_queue,
+            commands::move_to_queue,
+            commands::set_sync,
+            commands::check_for_update,
+            commands::power_caps,
+            commands::power_pending,
+            commands::power_cancel,
+            commands::power_now,
+            commands::get_when_done,
+            commands::set_when_done,
+            commands::test_sound,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build the K-Star app");
@@ -719,7 +814,15 @@ mod tests {
 
         let a = parse(&["--dir=/mnt/media", "--start-queue"]).unwrap();
         assert_eq!(a.dir, Some(PathBuf::from("/mnt/media")));
-        assert!(a.start_queue && a.urls.is_empty());
+        assert!(a.start_queue && a.urls.is_empty() && a.start_queue_name.is_none());
+
+        // Only the `=` form names a queue, so `--queue URL` still means the main queue.
+        let a = parse(&["--queue", "https://x/c", "--start-queue=Night"]).unwrap();
+        assert!(a.queue && a.queue_name.is_none());
+        assert_eq!(a.urls, ["https://x/c"]);
+        assert_eq!(a.start_queue_name.as_deref(), Some("Night"));
+        let a = parse(&["--queue=Night owls", "https://x/d"]).unwrap();
+        assert_eq!(a.queue_name.as_deref(), Some("Night owls"));
 
         assert!(parse(&["-h"]).unwrap().help);
         assert!(parse(&["--version"]).unwrap().version);

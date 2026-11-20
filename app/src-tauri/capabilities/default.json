@@ -4,7 +4,8 @@
   "description": "Permissions for the K-Star windows",
   "windows": [
     "main",
-    "add"
+    "add",
+    "countdown"
   ],
   "permissions": [
     "core:default",

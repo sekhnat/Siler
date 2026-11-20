@@ -1,8 +1,8 @@
 <script lang="ts">
-  import { CircleCheck, CircleX, FileText, FolderOpen, KeyRound, Monitor, Moon, Plus, Puzzle, Sun, TriangleAlert, X } from "@lucide/svelte";
+  import { CircleCheck, CircleX, FileText, FolderOpen, KeyRound, Monitor, Moon, Play, Plus, Puzzle, Sun, TriangleAlert, X } from "@lucide/svelte";
   import { open } from "@tauri-apps/plugin-dialog";
   import { onMount } from "svelte";
-  import { api, type IntegrationStatus, type ProxyMode, type ProxyRoute, type SavedLogin, type Settings } from "../api";
+  import { api, type IntegrationStatus, type ProxyMode, type ProxyRoute, type SavedLogin, type Settings, type SoundEvent } from "../api";
   import { SPEED_PRESETS, limitLabel, relativeTime } from "../format";
   import { toasts } from "../store.svelte";
   import { theme, type ThemePref } from "../theme.svelte";
@@ -115,6 +115,21 @@
     { key: "light", label: "Light", icon: Sun },
     { key: "dark", label: "Dark", icon: Moon },
   ];
+  const soundRows: { event: SoundEvent; label: string; on: "on_complete" | "on_failed" | "on_queue_done"; file: "complete_file" | "failed_file" | "queue_done_file" }[] = [
+    { event: "complete", label: "A download finished", on: "on_complete", file: "complete_file" },
+    { event: "failed", label: "A download failed", on: "on_failed", file: "failed_file" },
+    { event: "queue_done", label: "A queue finished", on: "on_queue_done", file: "queue_done_file" },
+  ];
+
+  async function pickSound(file: "complete_file" | "failed_file" | "queue_done_file") {
+    const picked = await open({
+      title: "Choose a sound",
+      filters: [{ name: "Sounds", extensions: ["oga", "ogg", "wav", "mp3", "flac", "opus"] }],
+    });
+    if (typeof picked === "string") s.sounds[file] = picked;
+  }
+
+  const baseName = (p: string) => p.split("/").pop() ?? p;
   const customLimit = $derived(!SPEED_PRESETS.includes(s.global_speed_limit));
   const proxyModes: { key: ProxyMode; label: string }[] = [
     { key: "none", label: "No proxy" },
@@ -171,6 +186,12 @@
       {@render toggle("Notifications", "Notify when a download finishes or fails", s.notify_on_complete, (v) => (s.notify_on_complete = v))}
       {@render toggle("Resume on startup", "Continue unfinished downloads when K-Star starts", s.resume_on_startup, (v) => (s.resume_on_startup = v))}
       {@render toggle("Keep the computer awake", "Don't let it go to sleep while downloads are running", s.prevent_sleep, (v) => (s.prevent_sleep = v))}
+      {@render toggle(
+        "Watch the clipboard for links",
+        "Copying a link to a file (one of the types in Categories) offers to download it",
+        s.clipboard_monitor,
+        (v) => (s.clipboard_monitor = v),
+      )}
       <div class="logs">
         <FileText size={15} />
         <span class="hint grow truncate" title={integration?.log_dir}>Logs: {integration?.log_dir ?? "~/.local/state/kstar/logs"}</span>
@@ -369,6 +390,25 @@
           {/each}
         </div>
       </div>
+      {@render toggle("Sounds", "Play the desktop's sounds for download events", s.sounds.enabled, (v) => (s.sounds.enabled = v))}
+      {#if s.sounds.enabled}
+        <div class="sounds">
+          {#each soundRows as r (r.event)}
+            <div class="sound-row">
+              <label class="sound-check">
+                <input type="checkbox" bind:checked={s.sounds[r.on]} />
+                {r.label}
+              </label>
+              <span class="hint grow truncate" title={s.sounds[r.file] ?? ""}>{s.sounds[r.file] ? baseName(s.sounds[r.file] ?? "") : "Theme sound"}</span>
+              {#if s.sounds[r.file]}
+                <button class="icon-btn sm" title="Use the theme sound" onclick={() => (s.sounds[r.file] = null)}><X size={14} /></button>
+              {/if}
+              <button class="btn btn-sm" onclick={() => pickSound(r.file)}>Choose…</button>
+              <button class="icon-btn sm" title="Play" onclick={() => api.testSound(r.event, $state.snapshot(s.sounds))}><Play size={14} /></button>
+            </div>
+          {/each}
+        </div>
+      {/if}
     {/if}
   </div>
 
@@ -551,6 +591,33 @@
     padding-left: 20px;
     color: var(--text-2);
     line-height: 1.7;
+  }
+  .sounds {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--border);
+    border-radius: var(--r);
+    margin-top: -6px;
+  }
+  .sound-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px 6px 12px;
+  }
+  .sound-row + .sound-row {
+    border-top: 1px solid var(--border);
+  }
+  .sound-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    width: 170px;
+    flex: none;
+    font-weight: 550;
+  }
+  .sound-check input {
+    accent-color: var(--accent);
   }
   .seg {
     display: inline-flex;

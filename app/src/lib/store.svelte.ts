@@ -1,5 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
-import { api, errorText, type Download, type EngineEvent } from "./api";
+import { api, errorText, MAIN_QUEUE, type Download, type EngineEvent, type Queue } from "./api";
 
 const HISTORY = 90; // samples at ~4 Hz ≈ 22 s
 
@@ -9,6 +9,11 @@ class DownloadStore {
   history = $state<number[]>(new Array(HISTORY).fill(0));
   perHistory = $state<Record<number, number[]>>({});
   loaded = $state(false);
+  queues = $state<Queue[]>([]);
+
+  queueName(id: number): string {
+    return this.queues.find((q) => q.id === id)?.name ?? "Main queue";
+  }
 
   list = $derived(Object.values(this.items).sort((a, b) => b.id - a.id));
 
@@ -19,7 +24,8 @@ class DownloadStore {
   }
 
   async reload() {
-    const list = await api.list();
+    const [list, queues] = await Promise.all([api.list(), api.queues()]);
+    this.queues = queues;
     const next: Record<number, Download> = {};
     for (const d of list) next[d.id] = d;
     this.items = next;
@@ -30,6 +36,9 @@ class DownloadStore {
     switch (ev.type) {
       case "upsert":
         this.items[ev.download.id] = ev.download;
+        break;
+      case "queues":
+        this.queues = ev.queues;
         break;
       case "removed":
         delete this.items[ev.id];
@@ -64,6 +73,7 @@ class DownloadStore {
 }
 
 export const store = new DownloadStore();
+export { MAIN_QUEUE };
 
 // ---------------------------------------------------------------- toasts
 

@@ -7,16 +7,18 @@
     size: number | null;
     selected: boolean;
     pendingId: number | null;
+    queueId?: number | null;
   }
 </script>
 
 <script lang="ts">
   import { Search, X } from "@lucide/svelte";
   import { onMount } from "svelte";
-  import { api, type Category, type OnConflict, type Settings } from "../api";
+  import { api, MAIN_QUEUE, type Category, type OnConflict, type Settings } from "../api";
   import { CATEGORIES, categoryOf } from "../categories";
   import { bytes, host, nameFromUrl } from "../format";
   import { toasts } from "../store.svelte";
+  import QueuePicker from "./QueuePicker.svelte";
 
   let { items, ondone, oncancel }: { items: BatchItem[]; ondone: () => void; oncancel: () => void } = $props();
 
@@ -26,6 +28,8 @@
   let query = $state("");
   let type = $state<Category | "all">("all");
   let conflict = $state<OnConflict>("rename");
+  // svelte-ignore state_referenced_locally
+  let queueId = $state(items.find((i) => i.queueId)?.queueId ?? MAIN_QUEUE);
   let busy = $state(false);
 
   onMount(async () => {
@@ -56,7 +60,7 @@
     for (const it of items) {
       try {
         if (checked[it.key]) {
-          await api.add({ url: it.url, filename: it.filename, startPaused, pendingId: it.pendingId, onConflict: conflict });
+          await api.add({ url: it.url, filename: it.filename, startPaused, pendingId: it.pendingId, onConflict: conflict, queueId });
         } else if (it.pendingId != null) {
           await api.dismissPending(it.pendingId);
         }
@@ -124,6 +128,7 @@
       </select>
     </label>
     <span class="grow"></span>
+    <QueuePicker bind:value={queueId} />
     <button class="btn" disabled={!count || busy} onclick={() => submit(true)}>Download later</button>
     <button class="btn btn-primary" disabled={!count || busy} onclick={() => submit(false)}>Download {count}</button>
   </div>

@@ -1,14 +1,23 @@
 //! The tray icon, as a StatusNotifierItem. Tauri's tray goes through libappindicator, which
 //! on Linux reports no clicks and shows no tooltip; talking SNI directly gives both.
 
-use ksni::menu::StandardItem;
+use ksni::menu::{CheckmarkItem, RadioGroup, RadioItem, StandardItem, SubMenu};
 use ksni::{Handle, MenuItem, ToolTip, TrayMethods};
+use kstar_core::{AfterDone, MAIN_QUEUE};
 use std::sync::OnceLock;
 use tauri::{AppHandle, Manager};
 
 use crate::AppState;
 
 static HANDLE: OnceLock<Handle<Tray>> = OnceLock::new();
+
+const WHEN_DONE: [(AfterDone, &str); 5] = [
+    (AfterDone::Nothing, "Do nothing"),
+    (AfterDone::Quit, "Quit K-Star"),
+    (AfterDone::Sleep, "Sleep"),
+    (AfterDone::Hibernate, "Hibernate"),
+    (AfterDone::PowerOff, "Shut down"),
+];
 
 pub struct Tray {
     app: AppHandle,
@@ -75,12 +84,65 @@ impl ksni::Tray for Tray {
                 tracing::warn!("tray action failed: {e}");
             }
         };
+        let state = self.app.try_state::<AppState>();
+        let when_done = state
+            .as_ref()
+            .map(|s| *s.power.when_done.lock().unwrap())
+            .unwrap_or_default();
+        let clipboard = state
+            .as_ref()
+            .is_some_and(|s| s.engine.settings().clipboard_monitor);
         vec![
             item("Show K-Star", crate::show_main),
             MenuItem::Separator,
             item("Pause all", move |app| engine(app, |e| e.pause_all())),
             item("Resume all", move |app| engine(app, |e| e.resume_all())),
-            item("Start queue", move |app| engine(app, |e| e.start_queue())),
+            item("Start queue", move |app| {
+                engine(app, |e| e.start_queue(MAIN_QUEUE))
+            }),
+            SubMenu {
+                label: "When downloads finish".into(),
+                submenu: vec![
+                    RadioGroup {
+                        selected: WHEN_DONE
+                            .iter()
+                            .position(|(a, _)| *a == when_done)
+                            .unwrap_or(0),
+                        select: Box::new(|t: &mut Tray, i| {
+                            crate::commands::set_when_done_action(&t.app, WHEN_DONE[i].0)
+                        }),
+                        options: WHEN_DONE
+                            .iter()
+                            .map(|(_, label)| RadioItem {
+                                label: (*label).into(),
+                                ..Default::default()
+                            })
+                            .collect(),
+                    }
+                    .into(),
+                ],
+                ..Default::default()
+            }
+            .into(),
+            CheckmarkItem {
+                label: "Watch the clipboard for links".into(),
+                checked: clipboard,
+                activate: Box::new(|t: &mut Tray| {
+                    if let Some(state) = t.app.try_state::<AppState>() {
+                        let mut s = state.engine.settings();
+                        s.clipboard_monitor = !s.clipboard_monitor;
+                        match state.engine.set_settings(s) {
+                            Ok(s) => {
+                                use tauri::Emitter;
+                                let _ = t.app.emit("settings-changed", s);
+                            }
+                            Err(e) => tracing::warn!("couldn't save the setting: {e}"),
+                        }
+                    }
+                }),
+                ..Default::default()
+            }
+            .into(),
             MenuItem::Separator,
             item("Quit", crate::request_quit),
         ]
@@ -118,5 +180,15 @@ pub async fn spawn(app: AppHandle) -> bool {
 pub async fn set_status(status: String) {
     if let Some(h) = HANDLE.get() {
         h.update(|t| t.status = status).await;
+    }
+}
+
+/// Rebuilds the menu after something it shows changed.
+pub fn refresh() {
+    if let Some(h) = HANDLE.get() {
+        let h = h.clone();
+        tauri::async_runtime::spawn(async move {
+            h.update(|_| {}).await;
+        });
     }
 }

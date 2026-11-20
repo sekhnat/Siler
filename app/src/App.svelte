@@ -2,6 +2,7 @@
   import "./lib/theme.svelte";
   import { api } from "./lib/api";
   import AddWindow from "./AddWindow.svelte";
+  import CountdownWindow from "./CountdownWindow.svelte";
   import MainWindow from "./MainWindow.svelte";
   import FatalScreen from "./lib/components/FatalScreen.svelte";
 
@@ -15,6 +16,8 @@
     <FatalScreen message={fatal} />
   {:else if route === "add"}
     <AddWindow />
+  {:else if route === "countdown"}
+    <CountdownWindow />
   {:else}
     <MainWindow />
   {/if}

@@ -140,7 +140,9 @@ pub struct AddOptions {
     /// Save into this folder instead of the category folder.
     pub dir: Option<PathBuf>,
     /// Add to the queue without starting ("Download later").
-    pub queue: bool,
+    pub later: bool,
+    /// The queue to add to; the main queue when absent.
+    pub queue_id: Option<i64>,
     /// The file names were chosen by the user (`--filename`).
     pub keep_name: bool,
 }
@@ -209,7 +211,8 @@ pub fn handle_add(app: &AppHandle, items: Vec<BrowserItem>, opts: &AddOptions) -
                 meta: meta_of(item),
                 on_conflict: Some(settings.unattended_conflict()),
                 dir: opts.dir.clone(),
-                start_paused: opts.queue,
+                start_paused: opts.later,
+                queue_id: opts.queue_id,
                 ..Default::default()
             };
             if let Err(e) = state.engine.add(nd) {

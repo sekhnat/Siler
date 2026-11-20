@@ -9,9 +9,11 @@
     FolderOpen,
     KeyRound,
     Link2,
+    ListOrdered,
     Pause,
     Play,
     RefreshCw,
+    RefreshCcwDot,
     RotateCcw,
     SlidersHorizontal,
     Trash2,
@@ -20,10 +22,10 @@
   import { listen } from "@tauri-apps/api/event";
   import { onMount } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
-  import { api, type Download, type QueueMove, type Settings } from "./lib/api";
+  import { api, MAIN_QUEUE, type AfterDone, type Download, type Queue, type QueueMove, type Settings } from "./lib/api";
   import { draggable, startFileDrag } from "./lib/drag";
   import { CATEGORIES, canPause, canResume, isActive } from "./lib/categories";
-  import { nameFromUrl, parseUrls, percent, speed } from "./lib/format";
+  import { describeSchedule, nameFromUrl, parseUrls, percent, relativeTime, speed, syncLabel } from "./lib/format";
   import { attempt, store, toasts } from "./lib/store.svelte";
   import AddDialog from "./lib/components/AddDialog.svelte";
   import BatchDialog, { type BatchItem } from "./lib/components/BatchDialog.svelte";
@@ -36,6 +38,7 @@
   import Modal from "./lib/components/Modal.svelte";
   import LoginDialog from "./lib/components/LoginDialog.svelte";
   import PropertiesDialog from "./lib/components/PropertiesDialog.svelte";
+  import QueueDialog from "./lib/components/QueueDialog.svelte";
   import RefreshLinkDialog from "./lib/components/RefreshLinkDialog.svelte";
   import SettingsDialog from "./lib/components/SettingsDialog.svelte";
   import Sidebar from "./lib/components/Sidebar.svelte";
@@ -77,6 +80,11 @@
   let menu = $state<{ x: number; y: number; items: MenuEntry[] } | null>(null);
   let dragging = $state(false);
   let settings = $state<Settings | null>(null);
+  /** The queue being edited; null = a new one, undefined = closed. */
+  let queueEdit = $state<Queue | null | undefined>(undefined);
+  let moveItems = $state<Download[] | null>(null);
+  let syncItems = $state<Download[] | null>(null);
+  let whenDone = $state<AfterDone>("nothing");
 
   $effect(() => {
     try {
@@ -97,6 +105,7 @@
   onMount(() => {
     store.init();
     api.getSettings().then((s) => (settings = s));
+    api.getWhenDone().then((a) => (whenDone = a));
     window.addEventListener("focus", reloadSoon);
     const askLogin = (e: Event) => (loginFor = (e as CustomEvent<number>).detail);
     window.addEventListener("kstar-login", askLogin);
@@ -107,6 +116,8 @@
         select(e.payload);
       }),
       listen<number>("confirm-quit", (e) => (quitCount = e.payload)),
+      listen<Settings>("settings-changed", (e) => (settings = e.payload)),
+      listen<AfterDone>("when-done-changed", (e) => (whenDone = e.payload)),
       listen<number>("ask-login", async (e) => {
         // One prompt at a time; the other downloads keep their "Log in…" menu item.
         if (loginDownload) return;
@@ -138,7 +149,10 @@
         return d.status === "completed";
       case "failed":
         return d.status === "failed";
+      case "sync":
+        return d.sync_every > 0;
       default:
+        if (f.startsWith("queue:")) return d.queue_id === Number(f.slice(6));
         return d.category === f.slice(4);
     }
   }
@@ -174,8 +188,10 @@
   const propsDownload = $derived(propsFor != null ? store.items[propsFor] : null);
   const refreshDownload = $derived(refreshFor != null ? store.items[refreshFor] : null);
   const loginDownload = $derived(loginFor != null && store.items[loginFor]?.needs_login ? store.items[loginFor] : null);
-  const waitingCount = $derived(store.list.filter((d) => d.status === "waiting").length);
-  const queuedCount = $derived(store.list.filter((d) => d.status === "queued").length);
+  /** The queue the toolbar's Start/Stop queue acts on: the one shown, else the main one. */
+  const queueCtx = $derived(filter.startsWith("queue:") ? Number(filter.slice(6)) : MAIN_QUEUE);
+  const waitingCount = $derived(store.list.filter((d) => d.status === "waiting" && d.queue_id === queueCtx).length);
+  const queuedCount = $derived(store.list.filter((d) => d.status === "queued" && d.queue_id === queueCtx).length);
 
   const title = $derived.by(() => {
     const labels: Record<string, string> = {
@@ -184,13 +200,17 @@
       queued: "Queued & paused",
       completed: "Completed",
       failed: "Failed",
+      sync: "Kept up to date",
     };
+    if (filter.startsWith("queue:")) return store.queueName(queueCtx);
     return labels[filter] ?? CATEGORIES.find((c) => `cat:${c.key}` === filter)?.label ?? "Downloads";
   });
   const subtitle = $derived.by(() => {
     const active = filtered.filter((d) => isActive(d.status)).length;
     const n = filtered.length;
     const parts = [`${n} ${n === 1 ? "item" : "items"}`];
+    const q = filter.startsWith("queue:") ? store.queues.find((x) => x.id === queueCtx) : null;
+    if (q?.active) parts.push("running");
     if (active) parts.push(`${active} downloading at ${speed(filtered.reduce((s, d) => s + d.speed, 0))}`);
     return parts.join(" · ");
   });
@@ -319,6 +339,15 @@
       { label: sel.length > 1 ? "Copy links" : "Copy link", icon: Copy, run: () => copyLinks(sel) },
       { label: "Properties…", icon: SlidersHorizontal, disabled: !one, run: () => one && (propsFor = one.id) },
       "separator",
+      ...(store.queues.length > 1
+        ? [{ label: "Move to queue…", icon: ListOrdered, disabled: !unfinished.length, run: () => (moveItems = unfinished) } satisfies MenuEntry]
+        : []),
+      {
+        label: "Keep up to date…",
+        icon: RefreshCcwDot,
+        disabled: !sel.some((x) => x.status === "completed"),
+        run: () => (syncItems = sel.filter((x) => x.status === "completed")),
+      },
       { label: "Move to top", icon: ArrowUpToLine, disabled: !unfinished.length, run: () => move(sel, "top") },
       { label: "Move up", icon: ChevronUp, disabled: !unfinished.length, run: () => move(sel, "up") },
       { label: "Move down", icon: ChevronDown, disabled: !unfinished.length, run: () => move(sel, "down") },
@@ -364,6 +393,9 @@
       !!restartItems ||
       !!redownloadFor ||
       !!removeFailed ||
+      queueEdit !== undefined ||
+      !!moveItems ||
+      !!syncItems ||
       quitCount != null,
   );
 
@@ -464,6 +496,7 @@
     onlimit={setGlobalLimit}
     onadd={() => (addOpen = { url: "" })}
     onsettings={() => (settingsOpen = true)}
+    onqueue={(q) => (queueEdit = q)}
   />
 
   <main>
@@ -482,8 +515,10 @@
       onremove={removeSel}
       onresumeall={() => attempt(api.resumeAll())}
       onpauseall={() => attempt(api.pauseAll())}
-      onstartqueue={() => attempt(api.startQueue())}
-      onstopqueue={() => attempt(api.stopQueue())}
+      onstartqueue={() => attempt(api.startQueue(queueCtx))}
+      onstopqueue={() => attempt(api.stopQueue(queueCtx))}
+      {whenDone}
+      onwhendone={(a) => attempt(api.setWhenDone(a))}
       oncleanup={cleanup}
     />
     <div class="content">
@@ -626,6 +661,76 @@
   </ConfirmDialog>
 {/if}
 
+{#if queueEdit !== undefined}
+  <QueueDialog queue={queueEdit} onclose={() => (queueEdit = undefined)} />
+{/if}
+
+{#if moveItems}
+  {@const items = moveItems}
+  <Modal title={items.length === 1 ? "Move to queue" : `Move ${items.length} downloads to a queue`} width={400} onclose={() => (moveItems = null)}>
+    <div class="pick">
+      {#each store.queues as q (q.id)}
+        <button
+          class="pick-row"
+          class:on={items.every((d) => d.queue_id === q.id)}
+          onclick={async () => {
+            await attempt(api.moveToQueue(items.map((d) => d.id), q.id));
+            moveItems = null;
+          }}
+        >
+          <ListOrdered size={16} />
+          <span class="grow">
+            <span class="pick-name">{q.name}</span>
+            {#if describeSchedule(q.schedule)}<span class="hint">{describeSchedule(q.schedule)}</span>{/if}
+          </span>
+        </button>
+      {/each}
+    </div>
+  </Modal>
+{/if}
+
+{#if syncItems}
+  {@const items = syncItems}
+  {@const current = items.every((d) => d.sync_every === items[0].sync_every) ? items[0].sync_every : -1}
+  <Modal title="Keep up to date" width={440} onclose={() => (syncItems = null)}>
+    <p class="sync-intro">
+      K-Star asks the server whether {items.length === 1 ? "the file has" : "these files have"} changed and downloads a newer version
+      over the old one. Checks run while K-Star is running.
+    </p>
+    <div class="pick">
+      {#each [{ secs: 0, label: "Don't check" }, { secs: 3600, label: "Check every hour" }, { secs: 86400, label: "Check every day" }, { secs: 604800, label: "Check every week" }] as o (o.secs)}
+        <button
+          class="pick-row"
+          class:on={current === o.secs}
+          onclick={async () => {
+            for (const d of items) await attempt(api.setSync(d.id, o.secs));
+            syncItems = null;
+            if (o.secs) toasts.show(`Kept up to date ${syncLabel(o.secs)}`, "success");
+          }}
+        >
+          <RefreshCw size={15} />
+          <span class="grow pick-name">{o.label}</span>
+        </button>
+      {/each}
+    </div>
+    {#snippet footer()}
+      {#if items.length === 1 && items[0].sync_checked_at && items[0].sync_every}
+        <span class="hint grow">Last checked {relativeTime(items[0].sync_checked_at)}</span>
+      {:else}
+        <span class="grow"></span>
+      {/if}
+      <button
+        class="btn"
+        onclick={async () => {
+          for (const d of items) await attempt(api.checkForUpdate(d.id));
+          syncItems = null;
+          toasts.show(items.length === 1 ? "Checking for a newer version…" : `Checking ${items.length} files…`);
+        }}>Check now</button
+      >
+    {/snippet}
+  </Modal>
+{/if}
+
 {#if removeItems}
   <ConfirmRemove
     items={removeItems}
@@ -663,6 +768,45 @@
   }
   .batch-wrap {
     height: min(560px, calc(100vh - 140px));
+  }
+  .pick {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .pick-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-height: 40px;
+    padding: 6px 12px;
+    border-radius: var(--r-sm);
+    text-align: left;
+    color: var(--text-2);
+  }
+  .pick-row:hover {
+    background: var(--hover);
+    color: var(--text);
+  }
+  .pick-row.on {
+    background: var(--selected);
+    color: var(--accent-text);
+  }
+  .pick-row .grow {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
+  }
+  .pick-name {
+    font-weight: 600;
+  }
+  .sync-intro {
+    margin: 0 0 12px;
+    color: var(--text-2);
+  }
+  .grow {
+    flex: 1;
   }
   .toggle {
     display: flex;

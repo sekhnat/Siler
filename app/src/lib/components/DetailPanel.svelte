@@ -3,7 +3,7 @@
   import { fly } from "svelte/transition";
   import { api, type Download } from "../api";
   import { STATUS_LABEL, categoryMeta } from "../categories";
-  import { bytes, dateTime, eta, limitLabel, nameFromUrl, percent, speed } from "../format";
+  import { bytes, dateTime, eta, limitLabel, nameFromUrl, percent, relativeTime, speed, syncLabel } from "../format";
   import { attempt, store, toasts } from "../store.svelte";
   import FileIcon from "./FileIcon.svelte";
   import SpeedMenu from "./SpeedMenu.svelte";
@@ -112,6 +112,14 @@
         <SpeedMenu value={d.speed_limit} onselect={(v) => attempt(api.setSpeedLimit(d.id, v))} onclose={() => (limitMenu = false)} />
       {/if}
     </dd>
+    {#if store.queues.length > 1}
+      <dt>Queue</dt>
+      <dd>{store.queueName(d.queue_id)}</dd>
+    {/if}
+    {#if d.sync_every}
+      <dt>Kept up to date</dt>
+      <dd>Checked {syncLabel(d.sync_every)}{d.sync_checked_at ? `, last ${relativeTime(d.sync_checked_at)}` : ""}</dd>
+    {/if}
     <dt>Added</dt>
     <dd>{dateTime(d.created_at)}</dd>
     {#if d.completed_at}

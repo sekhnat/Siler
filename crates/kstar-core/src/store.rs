@@ -3,6 +3,7 @@
 use rusqlite::{Connection, OptionalExtension, Row, ToSql, params};
 use std::path::{Path, PathBuf};
 
+use crate::queue::Queue;
 use crate::{Category, OnConflict, RequestMeta, Result, Segment, Settings, Status};
 
 /// Everything K-Star knows about one download, including secrets needed to resume it.
@@ -31,6 +32,11 @@ pub(crate) struct Record {
     /// Queue order: lower starts first.
     pub position: i64,
     pub on_conflict: OnConflict,
+    pub queue_id: i64,
+    /// Check the server for a newer version this often (seconds); 0 = never.
+    pub sync_every: i64,
+    /// Last check for a newer version (ms since the epoch).
+    pub sync_checked_at: Option<i64>,
     /// Not saved: the server wanted a login the last time this download ran.
     pub needs_login: Option<crate::LoginRequest>,
 }
@@ -70,6 +76,19 @@ UPDATE downloads SET position = id;
 ALTER TABLE downloads ADD COLUMN on_conflict TEXT NOT NULL DEFAULT 'rename';
 ";
 
+const SCHEMA_V3: &str = "
+CREATE TABLE queues (
+    id       INTEGER PRIMARY KEY,
+    name     TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    config   TEXT NOT NULL
+);
+INSERT INTO queues (id, name, position, config) VALUES (1, 'Main queue', 1, '{}');
+ALTER TABLE downloads ADD COLUMN queue_id INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE downloads ADD COLUMN sync_every INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE downloads ADD COLUMN sync_checked_at INTEGER;
+";
+
 pub(crate) struct Store {
     conn: Connection,
 }
@@ -107,6 +126,12 @@ impl Store {
             tx.pragma_update(None, "user_version", 2)?;
             tx.commit()?;
         }
+        if version < 3 {
+            let tx = self.conn.unchecked_transaction()?;
+            tx.execute_batch(SCHEMA_V3)?;
+            tx.pragma_update(None, "user_version", 3)?;
+            tx.commit()?;
+        }
         Ok(())
     }
 
@@ -136,6 +161,9 @@ impl Store {
             (":segments", Box::new(to_json(&r.segments))),
             (":position", Box::new(r.position)),
             (":on_conflict", Box::new(r.on_conflict.as_str())),
+            (":queue_id", Box::new(r.queue_id)),
+            (":sync_every", Box::new(r.sync_every)),
+            (":sync_checked_at", Box::new(r.sync_checked_at)),
         ]
     }
 
@@ -148,10 +176,11 @@ impl Store {
         self.exec(
             "INSERT INTO downloads (url, final_url, filename, dir, category, total_size, downloaded, status,
                 resumable, error, notice, etag, last_modified, meta, connections, speed_limit, created_at,
-                completed_at, segments, position, on_conflict)
+                completed_at, segments, position, on_conflict, queue_id, sync_every, sync_checked_at)
              VALUES (:url, :final_url, :filename, :dir, :category, :total_size, :downloaded, :status,
                 :resumable, :error, :notice, :etag, :last_modified, :meta, :connections, :speed_limit,
-                :created_at, :completed_at, :segments, :position, :on_conflict)",
+                :created_at, :completed_at, :segments, :position, :on_conflict, :queue_id,
+                :sync_every, :sync_checked_at)",
             &Self::values(r),
         )?;
         Ok(self.conn.last_insert_rowid())
@@ -166,7 +195,8 @@ impl Store {
                 resumable=:resumable, error=:error, notice=:notice, etag=:etag,
                 last_modified=:last_modified, meta=:meta, connections=:connections,
                 speed_limit=:speed_limit, created_at=:created_at, completed_at=:completed_at,
-                segments=:segments, position=:position, on_conflict=:on_conflict
+                segments=:segments, position=:position, on_conflict=:on_conflict,
+                queue_id=:queue_id, sync_every=:sync_every, sync_checked_at=:sync_checked_at
              WHERE id=:id",
             &values,
         )?;
@@ -209,6 +239,46 @@ impl Store {
         let mut stmt = self.conn.prepare("SELECT * FROM downloads ORDER BY id")?;
         let rows = stmt.query_map([], row_to_record)?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    pub fn load_queues(&self) -> Result<Vec<Queue>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, name, config FROM queues ORDER BY position, id")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(Queue::from_row(
+                r.get(0)?,
+                r.get(1)?,
+                &r.get::<_, String>(2)?,
+            ))
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Inserts the queue, or updates it when its id exists. Returns the id.
+    pub fn save_queue(&self, q: &Queue) -> Result<i64> {
+        if q.id > 0 {
+            self.conn.execute(
+                "UPDATE queues SET name=?1, config=?2 WHERE id=?3",
+                params![q.name, q.config_json(), q.id],
+            )?;
+            return Ok(q.id);
+        }
+        self.conn.execute(
+            "INSERT INTO queues (name, position, config)
+             VALUES (?1, (SELECT COALESCE(MAX(position), 0) + 1 FROM queues), ?2)",
+            params![q.name, q.config_json()],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Deletes a queue; its downloads move to the main queue.
+    pub fn delete_queue(&self, id: i64) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute("UPDATE downloads SET queue_id=1 WHERE queue_id=?1", [id])?;
+        tx.execute("DELETE FROM queues WHERE id=?1", [id])?;
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn load_settings(&self) -> Result<Option<Settings>> {
@@ -260,6 +330,9 @@ fn row_to_record(row: &Row) -> rusqlite::Result<Record> {
         segments: serde_json::from_str(&segments).unwrap_or_default(),
         position: row.get("position")?,
         on_conflict: OnConflict::parse(&row.get::<_, String>("on_conflict")?),
+        queue_id: row.get("queue_id")?,
+        sync_every: row.get("sync_every")?,
+        sync_checked_at: row.get("sync_checked_at")?,
         needs_login: None,
     })
 }
@@ -307,6 +380,12 @@ mod tests {
         assert_eq!(recs[0].status, Status::Paused);
         assert_eq!(recs[0].meta.cookies.as_deref(), Some("a=b"));
         assert_eq!(recs[0].meta.method, None);
+        assert_eq!(recs[0].queue_id, 1);
+        assert_eq!(recs[0].sync_every, 0);
+        let queues = store.load_queues().unwrap();
+        assert_eq!(queues.len(), 1);
+        assert_eq!(queues[0].name, "Main queue");
+        assert_eq!(queues[0].max_concurrent, 0);
         // Opening again is a no-op.
         drop(store);
         assert_eq!(Store::open(&path).unwrap().load_all().unwrap().len(), 2);

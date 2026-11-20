@@ -1,9 +1,9 @@
 <script lang="ts">
-  import { FolderOpen, KeyRound, LoaderCircle, Pause, Play, RotateCw } from "@lucide/svelte";
-  import { api, type Download } from "../api";
+  import { FolderOpen, KeyRound, ListOrdered, LoaderCircle, Pause, Play, RefreshCw, RotateCw } from "@lucide/svelte";
+  import { api, MAIN_QUEUE, type Download } from "../api";
   import { STATUS_COLOR, STATUS_LABEL } from "../categories";
-  import { bytes, eta, host, nameFromUrl, percent, relativeTime, speed } from "../format";
-  import { attempt } from "../store.svelte";
+  import { bytes, eta, host, nameFromUrl, percent, relativeTime, speed, syncLabel } from "../format";
+  import { attempt, store } from "../store.svelte";
   import FileIcon from "./FileIcon.svelte";
   import ProgressBar from "./ProgressBar.svelte";
 
@@ -33,6 +33,16 @@
       <span class="name truncate" title={name}>{name}</span>
       {#if d.file_missing}
         <span class="pill" style:--c="var(--warn)" title="The file was moved or deleted">File missing</span>
+      {/if}
+      {#if !done && d.queue_id !== MAIN_QUEUE}
+        <span class="pill quiet" title="In the queue “{store.queueName(d.queue_id)}”"><ListOrdered size={11} />{store.queueName(d.queue_id)}</span>
+      {/if}
+      {#if d.sync_every}
+        <span
+          class="pill quiet"
+          title="Checked for a newer version {syncLabel(d.sync_every)}{d.sync_checked_at ? ` · last checked ${relativeTime(d.sync_checked_at)}` : ''}"
+          ><RefreshCw size={11} />{syncLabel(d.sync_every)}</span
+        >
       {/if}
       {#if !done}
         <span class="pill" style:--c={statusColor}>

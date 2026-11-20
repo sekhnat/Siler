@@ -1,9 +1,9 @@
 <script lang="ts">
-  import { ArrowDownToLine, CircleAlert, CircleCheck, Clock, Gauge, Layers, Plus, Settings } from "@lucide/svelte";
-  import type { Download } from "../api";
+  import { ArrowDownToLine, CalendarClock, CircleAlert, CircleCheck, Clock, Gauge, Layers, ListOrdered, Pencil, Play, Plus, RefreshCw, Settings, Square } from "@lucide/svelte";
+  import { api, type Download, type Queue } from "../api";
   import { CATEGORIES, isActive } from "../categories";
-  import { limitLabel, speed } from "../format";
-  import { store } from "../store.svelte";
+  import { describeSchedule, limitLabel, speed } from "../format";
+  import { attempt, store } from "../store.svelte";
   import Logo from "./Logo.svelte";
   import SpeedMenu from "./SpeedMenu.svelte";
   import Sparkline from "./Sparkline.svelte";
@@ -14,12 +14,15 @@
     onlimit,
     onadd,
     onsettings,
+    onqueue,
   }: {
     filter: string;
     globalLimit: number;
     onlimit: (bps: number) => void;
     onadd: () => void;
     onsettings: () => void;
+    /** Edit a queue, or make a new one (null). */
+    onqueue: (q: Queue | null) => void;
   } = $props();
 
   let limitMenu = $state(false);
@@ -31,7 +34,16 @@
     { key: "queued", label: "Queued & paused", icon: Clock, n: count((d) => d.status === "queued" || d.status === "paused" || d.status === "waiting") },
     { key: "completed", label: "Completed", icon: CircleCheck, n: count((d) => d.status === "completed") },
     { key: "failed", label: "Failed", icon: CircleAlert, n: count((d) => d.status === "failed") },
-  ]);
+    { key: "sync", label: "Kept up to date", icon: RefreshCw, n: count((d) => d.sync_every > 0) },
+  ].filter((n) => n.key !== "sync" || n.n > 0));
+  const queueNav = $derived(
+    store.queues.map((q) => ({
+      q,
+      n: count((d) => d.queue_id === q.id && d.status !== "completed"),
+      waiting: count((d) => d.queue_id === q.id && d.status === "waiting"),
+      when: describeSchedule(q.schedule),
+    })),
+  );
   const catNav = $derived(
     CATEGORIES.map((c) => ({ ...c, n: count((d) => d.category === c.key) })).filter((c) => c.n > 0 || c.key !== "other"),
   );
@@ -58,6 +70,32 @@
         <span class="truncate">{item.label}</span>
         {#if item.n}<span class="count">{item.n}</span>{/if}
       </button>
+    {/each}
+
+    <div class="section">
+      <span>Queues</span>
+      <button class="icon-btn sm" title="New queue" aria-label="New queue" onclick={() => onqueue(null)}><Plus size={14} /></button>
+    </div>
+    {#each queueNav as { q, n, waiting, when } (q.id)}
+      <div class="queue" class:on={filter === `queue:${q.id}`}>
+        <button class="nav" class:on={filter === `queue:${q.id}`} onclick={() => (filter = `queue:${q.id}`)} ondblclick={() => onqueue(q)} title={when ? `Scheduled ${when}` : q.name}>
+          {#if when}<CalendarClock size={16} />{:else}<ListOrdered size={16} />{/if}
+          <span class="qname">
+            <span class="truncate">{q.name}</span>
+            {#if when}<span class="when truncate">{when}</span>{/if}
+          </span>
+          {#if q.active}<span class="live" title="Running"></span>{/if}
+          {#if n}<span class="count">{n}</span>{/if}
+        </button>
+        <span class="q-actions">
+          {#if q.active}
+            <button class="icon-btn sm" title="Stop the queue" aria-label="Stop the queue" onclick={() => attempt(api.stopQueue(q.id))}><Square size={12} /></button>
+          {:else if waiting}
+            <button class="icon-btn sm" title="Start the queue" aria-label="Start the queue" onclick={() => attempt(api.startQueue(q.id))}><Play size={13} /></button>
+          {/if}
+          <button class="icon-btn sm" title="Edit the queue" aria-label="Edit the queue" onclick={() => onqueue(q)}><Pencil size={12} /></button>
+        </span>
+      </div>
     {/each}
 
     <div class="section">Categories</div>
@@ -134,7 +172,11 @@
     gap: 1px;
   }
   .section {
-    padding: 16px 12px 6px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 22px;
+    padding: 16px 6px 6px 12px;
     font-size: 11px;
     font-weight: 650;
     text-transform: uppercase;
@@ -183,6 +225,58 @@
     border-radius: 6px;
     color: var(--c);
     background: color-mix(in srgb, var(--c) 16%, transparent);
+  }
+  .queue {
+    position: relative;
+  }
+  .queue .nav {
+    width: 100%;
+    height: auto;
+    min-height: 34px;
+    padding-top: 4px;
+    padding-bottom: 4px;
+  }
+  .qname {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    flex: 1;
+  }
+  .when {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--muted);
+    margin-top: -1px;
+  }
+  .live {
+    width: 7px;
+    height: 7px;
+    border-radius: 99px;
+    background: var(--ok);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 22%, transparent);
+  }
+  .q-actions {
+    position: absolute;
+    right: 6px;
+    top: 50%;
+    transform: translateY(-50%);
+    display: none;
+    gap: 2px;
+    padding-left: 6px;
+    background: inherit;
+  }
+  .queue:hover .q-actions,
+  .queue:focus-within .q-actions {
+    display: flex;
+  }
+  .queue:hover .count,
+  .queue:focus-within .count,
+  .queue:hover .live,
+  .queue:focus-within .live {
+    visibility: hidden;
+  }
+  .q-actions .icon-btn {
+    background: var(--sidebar);
   }
   .speed-card {
     margin: 10px 4px 8px;
