@@ -12,8 +12,9 @@ use url::Url;
 use crate::error::ParseError;
 use crate::limits::ParseLimits;
 use crate::model::{
-    ByteRange, Liveness, ManifestKind, Object, Presentation, Protection, Segment, SegmentContainer,
-    SegmentPlan, Track, TrackId, TrackKind, Variant, resolve,
+    ByteRange, Liveness, ManifestKind, Object, Presentation, Protection, SUBTITLES_IN_MP4, Segment,
+    SegmentContainer, SegmentPlan, Track, TrackId, TrackKind, Variant, language, resolve,
+    subtitle_supported,
 };
 use crate::protection;
 use crate::xml::{self, Node};
@@ -49,7 +50,7 @@ pub fn parse(body: &[u8], base: &Url, lim: &ParseLimits) -> Result<Presentation,
 
     let mut accs: Vec<Acc> = Vec::new();
     let mut index: HashMap<String, usize> = HashMap::new();
-    let warnings = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
     for (period, (p_start, p_dur)) in periods.iter().zip(timeline.iter().copied()) {
         let period_base = child_base(period, &mpd_base)?;
         for (ai, aset) in period.children_named("AdaptationSet").enumerate() {
@@ -83,9 +84,7 @@ pub fn parse(body: &[u8], base: &Url, lim: &ParseLimits) -> Result<Presentation,
                     }
                     _ => None,
                 };
-                let lang = get("lang")
-                    .map(|l| l.trim().to_string())
-                    .filter(|l| !l.is_empty());
+                let lang = language(get("lang"));
                 let role_main = aset
                     .children_named("Role")
                     .chain(rep.children_named("Role"))
@@ -100,9 +99,16 @@ pub fn parse(body: &[u8], base: &Url, lim: &ParseLimits) -> Result<Presentation,
                     .and_then(|c| c.attr("value"))
                     .and_then(|v| v.trim().parse::<u32>().ok());
                 let protection = protections(aset, rep);
-                let plan = plan_for(
-                    rep, aset, &rep_base, &rep_id, bandwidth, p_start, p_dur, lim,
-                )?;
+                let Some(plan) = plan_for(
+                    rep, aset, period, &rep_base, &rep_id, bandwidth, p_start, p_dur, lim,
+                )?
+                else {
+                    let w = "a representation that doesn't say where its segments are was skipped";
+                    if !warnings.iter().any(|x| x == w) {
+                        warnings.push(w.into());
+                    }
+                    continue;
+                };
                 let container = container_for(mime, codecs, &plan);
                 let kind_label = match kind {
                     TrackKind::Video => "video",
@@ -161,10 +167,15 @@ pub fn parse(body: &[u8], base: &Url, lim: &ParseLimits) -> Result<Presentation,
     let mut video = Vec::new();
     let mut audio = Vec::new();
     let mut subtitles = Vec::new();
+    let mut subtitles_dropped = false;
     for acc in accs {
         let track = acc.into_track();
         if track.protection.is_drm() {
             dropped_drm += 1;
+            continue;
+        }
+        if track.kind == TrackKind::Subtitle && !subtitle_supported(&track) {
+            subtitles_dropped = true;
             continue;
         }
         match track.kind {
@@ -172,6 +183,9 @@ pub fn parse(body: &[u8], base: &Url, lim: &ParseLimits) -> Result<Presentation,
             TrackKind::Audio => audio.push(track),
             TrackKind::Subtitle => subtitles.push(track),
         }
+    }
+    if subtitles_dropped {
+        warnings.push(SUBTITLES_IN_MP4.into());
     }
     let audio_ids: Vec<TrackId> = audio.iter().map(|t| t.id.clone()).collect();
     let subtitle_ids: Vec<TrackId> = subtitles.iter().map(|t| t.id.clone()).collect();
@@ -332,6 +346,7 @@ fn container_for(mime: Option<&str>, codecs: Option<&str>, plan: &SegmentPlan) -
         "text/vtt" => SegmentContainer::Vtt,
         "application/ttml+xml" => SegmentContainer::Ttml,
         "video/mp4" | "audio/mp4" | "application/mp4" => SegmentContainer::Fmp4,
+        "video/webm" | "audio/webm" => SegmentContainer::Webm,
         _ => {
             let c = codecs.unwrap_or("").to_ascii_lowercase();
             if !plan.inits.is_empty() || c.contains("stpp") || c.contains("wvtt") {
@@ -350,31 +365,62 @@ fn protections(aset: &Node, rep: &Node) -> Protection {
         .fold(Protection::Clear, Protection::worst)
 }
 
+/// Where a representation's segments are, from the nearest level that says: the
+/// representation, then its adaptation set, then the period. `None` when none says.
 #[allow(clippy::too_many_arguments)]
 fn plan_for(
     rep: &Node,
     aset: &Node,
+    period: &Node,
     base: &Url,
     rep_id: &str,
     bandwidth: Option<u64>,
     p_start: f64,
     p_dur: Option<f64>,
     lim: &ParseLimits,
-) -> Result<SegmentPlan, ParseError> {
-    let find = |name: &str| rep.child(name).or_else(|| aset.child(name));
-    if let Some(t) = find("SegmentTemplate") {
-        return template_plan(t, base, rep_id, bandwidth, p_start, p_dur, lim);
+) -> Result<Option<SegmentPlan>, ParseError> {
+    let levels = [rep, aset, period];
+    let templates: Vec<&Node> = levels
+        .iter()
+        .filter_map(|n| n.child("SegmentTemplate"))
+        .collect();
+    if !templates.is_empty() {
+        let t = Layered(templates);
+        return template_plan(&t, base, rep_id, bandwidth, p_start, p_dur, lim).map(Some);
     }
-    if let Some(l) = find("SegmentList") {
-        return list_plan(l, base, p_start, lim);
+    if let Some(l) = levels.iter().find_map(|n| n.child("SegmentList")) {
+        return list_plan(l, base, p_start, lim).map(Some);
     }
-    if find("SegmentBase").is_some() || rep.child("BaseURL").is_some() {
+    if levels.iter().any(|n| n.child("SegmentBase").is_some()) || rep.child("BaseURL").is_some() {
         // One file: fetched whole, and resumed if interrupted.
-        return Ok(whole_plan(base, p_start, p_dur));
+        return Ok(Some(whole_plan(base, p_start, p_dur)));
     }
-    Err(ParseError::invalid(
-        "a representation has no way to address its segments",
-    ))
+    Ok(None)
+}
+
+/// A `SegmentTemplate` with its inherited attributes: each one comes from the nearest level
+/// that has it, as does the `SegmentTimeline`.
+struct Layered<'a>(Vec<&'a Node>);
+
+impl Layered<'_> {
+    fn attr(&self, name: &str) -> Option<&str> {
+        self.0.iter().find_map(|n| n.attr(name))
+    }
+
+    fn timeline(&self) -> Option<&Node> {
+        self.0.iter().find_map(|n| n.child("SegmentTimeline"))
+    }
+
+    fn u64(&self, name: &str) -> Result<Option<u64>, ParseError> {
+        match self.attr(name) {
+            None => Ok(None),
+            Some(v) => {
+                v.trim().parse::<u64>().map(Some).map_err(|_| {
+                    ParseError::invalid(format!("the attribute {name} isn't a number"))
+                })
+            }
+        }
+    }
 }
 
 fn whole_plan(base: &Url, start: f64, dur: Option<f64>) -> SegmentPlan {
@@ -397,7 +443,7 @@ fn whole_plan(base: &Url, start: f64, dur: Option<f64>) -> SegmentPlan {
 }
 
 fn template_plan(
-    t: &Node,
+    t: &Layered<'_>,
     base: &Url,
     rep_id: &str,
     bandwidth: Option<u64>,
@@ -405,9 +451,9 @@ fn template_plan(
     p_dur: Option<f64>,
     lim: &ParseLimits,
 ) -> Result<SegmentPlan, ParseError> {
-    let timescale = attr_u64(t, "timescale")?.unwrap_or(1).max(1);
-    let pto = attr_u64(t, "presentationTimeOffset")?.unwrap_or(0);
-    let start_number = attr_u64(t, "startNumber")?.unwrap_or(1);
+    let timescale = t.u64("timescale")?.unwrap_or(1).max(1);
+    let pto = t.u64("presentationTimeOffset")?.unwrap_or(0);
+    let start_number = t.u64("startNumber")?.unwrap_or(1);
     let media = t
         .attr("media")
         .ok_or_else(|| ParseError::invalid("a SegmentTemplate has no media attribute"))?;
@@ -432,10 +478,11 @@ fn template_plan(
         entries.push(e);
         Ok(())
     };
-    if let Some(tl) = t.child("SegmentTimeline") {
+    if let Some(tl) = t.timeline() {
         let mut number = start_number;
         let mut cursor: Option<u64> = None;
-        for s in tl.children_named("S") {
+        let entries_s: Vec<&Node> = tl.children_named("S").collect();
+        for (k, s) in entries_s.iter().enumerate() {
             let d = attr_u64(s, "d")?
                 .filter(|d| *d > 0)
                 .ok_or_else(|| ParseError::invalid("a timeline entry has no duration"))?;
@@ -453,13 +500,21 @@ fn template_plan(
             let repeats = if r >= 0 {
                 r as u64
             } else {
-                // Repeats until the end of the period.
-                let p = p_dur.ok_or_else(|| {
-                    ParseError::unsupported(
-                        "a timeline that runs to the end of a period of unknown length",
-                    )
-                })?;
-                let end = pto as f64 + p * timescale as f64;
+                // Repeats until the next entry's start, or the end of the period.
+                let next = entries_s
+                    .get(k + 1)
+                    .map(|n| attr_u64(n, "t"))
+                    .transpose()?
+                    .flatten();
+                let end = match (next, p_dur) {
+                    (Some(t), _) => t as f64,
+                    (None, Some(p)) => pto as f64 + p * timescale as f64,
+                    (None, None) => {
+                        return Err(ParseError::unsupported(
+                            "a timeline that runs to the end of a period of unknown length",
+                        ));
+                    }
+                };
                 let span = (end - time as f64).max(0.0);
                 ((span / d as f64).ceil() as u64).saturating_sub(1)
             };
@@ -471,7 +526,7 @@ fn template_plan(
             cursor = Some(time);
         }
     } else {
-        let d = attr_u64(t, "duration")?.filter(|d| *d > 0).ok_or_else(|| {
+        let d = t.u64("duration")?.filter(|d| *d > 0).ok_or_else(|| {
             ParseError::unsupported("a SegmentTemplate has neither a timeline nor a duration")
         })?;
         let p =
@@ -977,5 +1032,98 @@ mod tests {
             })
         );
         assert_eq!(v.plan.segments[1].start, 2.0);
+    }
+}
+
+#[cfg(test)]
+mod regressions {
+    use super::*;
+
+    fn parse_str(mpd: &str) -> Result<Presentation, ParseError> {
+        parse(
+            mpd.as_bytes(),
+            &Url::parse("https://cdn.example/vod/manifest.mpd").expect("URL"),
+            &ParseLimits::default(),
+        )
+    }
+
+    #[test]
+    fn template_attributes_are_inherited_level_by_level() {
+        // The adaptation set has the template; the representation only overrides startNumber;
+        // the period-level template supplies the timescale.
+        let p = parse_str(
+            r#"<MPD type="static" mediaPresentationDuration="PT8S"><Period>
+                 <SegmentTemplate timescale="1000"/>
+                 <AdaptationSet mimeType="video/mp4" codecs="avc1.4d401f">
+                   <SegmentTemplate media="v/$RepresentationID$/$Number$.m4s" initialization="v/$RepresentationID$/init.mp4" duration="4000"/>
+                   <Representation id="hd" bandwidth="1000" width="1280" height="720">
+                     <SegmentTemplate startNumber="10"/>
+                   </Representation>
+                 </AdaptationSet>
+               </Period></MPD>"#,
+        )
+        .expect("parses");
+        let segs = &p.variants[0].video.plan.segments;
+        assert_eq!(segs.len(), 2);
+        assert!(segs[0].object.url.as_str().ends_with("/v/hd/10.m4s"));
+        assert!(segs[1].object.url.as_str().ends_with("/v/hd/11.m4s"));
+        assert!((segs[0].duration - 4.0).abs() < 1e-9);
+        assert!(
+            p.variants[0].video.plan.inits[0]
+                .url
+                .as_str()
+                .ends_with("/v/hd/init.mp4")
+        );
+    }
+
+    #[test]
+    fn an_open_repeat_runs_up_to_the_next_entry() {
+        let p = parse_str(
+            r#"<MPD type="static" mediaPresentationDuration="PT100S"><Period><AdaptationSet mimeType="audio/mp4" codecs="mp4a.40.2"><SegmentTemplate timescale="1" media="a$Time$.m4s"><SegmentTimeline><S t="0" d="2" r="-1"/><S t="10" d="5"/></SegmentTimeline></SegmentTemplate><Representation id="a" bandwidth="1"/></AdaptationSet></Period></MPD>"#,
+        )
+        .expect("parses");
+        let names: Vec<&str> = p.audio[0]
+            .plan
+            .segments
+            .iter()
+            .map(|s| s.object.url.path().rsplit('/').next().unwrap_or(""))
+            .collect();
+        assert_eq!(
+            names,
+            ["a0.m4s", "a2.m4s", "a4.m4s", "a6.m4s", "a8.m4s", "a10.m4s"]
+        );
+    }
+
+    #[test]
+    fn unaddressable_representations_are_skipped_and_webm_is_known() {
+        let p = parse_str(
+            r#"<MPD type="static" mediaPresentationDuration="PT4S"><Period>
+                 <AdaptationSet mimeType="video/webm" codecs="vp9"><Representation id="v" bandwidth="9"><BaseURL>v.webm</BaseURL><SegmentBase indexRange="0-9"/></Representation></AdaptationSet>
+                 <AdaptationSet mimeType="audio/mp4" codecs="mp4a.40.2"><Representation id="lost" bandwidth="9"/></AdaptationSet>
+                 <AdaptationSet mimeType="application/mp4" codecs="stpp"><SegmentTemplate media="t$Number$.m4s" initialization="ti.mp4" duration="4"/><Representation id="t" bandwidth="1"/></AdaptationSet>
+               </Period></MPD>"#,
+        )
+        .expect("parses");
+        assert_eq!(p.variants.len(), 1);
+        assert_eq!(p.variants[0].video.container, SegmentContainer::Webm);
+        assert!(p.variants[0].video.plan.whole);
+        assert!(
+            p.audio.is_empty(),
+            "the representation with no segments is skipped"
+        );
+        assert!(
+            p.subtitles.is_empty(),
+            "subtitles inside MP4 aren't offered"
+        );
+        assert_eq!(p.warnings.len(), 2, "{:?}", p.warnings);
+    }
+
+    #[test]
+    fn undetermined_language_is_none() {
+        let p = parse_str(
+            r#"<MPD type="static" mediaPresentationDuration="PT4S"><Period><AdaptationSet mimeType="audio/mp4" codecs="mp4a.40.2" lang="und"><SegmentTemplate media="a$Number$.m4s" duration="4"/><Representation id="a" bandwidth="1"/></AdaptationSet></Period></MPD>"#,
+        )
+        .expect("parses");
+        assert_eq!(p.audio[0].lang, None);
     }
 }

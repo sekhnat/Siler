@@ -13,8 +13,9 @@ use crate::classify::extension;
 use crate::error::ParseError;
 use crate::limits::ParseLimits;
 use crate::model::{
-    ByteRange, Key, Liveness, ManifestKind, Object, Presentation, Protection, Segment,
-    SegmentContainer, SegmentPlan, Track, TrackId, TrackKind, Variant, resolve, without_query,
+    ByteRange, Key, Liveness, ManifestKind, Object, Presentation, Protection, SUBTITLES_IN_MP4,
+    Segment, SegmentContainer, SegmentPlan, Track, TrackId, TrackKind, Variant, language, resolve,
+    subtitle_supported, without_query,
 };
 use crate::protection;
 
@@ -276,9 +277,7 @@ fn rendition(
         // Without a playlist there is nothing to download.
         return Ok(None);
     }
-    let language = get(a, "LANGUAGE")
-        .filter(|l| !l.is_empty())
-        .map(str::to_string);
+    let language = language(get(a, "LANGUAGE"));
     Ok(Some(Rendition {
         kind,
         group: get(a, "GROUP-ID").unwrap_or("").to_string(),
@@ -602,6 +601,7 @@ pub fn assemble(
 
     let mut variants: Vec<Variant> = Vec::new();
     let mut seen: Vec<TrackId> = Vec::new();
+    let mut audio_only: Vec<(&MasterVariant, &Media, Protection)> = Vec::new();
     for v in &master.variants {
         let Some(media) = lists.get(&v.uri) else {
             warnings.push("the playlist for a video choice wasn't read".into());
@@ -613,9 +613,7 @@ pub fn assemble(
             continue;
         }
         if is_audio_only(v.codecs.as_deref(), v.resolution) {
-            warnings.push(
-                "an audio-only variant was skipped; it isn't offered as a video choice".into(),
-            );
+            audio_only.push((v, media, protection));
             continue;
         }
         let codecs = v.codecs.clone();
@@ -648,7 +646,8 @@ pub fn assemble(
             name: None,
             codecs,
             container: container_of(media),
-            bandwidth: Some(v.bandwidth),
+            // A bare media playlist has no stated bandwidth (it is given as 1).
+            bandwidth: Some(v.bandwidth).filter(|b| *b > 1),
             resolution: v.resolution,
             channels: None,
             is_default: false,
@@ -675,12 +674,60 @@ pub fn assemble(
         });
     }
 
+    // Audio-only variants: audio choices, when there is no video to go with them (a radio
+    // stream or a podcast). With video, the variants with video are the choices.
+    if variants.is_empty() {
+        for (v, media, protection) in audio_only {
+            let id = TrackId::of(&[
+                "hls",
+                "audio-variant",
+                &v.bandwidth.to_string(),
+                v.codecs.as_deref().unwrap_or(""),
+                &without_query(&v.uri),
+            ]);
+            if audio.iter().any(|t| t.id == id) {
+                continue;
+            }
+            count += 1;
+            check_count(count, lim)?;
+            live |= !media.vod;
+            audio.push(Track {
+                id,
+                kind: TrackKind::Audio,
+                lang: None,
+                name: None,
+                codecs: v.codecs.clone(),
+                container: container_of(media),
+                bandwidth: Some(v.bandwidth).filter(|b| *b > 1),
+                resolution: None,
+                channels: None,
+                is_default: false,
+                protection,
+                plan: plan_of(media),
+            });
+        }
+    } else if !audio_only.is_empty() {
+        warnings.push("audio-only versions of the stream aren't offered as video choices".into());
+    }
+    let before = subtitles.len();
+    subtitles.retain(subtitle_supported);
+    if subtitles.len() < before {
+        warnings.push(SUBTITLES_IN_MP4.into());
+        for v in &mut variants {
+            v.subtitles
+                .retain(|id| subtitles.iter().any(|t| &t.id == id));
+        }
+    }
+
     if variants.is_empty() && audio.is_empty() && dropped_drm == 0 {
         return Err(ParseError::invalid(
             "no variant of this playlist could be read",
         ));
     }
-    let duration = variants.first().map(|v| v.video.plan.duration());
+    let duration = variants
+        .first()
+        .map(|v| v.video.plan.duration())
+        .or_else(|| audio.first().map(|a| a.plan.duration()));
     Ok(Presentation {
         kind: ManifestKind::Hls,
         liveness: if live { Liveness::Live } else { Liveness::Vod },
@@ -739,6 +786,7 @@ pub(crate) fn container_of_ext(path: &str) -> Option<SegmentContainer> {
     match extension(path)?.as_str() {
         "ts" | "tsa" | "tsv" => Some(SegmentContainer::Ts),
         "m4s" | "mp4" | "m4v" | "m4a" | "cmfv" | "cmfa" | "cmft" => Some(SegmentContainer::Fmp4),
+        "webm" => Some(SegmentContainer::Webm),
         "aac" => Some(SegmentContainer::Aac),
         "mp3" => Some(SegmentContainer::Mp3),
         "ac3" | "ec3" => Some(SegmentContainer::Ac3),
@@ -1045,5 +1093,136 @@ mod tests {
         );
         assert!(m.is_ok());
         assert!(parse_media(b"#EXTM3U\n#EXTINF:1,\n\n#EXT-X-ENDLIST\n", &base(), &lim()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod regressions {
+    use super::*;
+
+    fn lim() -> ParseLimits {
+        ParseLimits::default()
+    }
+
+    fn url(s: &str) -> Url {
+        Url::parse(s).expect("URL")
+    }
+
+    fn media(body: &str, base: &str) -> Media {
+        parse_media(body.as_bytes(), &url(base), &lim()).expect("media playlist")
+    }
+
+    const AAC: &str = "#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4,\na0.aac\n#EXTINF:4,\na1.aac\n#EXT-X-ENDLIST\n";
+
+    #[test]
+    fn an_audio_only_master_offers_its_variants_as_audio() {
+        let base = url("https://radio.example/live/master.m3u8");
+        let master = parse_master(
+            b"#EXTM3U\n\
+              #EXT-X-STREAM-INF:BANDWIDTH=128000,CODECS=\"mp4a.40.2\"\nhi/index.m3u8\n\
+              #EXT-X-STREAM-INF:BANDWIDTH=64000,CODECS=\"mp4a.40.5\"\nlo/index.m3u8\n",
+            &base,
+            &lim(),
+        )
+        .expect("master");
+        let mut lists = HashMap::new();
+        for u in playlist_urls(&master, &lim()).expect("urls") {
+            lists.insert(u.clone(), media(AAC, u.as_str()));
+        }
+        let p = assemble(&master, &lists, &lim()).expect("assembles");
+        assert!(p.variants.is_empty());
+        assert_eq!(p.audio.len(), 2);
+        assert_eq!(p.audio[0].container, SegmentContainer::Aac);
+        assert_eq!(p.audio[0].bandwidth, Some(128_000));
+        assert_eq!(p.duration, Some(8.0));
+    }
+
+    #[test]
+    fn audio_only_variants_beside_video_are_left_out_with_a_warning() {
+        let base = url("https://cdn.example/m.m3u8");
+        let master = parse_master(
+            b"#EXTM3U\n\
+              #EXT-X-STREAM-INF:BANDWIDTH=900000,CODECS=\"avc1.4d401f,mp4a.40.2\",RESOLUTION=640x360\nv.m3u8\n\
+              #EXT-X-STREAM-INF:BANDWIDTH=64000,CODECS=\"mp4a.40.2\"\na.m3u8\n",
+            &base,
+            &lim(),
+        )
+        .expect("master");
+        let ts = "#EXTM3U\n#EXTINF:4,\ns.ts\n#EXT-X-ENDLIST\n";
+        let mut lists = HashMap::new();
+        for u in playlist_urls(&master, &lim()).expect("urls") {
+            lists.insert(u.clone(), media(ts, u.as_str()));
+        }
+        let p = assemble(&master, &lists, &lim()).expect("assembles");
+        assert_eq!(p.variants.len(), 1);
+        assert!(p.audio.is_empty());
+        assert!(p.warnings.iter().any(|w| w.contains("audio-only")));
+    }
+
+    #[test]
+    fn undetermined_languages_and_mp4_subtitles() {
+        let base = url("https://cdn.example/m.m3u8");
+        let master = parse_master(
+            b"#EXTM3U\n\
+              #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"Main\",LANGUAGE=\"und\",URI=\"a.m3u8\"\n\
+              #EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"s\",NAME=\"English\",LANGUAGE=\"en\",URI=\"s.m3u8\"\n\
+              #EXT-X-STREAM-INF:BANDWIDTH=900000,CODECS=\"avc1.4d401f,mp4a.40.2\",RESOLUTION=640x360,AUDIO=\"a\",SUBTITLES=\"s\"\nv.m3u8\n",
+            &base,
+            &lim(),
+        )
+        .expect("master");
+        let mut lists = HashMap::new();
+        lists.insert(
+            url("https://cdn.example/v.m3u8"),
+            media(
+                "#EXTM3U\n#EXTINF:4,\nv.ts\n#EXT-X-ENDLIST\n",
+                "https://cdn.example/v.m3u8",
+            ),
+        );
+        lists.insert(
+            url("https://cdn.example/a.m3u8"),
+            media(
+                "#EXTM3U\n#EXTINF:4,\na.ts\n#EXT-X-ENDLIST\n",
+                "https://cdn.example/a.m3u8",
+            ),
+        );
+        // WebVTT carried in fMP4 segments.
+        lists.insert(
+            url("https://cdn.example/s.m3u8"),
+            media(
+                "#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:4,\ns0.m4s\n#EXT-X-ENDLIST\n",
+                "https://cdn.example/s.m3u8",
+            ),
+        );
+        let p = assemble(&master, &lists, &lim()).expect("assembles");
+        assert_eq!(p.audio[0].lang, None, "“und” is no language");
+        assert!(p.subtitles.is_empty());
+        assert!(p.variants[0].subtitles.is_empty());
+        assert!(p.warnings.iter().any(|w| w.contains("subtitles")));
+    }
+
+    #[test]
+    fn a_bare_playlist_states_no_bandwidth() {
+        let u = url("https://cdn.example/clip/index.m3u8");
+        let master = Master {
+            variants: vec![MasterVariant {
+                uri: u.clone(),
+                bandwidth: 1,
+                codecs: None,
+                resolution: None,
+                audio_group: None,
+                subtitle_group: None,
+            }],
+            renditions: Vec::new(),
+            session_keys: Vec::new(),
+        };
+        let mut lists = HashMap::new();
+        lists.insert(
+            u.clone(),
+            media("#EXTM3U\n#EXTINF:4,\nv.ts\n#EXT-X-ENDLIST\n", u.as_str()),
+        );
+        let p = assemble(&master, &lists, &lim()).expect("assembles");
+        assert_eq!(p.variants[0].video.bandwidth, None);
+        assert_eq!(p.variants[0].video.estimated_bytes(), None);
     }
 }

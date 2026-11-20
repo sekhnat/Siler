@@ -147,13 +147,21 @@ pub fn host_key(url: &Url) -> String {
 }
 
 pub(crate) struct Net {
+    /// Follows redirects itself (file downloads).
     client: RwLock<Client>,
+    /// Never follows redirects, so the caller can check every hop (media).
+    manual: RwLock<Client>,
     route: RwLock<ProxyRoute>,
     hosts: Mutex<HashMap<String, Arc<HostAuth>>>,
 }
 
-fn build_client(route: &ProxyRoute, login: Option<(&str, &str)>) -> Result<Client> {
+fn build_client(route: &ProxyRoute, login: Option<(&str, &str)>, follow: bool) -> Result<Client> {
     let mut b = Client::builder()
+        .redirect(if follow {
+            reqwest::redirect::Policy::default()
+        } else {
+            reqwest::redirect::Policy::none()
+        })
         .connect_timeout(Duration::from_secs(20))
         .read_timeout(Duration::from_secs(60))
         .pool_idle_timeout(Duration::from_secs(30))
@@ -185,7 +193,8 @@ fn build_client(route: &ProxyRoute, login: Option<(&str, &str)>) -> Result<Clien
 impl Net {
     pub fn new(proxy: &ProxySettings, password: Option<&str>) -> Result<Net> {
         let net = Net {
-            client: RwLock::new(build_client(&ProxyRoute::default(), None)?),
+            client: RwLock::new(build_client(&ProxyRoute::default(), None, true)?),
+            manual: RwLock::new(build_client(&ProxyRoute::default(), None, false)?),
             route: RwLock::new(ProxyRoute::default()),
             hosts: Mutex::new(HashMap::new()),
         };
@@ -200,7 +209,9 @@ impl Net {
         let login = proxy
             .needs_password()
             .then(|| (proxy.username.trim(), password.unwrap_or("")));
-        let client = match build_client(&route, login) {
+        let built = build_client(&route, login, true)
+            .and_then(|c| Ok((c, build_client(&route, login, false)?)));
+        let (client, manual) = match built {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!("{e}");
@@ -209,7 +220,9 @@ impl Net {
                     note: Some(format!("{e}; connecting directly")),
                     ..Default::default()
                 };
-                match build_client(&route, None) {
+                match build_client(&route, None, true)
+                    .and_then(|c| Ok((c, build_client(&route, None, false)?)))
+                {
                     Ok(c) => c,
                     Err(e) => {
                         tracing::error!("can't create the HTTP client: {e}");
@@ -220,11 +233,17 @@ impl Net {
         };
         tracing::info!("proxy: {}", route.summary());
         *self.client.write().unwrap() = client;
+        *self.manual.write().unwrap() = manual;
         *self.route.write().unwrap() = route;
     }
 
     pub fn client(&self) -> Client {
         self.client.read().unwrap().clone()
+    }
+
+    /// A client that returns redirects instead of following them.
+    pub fn manual_client(&self) -> Client {
+        self.manual.read().unwrap().clone()
     }
 
     pub fn route(&self) -> ProxyRoute {

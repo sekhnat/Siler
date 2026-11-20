@@ -66,6 +66,8 @@
   let choice = $state<"rename" | "overwrite">("rename");
 
   const valid = $derived(looksLikeUrl(url));
+  /** A stream address whose stream couldn't be read: it isn't added as a file instead. */
+  const streamFailed = $derived(!mediaProbe && !!probeError && streamLike(url));
   const isStream = $derived(mediaProbe?.kind === "hls" || mediaProbe?.kind === "dash");
   const mediaReady = $derived(isStream && (selection.video !== null || selection.audio.length > 0));
   const resumable = $derived(pending?.resumable ?? null);
@@ -92,25 +94,56 @@
     if (!dirEdited) dir = categoryDir(c);
   }
 
+  /** An HLS or DASH address (by its path, ignoring the query). */
+  function streamLike(u: string): boolean {
+    return /\.(m3u8|mpd)$/i.test(u.trim().split(/[?#]/)[0]);
+  }
+
+  /** A file probe that turned out to be a manifest (by its type or name). */
+  function manifestLike(p: ProbeResult): boolean {
+    const type = (p.content_type ?? "").split(";")[0].trim().toLowerCase();
+    return /mpegurl|dash\+xml/.test(type) || /\.(m3u8|mpd)$/i.test(p.filename);
+  }
+
+  /** Shows a stream's tracks instead of the file form. */
+  function showMedia(m: MediaProbe) {
+    mediaProbe = m;
+    selection = { ...m.default };
+    probe = null;
+    loginNeeded = null;
+    // The manifest's own name ("master.m3u8") says nothing; the stream names the file.
+    if (!pending?.keep_name) filename = "";
+    category = "video";
+    if (!dirEdited) dir = categoryDir("video");
+  }
+
   let seq = 0;
   async function runProbe(target: string) {
     const mine = ++seq;
     probing = true;
     probeError = "";
     try {
-      // Streams are looked at first: a manifest is never downloaded as a file.
-      const m = await api.probeMedia(target, pending?.id).catch(() => null);
-      if (mine !== seq) return;
-      if (m && m.kind !== "direct" && m.kind !== "not_media") {
-        mediaProbe = m;
-        selection = { ...m.default };
-        probe = null;
-        loginNeeded = null;
-        return;
+      // A stream address is looked at as a stream only: a manifest is never a file to save.
+      // Other links are probed as files first, so a plain download isn't fetched twice.
+      if (streamLike(target)) {
+        const m = await api.probeMedia(target, pending?.id);
+        if (mine !== seq) return;
+        if (m.kind !== "direct" && m.kind !== "not_media") {
+          showMedia(m);
+          return;
+        }
       }
       mediaProbe = null;
       const p = await api.probe(target, pending?.id);
       if (mine !== seq) return;
+      if (!streamLike(target) && manifestLike(p)) {
+        const m = await api.probeMedia(target, pending?.id).catch(() => null);
+        if (mine !== seq) return;
+        if (m && m.kind !== "direct" && m.kind !== "not_media") {
+          showMedia(m);
+          return;
+        }
+      }
       probe = p;
       loginNeeded = null;
       if (!pending?.keep_name) filename = p.filename;
@@ -119,6 +152,7 @@
     } catch (e) {
       if (mine !== seq) return;
       probe = null;
+      mediaProbe = null;
       probeError = errorText(e);
       loginNeeded = (e as ProbeError)?.login ?? null;
     } finally {
@@ -131,6 +165,7 @@
     const target = url.trim();
     if (!looksLikeUrl(target)) {
       probe = null;
+      mediaProbe = null;
       probeError = "";
       loginNeeded = null;
       return;
@@ -179,12 +214,15 @@
   }
 
   async function submit(startPaused: boolean) {
+    if (streamFailed) return;
     if (mediaProbe) {
       if (!mediaReady || busy) return;
       busy = true;
       try {
         await api.addMedia({
           url: url.trim(),
+          filename: filename.trim() || null,
+          dir: dir.trim() || null,
           container,
           subtitles: subtitleMode,
           selection,
@@ -293,7 +331,11 @@
         <div class="status"><LoaderCircle size={14} class="spin" /> Checking link…</div>
       {:else if probeError}
         <div class="status err"><TriangleAlert size={14} /> <span class="truncate" title={probeError}>{probeError}</span></div>
-        <div class="hint">You can still add it — K-Star will retry when it starts.</div>
+        {#if streamFailed}
+          <div class="hint">This is a video stream, and it couldn't be read. Check the link, then try again.</div>
+        {:else}
+          <div class="hint">You can still add it — K-Star will retry when it starts.</div>
+        {/if}
       {:else if probe}
         <div class="facts">
           <span class="size">{probe.total_size != null ? bytes(probe.total_size) : "Unknown size"}</span>
@@ -314,7 +356,21 @@
 
   {/if}
 
-  {#if !mediaProbe}
+  {#if mediaProbe}
+    {#if isStream}
+      <label class="field">
+        <span class="label">File name</span>
+        <input class="input" bind:value={filename} placeholder={mediaProbe.title ?? "Named after the stream"} spellcheck="false" />
+      </label>
+      <div class="field">
+        <span class="label">Save to</span>
+        <div class="folder">
+          <input class="input" bind:value={dir} oninput={() => (dirEdited = true)} placeholder="Video folder" spellcheck="false" />
+          <button class="btn" onclick={browse} title="Choose folder"><FolderOpen size={15} /></button>
+        </div>
+      </div>
+    {/if}
+  {:else}
   <div class="grid">
     <label class="field">
       <span class="label">File name</span>
@@ -367,8 +423,8 @@
     <button class="btn btn-ghost" onclick={oncancel}>Cancel</button>
     <span class="grow"></span>
     <QueuePicker bind:value={queueId} />
-    <button class="btn" class:btn-primary={later} disabled={(mediaProbe ? !mediaReady : !valid) || busy} onclick={() => submit(true)}>Download later</button>
-    <button class="btn" class:btn-primary={!later} disabled={(mediaProbe ? !mediaReady : !valid) || busy} onclick={() => submit(false)}>Start download</button>
+    <button class="btn" class:btn-primary={later} disabled={(mediaProbe ? !mediaReady : !valid || streamFailed) || busy} onclick={() => submit(true)}>Download later</button>
+    <button class="btn" class:btn-primary={!later} disabled={(mediaProbe ? !mediaReady : !valid || streamFailed) || busy} onclick={() => submit(false)}>Start download</button>
   </div>
 </div>
 

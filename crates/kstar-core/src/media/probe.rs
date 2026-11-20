@@ -5,15 +5,13 @@
 use futures_util::StreamExt;
 use kstar_media::classify::{self, Kind};
 use kstar_media::hls::{self, Master, MasterVariant};
-use kstar_media::policy;
 use kstar_media::{ParseError, ParseLimits, Presentation, dash};
 use reqwest::Url;
 use std::collections::HashMap;
 
 use crate::error::MediaError;
-use crate::http::{self, Limiters, Overflow};
-use crate::net::Net;
-use crate::{Error, RequestMeta, Result};
+use crate::http::{self, Http, Limiters, Overflow, Req};
+use crate::{Error, Result};
 
 /// What a source turned out to be.
 pub(crate) struct Source {
@@ -35,51 +33,18 @@ pub(crate) fn map_parse(e: ParseError) -> Error {
     })
 }
 
-/// Checks that `url` may be contacted: the URL itself (scheme, credentials, literal
-/// addresses), and, when no proxy carries the connection, the addresses its name resolves to.
-pub(crate) async fn guard(net: &Net, url: &Url, allow_private: bool) -> Result<()> {
-    policy::check(url, allow_private)
-        .map_err(|e| Error::Media(MediaError::UrlForbidden(e.to_string())))?;
-    let route = net.route();
-    if allow_private || route.http.is_some() || route.https.is_some() {
-        return Ok(());
-    }
-    if let Some(url::Host::Domain(host)) = url.host() {
-        let port = url.port_or_known_default().unwrap_or(443);
-        let addrs = tokio::net::lookup_host((host, port))
-            .await
-            .map_err(|e| Error::Network(format!("could not look up {host} ({e})")))?;
-        for a in addrs {
-            if policy::is_private(a.ip()) {
-                return Err(Error::Media(MediaError::UrlForbidden(format!(
-                    "{host} points to an address on this computer or the local network"
-                ))));
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Classifies `url` and, for streams, reads the presentation it offers.
-///
-/// `allow_private` is the user's setting. A source that is itself on a private address
-/// may point at other private addresses (a home media server).
+/// Classifies `url` and, for streams, reads the presentation it offers. The first bytes are
+/// read once to recognise the source; a manifest that fits in them isn't fetched again.
 pub(crate) async fn source(
-    net: &Net,
+    http: &Http,
     url: &Url,
-    meta: &RequestMeta,
-    ua: &str,
-    allow_private: bool,
     lim: &ParseLimits,
     io: &Limiters<'_>,
 ) -> Result<Source> {
-    let allow = allow_private || policy::is_private_source(url);
-    guard(net, url, allow).await?;
     let head = http::fetch_bounded(
-        net,
+        http,
         url,
-        meta,
-        ua,
+        Req::Source,
         lim.sniff_bytes as u64,
         Overflow::Truncate,
         io,
@@ -90,15 +55,28 @@ pub(crate) async fn source(
         head.content_type.as_deref(),
         head.final_url.path(),
     );
-    let final_url = head.final_url;
+    let final_url = head.final_url.clone();
     let presentation = match kind {
-        Kind::Hls => {
-            let body = full_body(net, &final_url, meta, ua, lim, io).await?;
-            Some(hls_presentation(net, &final_url, &body, meta, ua, allow, lim, io).await?)
-        }
-        Kind::Dash => {
-            let body = full_body(net, &final_url, meta, ua, lim, io).await?;
-            Some(dash::parse(&body, &final_url, lim).map_err(map_parse)?)
+        Kind::Hls | Kind::Dash => {
+            let body = if head.complete {
+                head.body
+            } else {
+                http::fetch_bounded(
+                    http,
+                    url,
+                    Req::Source,
+                    lim.max_manifest_bytes as u64,
+                    Overflow::Refuse,
+                    io,
+                )
+                .await?
+                .body
+            };
+            Some(if kind == Kind::Hls {
+                hls_presentation(http, &final_url, &body, lim, io).await?
+            } else {
+                dash::parse(&body, &final_url, lim).map_err(map_parse)?
+            })
         }
         _ => None,
     };
@@ -109,37 +87,12 @@ pub(crate) async fn source(
     })
 }
 
-async fn full_body(
-    net: &Net,
-    url: &Url,
-    meta: &RequestMeta,
-    ua: &str,
-    lim: &ParseLimits,
-    io: &Limiters<'_>,
-) -> Result<Vec<u8>> {
-    let f = http::fetch_bounded(
-        net,
-        url,
-        meta,
-        ua,
-        lim.max_manifest_bytes as u64,
-        Overflow::Refuse,
-        io,
-    )
-    .await?;
-    Ok(f.body)
-}
-
 /// Builds the HLS presentation: a master with its media playlists, or a bare media playlist
 /// (which becomes a presentation with one variant).
-#[allow(clippy::too_many_arguments)]
 async fn hls_presentation(
-    net: &Net,
+    http: &Http,
     url: &Url,
     body: &[u8],
-    meta: &RequestMeta,
-    ua: &str,
-    allow: bool,
     lim: &ParseLimits,
     io: &Limiters<'_>,
 ) -> Result<Presentation> {
@@ -148,6 +101,8 @@ async fn hls_presentation(
         let master = Master {
             variants: vec![MasterVariant {
                 uri: url.clone(),
+                // A bare playlist states no bandwidth; 1 marks that (and keeps track ids
+                // stable), and is never shown.
                 bandwidth: 1,
                 codecs: None,
                 resolution: None,
@@ -165,12 +120,10 @@ async fn hls_presentation(
     let urls = hls::playlist_urls(&master, lim).map_err(map_parse)?;
     let fetched: Vec<Result<(Url, hls::Media)>> = futures_util::stream::iter(urls)
         .map(|u| async move {
-            guard(net, &u, allow).await?;
             let f = http::fetch_bounded(
-                net,
+                http,
                 &u,
-                meta,
-                ua,
+                Req::Derived,
                 lim.max_manifest_bytes as u64,
                 Overflow::Refuse,
                 io,

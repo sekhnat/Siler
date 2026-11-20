@@ -32,7 +32,7 @@
       case "resolving":
         return "Reading the stream…";
       case "downloading":
-        return `Pieces ${mp.segments_done} of ${mp.segments_total}`;
+        return `Pieces ${mp.segments_done} of ${mp.segments_total}${d.downloaded ? ` · ${bytes(d.downloaded)}` : ""}`;
       case "rebuilding":
         return `Rebuilding ${(mp.permille / 10).toFixed(0)}%`;
       default:
@@ -42,6 +42,7 @@
   const sizeText = $derived.by(() => {
     if (done) return bytes(d.total_size);
     if (phaseText) return phaseText;
+    if (d.media) return d.downloaded ? `${bytes(d.downloaded)} so far` : "Not started";
     if (d.total_size) return `${bytes(d.downloaded)} of ${bytes(d.total_size)}`;
     return d.downloaded ? bytes(d.downloaded) : "Unknown size";
   });

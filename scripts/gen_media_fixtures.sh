@@ -41,19 +41,27 @@ mkdir -p "$out/split/audio-en" "$out/split/audio-de"
 "$ff" -hide_banner -loglevel error -y -i "$work/de.ts" -vn -c copy \
     -f hls -hls_time 2 -hls_playlist_type vod -hls_list_size 0 \
     -hls_segment_filename "$out/split/audio-de/a%d.ts" "$out/split/audio-de/index.m3u8"
+# Subtitles as packagers write them: cue times on the stream's timeline, every segment
+# mapped to the video's first MPEG-TS timestamp. One cue crosses a segment boundary, so it is
+# in two segments (it must come out once).
 mkdir -p "$out/split/subs"
+start_pts=$("${FFPROBE:-ffprobe}" -v error -select_streams v -show_entries stream=start_time \
+    -of csv=p=0 "$out/split/v0.ts" | python3 -c 'import sys; print(round(float(sys.stdin.read().split()[0]) * 90000))')
 for i in 0 1 2; do
-    start=$((i * 2))
-    cat > "$out/split/subs/s$i.vtt" <<EOF
-WEBVTT
-X-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:0
-
-00:00:00.500 --> 00:00:01.500
-Hello, segment $i
-
-00:00:01.600 --> 00:00:01.900 align:start
-(from $start s)
-EOF
+    {
+        echo "WEBVTT"
+        echo "X-TIMESTAMP-MAP=MPEGTS:$start_pts,LOCAL:00:00:00.000"
+        echo
+        echo "00:00:0$((i * 2)).500 --> 00:00:0$((i * 2 + 1)).500"
+        echo "Hello, segment $i"
+        echo
+        if [ "$i" -lt 2 ]; then
+            # From 1.8 s to 2.3 s: in segment 0 and again in segment 1.
+            echo "00:00:01.800 --> 00:00:02.300 align:start"
+            echo "across 2 s"
+            echo
+        fi
+    } > "$out/split/subs/s$i.vtt"
 done
 {
     echo "#EXTM3U"
@@ -104,10 +112,11 @@ EOF
     -hls_segment_type fmp4 -hls_fmp4_init_filename init.mp4 \
     -hls_segment_filename "$out/fmp4/seg%d.m4s" "$out/fmp4/index.m3u8"
 
-# DASH with a SegmentTemplate and timeline, from FFmpeg's own muxer (fed from a fragmented MP4).
+# DASH with a SegmentTemplate and timeline, from FFmpeg's own muxer. It is fed a regular MP4
+# (whose AAC configuration is complete), not MPEG-TS or a fragmented MP4 written before it.
 "$ff" -hide_banner -loglevel error -y -i "$work/full.ts" -c copy -bsf:a aac_adtstoasc \
-    -movflags frag_keyframe+empty_moov+default_base_moof "$work/full.fmp4.mp4"
-"$ff" -hide_banner -loglevel error -y -i "$work/full.fmp4.mp4" -map 0:v -map 0:a -c copy \
+    "$work/full.mp4"
+"$ff" -hide_banner -loglevel error -y -i "$work/full.mp4" -map 0:v -map 0:a -c copy \
     -f dash -seg_duration 2 -use_template 1 -use_timeline 1 \
     -init_seg_name 'init-$RepresentationID$.m4s' \
     -media_seg_name 'chunk-$RepresentationID$-$Number%05d$.m4s' \

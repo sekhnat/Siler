@@ -70,13 +70,19 @@ impl Decryptor {
     /// Decrypts every block that can't be the last one, appending the plaintext to `out`.
     pub fn update(&mut self, input: &[u8], out: &mut Vec<u8>) {
         self.pending.extend_from_slice(input);
-        while self.pending.len() > 16 {
+        if self.pending.len() <= 16 {
+            return;
+        }
+        // Every whole block but the last one stays held back; the bytes are moved once.
+        let ready = (self.pending.len() - 1) / 16 * 16;
+        out.reserve(ready);
+        for chunk in self.pending[..ready].as_chunks::<16>().0 {
             let mut block = Block::default();
-            block.copy_from_slice(&self.pending[..16]);
+            block.copy_from_slice(chunk);
             self.inner.decrypt_block(&mut block);
             out.extend_from_slice(&block);
-            self.pending.drain(..16);
         }
+        self.pending.drain(..ready);
     }
 
     /// Decrypts the last block and removes its padding. Fails when the stream wasn't a whole
@@ -152,6 +158,22 @@ mod tests {
             dec.finish(&mut out).expect("finishes");
             assert_eq!(out, plain, "step {step}");
         }
+    }
+
+    #[test]
+    fn a_large_segment_decrypts_in_one_pass() {
+        // Fed at once, as segments are: this took minutes when every block moved the rest.
+        let key_bytes = [7u8; 16];
+        let key = AesKey::from_bytes(&key_bytes).expect("16 bytes");
+        let iv = [1u8; 16];
+        let plain: Vec<u8> = (0..4 * 1024 * 1024u32).map(|i| (i % 253) as u8).collect();
+        let cipher = encrypt(&plain, &key_bytes, &iv);
+        let started = std::time::Instant::now();
+        assert_eq!(
+            decrypt_aes128_cbc(&cipher, &key, &iv).expect("decrypts"),
+            plain
+        );
+        assert!(started.elapsed().as_secs() < 20);
     }
 
     #[test]

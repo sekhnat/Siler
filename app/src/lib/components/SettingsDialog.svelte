@@ -59,7 +59,11 @@
   // FFmpeg is looked at when the Media tab opens.
   let ffmpeg = $state<FfmpegStatus | null>(null);
   $effect(() => {
-    if (tab === "media" && ffmpeg === null) api.mediaDiagnostics().then((f) => (ffmpeg = f)).catch(() => (ffmpeg = null));
+    if (tab === "media" && ffmpeg === null)
+      api
+        .mediaDiagnostics()
+        .then((f) => (ffmpeg = f))
+        .catch(() => (ffmpeg = { path: null, version: null, ok: false, missing: ["K-Star couldn't check it"] }));
   });
 
   async function browse() {
@@ -148,7 +152,7 @@
 </script>
 
 {#snippet toggle(label: string, hint: string, value: boolean, set: (v: boolean) => void)}
-  <button class="toggle-row" onclick={() => set(!value)}>
+  <button class="toggle-row" role="switch" aria-checked={value} onclick={() => set(!value)}>
     <div>
       <div class="t-label">{label}</div>
       <div class="hint">{hint}</div>
@@ -207,10 +211,12 @@
     {:else if tab === "media"}
       <div class="field">
         <span class="label">FFmpeg</span>
-        {#if ffmpeg?.ok}
+        {#if ffmpeg === null}
+          <div class="hint">Checking…</div>
+        {:else if ffmpeg.ok}
           <div class="hint"><CircleCheck size={13} /> {ffmpeg.version ? `Version ${ffmpeg.version}` : "Found"} at {ffmpeg.path}</div>
         {:else}
-          <div class="hint warn"><TriangleAlert size={13} /> FFmpeg isn't usable: {ffmpeg?.missing.join(", ") || "not found"}. Single-track downloads still work; combining video and audio needs it.</div>
+          <div class="hint warn"><TriangleAlert size={13} /> FFmpeg isn't usable: {ffmpeg.missing.join(", ") || "not found"}. Single-track downloads still work; combining video and audio needs it.</div>
           <div class="hint">Build the bundled copy with <code>scripts/build-ffmpeg.sh</code>.</div>
         {/if}
       </div>
@@ -255,13 +261,12 @@
           <option value="none">Leave out</option>
         </select>
       </label>
-      <button class="toggle-row" onclick={() => (s.allow_private_media_addresses = !s.allow_private_media_addresses)}>
-        <div>
-          <div class="t-label">Allow streams from this computer or the local network</div>
-          <div class="hint">Off by default, so a playlist can't make K-Star contact other machines. Turn it on for a media server at home.</div>
-        </div>
-        <span class="switch" class:on={s.allow_private_media_addresses}></span>
-      </button>
+      {@render toggle(
+        "Allow streams from this computer or the local network",
+        "Off by default, so a playlist can't make K-Star contact other machines. Turn it on for a media server at home.",
+        s.allow_private_media_addresses,
+        (v) => (s.allow_private_media_addresses = v),
+      )}
     {:else if tab === "transfers"}
       <div class="field">
         <span class="label">Connections per download <b>{s.connections}</b></span>

@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::task::JoinSet;
 
-use kstar_media::classify::{self, Kind};
+use kstar_media::classify;
 use kstar_media::crypto::{self, AesKey};
 use kstar_media::select::{self, Output, Selection, SubtitleMode};
 use kstar_media::{Key, ParseLimits, Presentation, SegmentContainer, TrackKind, protection};
@@ -20,34 +20,39 @@ use kstar_media::{Key, ParseLimits, Presentation, SegmentContainer, TrackKind, p
 use super::probe;
 use super::reconstruct::{self, MuxInput};
 use crate::error::MediaError;
-use crate::http::{self, Limiters, Overflow};
+use crate::http::{self, Http, Limiters, Overflow, Req};
 use crate::manager::Inner;
-use crate::net::{Net, host_key};
+use crate::net::host_key;
 use crate::ratelimit::RateLimiter;
 use crate::task::{Outcome, Running, retry_delay};
-use crate::{Error, Event, RequestMeta, Result, Status, filename};
+use crate::{Error, Event, OnConflict, Result, Status, filename};
 
 use super::{MediaProgress, workdir};
 
 /// Everything a piece download needs, shared by its tasks.
 struct Fetch {
-    /// Hosts whose addresses were checked against the URL policy for this download.
-    checked: Mutex<HashSet<String>>,
-    net: Arc<Net>,
+    http: Http,
     global: Arc<RateLimiter>,
     run: Arc<Running>,
-    ua: String,
-    meta: RequestMeta,
-    allow_private: bool,
     keys: Mutex<HashMap<Url, Arc<AesKey>>>,
     max_key: u64,
 }
 
 impl Fetch {
+    /// The limiters, and the download's byte count (for the pieces kept on disk).
     fn io(&self) -> Limiters<'_> {
         Limiters {
             global: &self.global,
             run: &self.run.limiter,
+            count: Some(&self.run.downloaded),
+        }
+    }
+
+    /// The limiters alone: for manifests and keys, which aren't part of the download.
+    fn io_uncounted(&self) -> Limiters<'_> {
+        Limiters {
+            count: None,
+            ..self.io()
         }
     }
 }
@@ -77,6 +82,10 @@ fn jobs_of(pres: &Presentation, sel: &Selection, work: &Path) -> Result<Vec<Job>
     for t in resolved.tracks() {
         let dir = reconstruct::track_dir(work, t);
         std::fs::create_dir_all(&dir)?;
+        if reconstruct::joined_path(work, t).exists() {
+            // Joined in an earlier attempt (its pieces are gone): nothing to fetch.
+            continue;
+        }
         if t.plan.whole {
             if let Some(obj) = t.plan.segments.first() {
                 jobs.push(Job {
@@ -126,46 +135,50 @@ fn range_of(r: Option<kstar_media::ByteRange>) -> Option<(u64, u64)> {
 }
 
 /// Fetches one object. Pieces are checked (not HTML, decryptable, not DRM) before they are
-/// kept; whole files resume from their `.part` file.
-impl Fetch {
-    /// Checks a URL against the policy, once per host for this download.
-    async fn guard(&self, url: &Url) -> Result<()> {
-        let host = host_key(url);
-        if self.checked.lock().expect("checked lock").contains(&host) {
-            return Ok(());
-        }
-        probe::guard(&self.net, url, self.allow_private).await?;
-        self.checked.lock().expect("checked lock").insert(host);
-        Ok(())
-    }
-}
-
-async fn fetch_job(c: Arc<Fetch>, job: Job) -> Result<u64> {
+/// kept; a whole-file track resumes from its `.part` file.
+async fn fetch_job(c: Arc<Fetch>, job: Job) -> Result<()> {
     if !job.delay.is_zero() {
         tokio::time::sleep(job.delay).await;
     }
-    c.guard(&job.url).await?;
     let io = c.io();
     if job.whole {
-        let have = tokio::fs::metadata(http::part_of(&job.dest))
-            .await
-            .ok()
-            .map(|m| m.len())
-            .filter(|n| *n > 0);
-        return http::fetch_object(&c.net, &job.url, &c.meta, &c.ua, &job.dest, None, have, &io)
-            .await;
+        let size = http::fetch_object(&c.http, &job.url, &job.dest, None, true, &io).await?;
+        let head = read_head(&job.dest).await?;
+        if classify::looks_like_html(&head) {
+            let _ = tokio::fs::remove_file(&job.dest).await;
+            uncount(&c.run, size);
+            return Err(Error::Media(MediaError::SegmentInvalid));
+        }
+        return Ok(());
     }
     let raw = PathBuf::from(format!("{}.raw", job.dest.display()));
-    let n =
-        http::fetch_object(&c.net, &job.url, &c.meta, &c.ua, &raw, job.range, None, &io).await?;
+    http::fetch_object(&c.http, &job.url, &raw, job.range, false, &io).await?;
     let bytes = tokio::fs::read(&raw).await?;
     let _ = tokio::fs::remove_file(&raw).await;
+    let fetched = bytes.len() as u64;
+    let kept = keep_piece(&c, &job, bytes).await;
+    if kept.is_err() {
+        // The piece isn't kept, so its bytes don't count.
+        uncount(&c.run, fetched);
+    }
+    kept
+}
+
+/// Takes `n` bytes back from the download's count.
+fn uncount(run: &Running, n: u64) {
+    let _ = run
+        .downloaded
+        .try_update(Relaxed, Relaxed, |v| Some(v.saturating_sub(n)));
+}
+
+/// Checks a fetched piece and keeps it: not a web page, decrypted, not DRM-protected.
+async fn keep_piece(c: &Fetch, job: &Job, bytes: Vec<u8>) -> Result<()> {
     if classify::looks_like_html(&bytes) {
         return Err(Error::Media(MediaError::SegmentInvalid));
     }
     let data = match &job.key {
         Some(k) => {
-            let key = key_for(&c, &k.url, &io).await?;
+            let key = key_for(c, &k.url, &c.io_uncounted()).await?;
             let iv = k.iv.unwrap_or_else(|| crypto::iv_from_sequence(job.seq));
             crypto::decrypt_aes128_cbc(&bytes, &key, &iv)
                 .map_err(|_| Error::Media(MediaError::Decrypt))?
@@ -178,7 +191,19 @@ async fn fetch_job(c: Arc<Fetch>, job: Job) -> Result<u64> {
     let part = http::part_of(&job.dest);
     tokio::fs::write(&part, &data).await?;
     tokio::fs::rename(&part, &job.dest).await?;
-    Ok(n)
+    Ok(())
+}
+
+/// The first bytes of a file, to recognise what it is.
+async fn read_head(path: &Path) -> Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+    let mut buf = Vec::with_capacity(512);
+    tokio::fs::File::open(path)
+        .await?
+        .take(512)
+        .read_to_end(&mut buf)
+        .await?;
+    Ok(buf)
 }
 
 /// An AES-128 key, fetched once per URL and kept in memory only.
@@ -186,9 +211,8 @@ async fn key_for(c: &Fetch, url: &Url, io: &Limiters<'_>) -> Result<Arc<AesKey>>
     if let Some(k) = c.keys.lock().expect("keys lock").get(url) {
         return Ok(k.clone());
     }
-    c.guard(url).await?;
     let f =
-        http::fetch_bounded(&c.net, url, &c.meta, &c.ua, c.max_key, Overflow::Refuse, io).await?;
+        http::fetch_bounded(&c.http, url, Req::Derived, c.max_key, Overflow::Refuse, io).await?;
     let key = Arc::new(
         AesKey::from_bytes(&f.body)
             .map_err(|e| Error::Media(MediaError::KeyFetch(e.to_string())))?,
@@ -235,7 +259,7 @@ async fn fetch_all(
     max_retries: u32,
     concurrency: usize,
 ) -> Result<bool> {
-    let mut set: JoinSet<(Job, Result<u64>)> = JoinSet::new();
+    let mut set: JoinSet<(Job, Result<()>)> = JoinSet::new();
     let mut inflight: HashSet<PathBuf> = HashSet::new();
     let mut retries: HashMap<PathBuf, u32> = HashMap::new();
     let mut refreshes = 0u32;
@@ -288,8 +312,7 @@ async fn fetch_all(
                 let (job, res) = joined.map_err(|e| Error::Protocol(format!("A download task stopped unexpectedly: {e}")))?;
                 inflight.remove(&job.dest);
                 match res {
-                    Ok(n) => {
-                        c.run.downloaded.fetch_add(n, Relaxed);
+                    Ok(()) => {
                         if !job.init {
                             done += 1;
                         }
@@ -334,10 +357,21 @@ async fn fetch_all(
 
 /// Re-reads the manifest for fresh segment links.
 async fn refresh(c: &Fetch, url: &Url, lim: &ParseLimits) -> Result<Presentation> {
-    let io = c.io();
-    let src = probe::source(&c.net, url, &c.meta, &c.ua, c.allow_private, lim, &io).await?;
-    src.presentation.ok_or(Error::Media(MediaError::NotMedia))
+    let io = c.io_uncounted();
+    let src = probe::source(&c.http, url, lim, &io).await?;
+    super::presentation_or_error(src)
 }
+
+/// One subtitle track, joined into a WebVTT file.
+struct SubFile {
+    /// For the sidecar's name: its language, or its number (only letters, digits and `-`).
+    label: String,
+    lang: Option<String>,
+    path: PathBuf,
+}
+
+/// The output and the subtitle files to write beside it.
+type Built = (PathBuf, Vec<SubFile>);
 
 /// Joins the fetched pieces and muxes them with FFmpeg. `None` when stopped.
 #[allow(clippy::too_many_arguments)]
@@ -350,31 +384,32 @@ async fn build(
     work: &Path,
     ffmpeg: Option<&Path>,
     lim: &ParseLimits,
-) -> Result<Option<(PathBuf, Vec<(String, PathBuf)>)>> {
+) -> Result<Option<Built>> {
     let resolved =
         select::resolve(pres, sel).map_err(|_| Error::Media(MediaError::SelectionUnavailable))?;
     set_media(run, |m| {
         m.phase = "rebuilding";
         m.permille = 0;
     });
-    let mut sidecars: Vec<(String, PathBuf)> = Vec::new();
-    // Each subtitle track: a label (its language, or its number) and one WebVTT file.
-    let mut sub_files: Vec<(String, PathBuf)> = Vec::new();
+    let mut sub_files: Vec<SubFile> = Vec::new();
     for (k, t) in resolved.subtitles.iter().enumerate() {
-        let f = reconstruct::join_subtitles(work, t, lim)?;
-        sub_files.push((t.lang.clone().unwrap_or_else(|| (k + 1).to_string()), f));
+        sub_files.push(SubFile {
+            label: file_label(t.lang.as_deref(), k),
+            lang: t.lang.clone(),
+            path: reconstruct::join_subtitles(work, t, lim)?,
+        });
     }
     if output == Output::Original {
-        let track = resolved
-            .video
-            .or_else(|| resolved.audio.first().copied())
-            .or_else(|| resolved.subtitles.first().copied())
-            .ok_or(Error::Media(MediaError::SelectionUnavailable))?;
-        let path = reconstruct::join_track(work, track)?;
-        if subtitles == SubtitleMode::Sidecar {
-            sidecars.extend(sub_files.iter().cloned());
-        }
-        return Ok(Some((path, sidecars)));
+        // One track in its own format; a subtitle track is its joined WebVTT.
+        let path = match (
+            resolved.video.or_else(|| resolved.audio.first().copied()),
+            sub_files.first(),
+        ) {
+            (Some(track), _) => reconstruct::join_track(work, track)?,
+            (None, Some(sub)) => sub.path.clone(),
+            (None, None) => return Err(Error::Media(MediaError::SelectionUnavailable)),
+        };
+        return Ok(Some((path, Vec::new())));
     }
     let ff = ffmpeg.ok_or(Error::Media(MediaError::FfmpegMissing))?;
     let mut inputs = Vec::new();
@@ -398,21 +433,26 @@ async fn build(
             adts: matches!(a.container, SegmentContainer::Ts | SegmentContainer::Aac),
         });
     }
-    if subtitles == SubtitleMode::Embed {
-        for (label, path) in &sub_files {
-            inputs.push(MuxInput {
-                path: path.clone(),
-                kind: TrackKind::Subtitle,
-                lang: resolved_lang(label),
-                adts: false,
-            });
+    let mut sidecars = Vec::new();
+    match subtitles {
+        SubtitleMode::Embed => {
+            for sub in &sub_files {
+                inputs.push(MuxInput {
+                    path: sub.path.clone(),
+                    kind: TrackKind::Subtitle,
+                    lang: sub.lang.clone(),
+                    adts: false,
+                });
+            }
         }
-    } else {
-        sidecars.extend(sub_files.iter().cloned());
+        SubtitleMode::Sidecar => sidecars = sub_files,
+        SubtitleMode::None => {}
     }
     let ext = super::extension(output, None);
     let out = work.join("out").join(format!("result.{ext}"));
     std::fs::create_dir_all(work.join("out"))?;
+    // A rebuild that was stopped part way leaves its output behind.
+    let _ = std::fs::remove_file(&out);
     let args = reconstruct::mux_args(&inputs, output, &out);
     let run2 = run.clone();
     let finished = super::ffmpeg::run(ff, &args, &run.cancel, total_us as u64, move |p| {
@@ -425,13 +465,58 @@ async fn build(
     Ok(Some((out, sidecars)))
 }
 
-/// Free space on the filesystem holding `dir`, against what the download needs (the pieces
-/// and the output are both on disk at once).
-fn check_space(dir: &Path, need: Option<u64>) -> Result<()> {
+/// A subtitle's label in a file name: its language when it has a usable one, else its
+/// number. The language comes from the manifest, so only letters, digits and `-` are kept.
+fn file_label(lang: Option<&str>, index: usize) -> String {
+    let clean: String = lang
+        .unwrap_or("")
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .take(16)
+        .collect();
+    let clean = clean.trim_matches('-').to_string();
+    if clean.is_empty() {
+        (index + 1).to_string()
+    } else {
+        clean
+    }
+}
+
+/// The bytes already downloaded into a Work Directory: finished pieces, and the part of a
+/// whole-file track (which is resumed).
+fn bytes_on_disk(work: &Path) -> u64 {
+    let Ok(tracks) = std::fs::read_dir(work.join("t")) else {
+        return 0;
+    };
+    let mut total = 0;
+    for t in tracks.flatten() {
+        let Ok(files) = std::fs::read_dir(t.path()) else {
+            continue;
+        };
+        for f in files.flatten() {
+            let name = f.file_name();
+            let name = name.to_string_lossy();
+            let counts = name.ends_with(".seg")
+                || (name.starts_with("init-") && name.ends_with(".bin"))
+                || name == "whole.bin"
+                || name == "whole.bin.part"
+                || (name.starts_with("track.") && !name.ends_with(".part"));
+            if counts {
+                total += f.metadata().map(|m| m.len()).unwrap_or(0);
+            }
+        }
+    }
+    total
+}
+
+/// Free space on the filesystem holding `dir`, against what the download still needs: the
+/// pieces not yet fetched, and the output written while the pieces are still there.
+fn check_space(dir: &Path, need: Option<u64>, have: u64) -> Result<()> {
     let Some(need) = need else { return Ok(()) };
     if let Ok(s) = rustix::fs::statvfs(dir) {
         let avail = s.f_bavail.saturating_mul(s.f_frsize);
-        if (avail as f64) < need as f64 * 2.1 {
+        let wanted = need.saturating_sub(have) as f64 + need as f64 * 1.1;
+        if (avail as f64) < wanted {
             return Err(Error::Media(MediaError::DiskSpace));
         }
     }
@@ -462,45 +547,41 @@ pub(crate) async fn drive(inner: &Arc<Inner>, id: i64, run: &Arc<Running>) -> Re
         .filename
         .clone()
         .ok_or_else(|| Error::Protocol("This download has no name.".into()))?;
+    if rec.on_conflict == OnConflict::Skip && dir.join(&name).exists() {
+        return Err(Error::Exists(name));
+    }
     let work = workdir(&dir, &name);
     set_media_start(run);
     *run.part.lock().expect("part lock") = Some(work.clone());
+    let have = bytes_on_disk(&work);
+    run.downloaded.store(have, Relaxed);
+    *run.sample.lock().expect("sample lock") = (std::time::Instant::now(), have, 0.0);
 
     let c = Arc::new(Fetch {
-        checked: Mutex::new(HashSet::new()),
-        net: inner.net.clone(),
+        http: Http::new(
+            inner.net.clone(),
+            &url,
+            rec.meta.clone(),
+            &s.user_agent,
+            s.allow_private_media_addresses,
+        ),
         global: inner.global.clone(),
         run: run.clone(),
-        ua: s.user_agent.clone(),
-        meta: rec.meta.clone(),
-        // As for the probe: a source on a private address may point at other private ones.
-        allow_private: s.allow_private_media_addresses
-            || kstar_media::policy::is_private_source(&url),
         keys: Mutex::new(HashMap::new()),
         max_key: lim.max_key_bytes as u64,
     });
 
     // Resolve the source: its manifest and playlists.
     let src = {
-        let io = c.io();
+        let io = c.io_uncounted();
         tokio::select! {
-            r = probe::source(&inner.net, &url, &rec.meta, &s.user_agent, c.allow_private, &lim, &io) => r?,
+            r = probe::source(&c.http, &url, &lim, &io) => r?,
             _ = run.cancel.cancelled() => return Ok(Outcome::Stopped),
         }
     };
-    let Some(mut pres) = src.presentation else {
-        return Err(Error::Media(match src.kind {
-            Kind::Html | Kind::File | Kind::Direct | Kind::WebVtt => MediaError::NotMedia,
-            Kind::Hds | Kind::Playlist => {
-                MediaError::Unsupported("this playlist format isn't supported yet".into())
-            }
-            Kind::Hls | Kind::Dash => MediaError::NotMedia,
-        }));
-    };
-    if pres.is_live() {
-        return Err(Error::Media(MediaError::LiveUnsupported));
-    }
-    inner.join_host(id, run, host_key(&src.final_url));
+    let final_url = src.final_url.clone();
+    let mut pres = super::presentation_or_error(src)?;
+    inner.join_host(id, run, host_key(&final_url));
     let resolved = select::resolve(&pres, &mr.selection)
         .map_err(|_| Error::Media(MediaError::SelectionUnavailable))?;
     let fingerprint = select::fingerprint(&resolved);
@@ -519,7 +600,8 @@ pub(crate) async fn drive(inner: &Arc<Inner>, id: i64, run: &Arc<Running>) -> Re
     if mr.output != Output::Original && ffmpeg.is_none() {
         return Err(Error::Media(MediaError::FfmpegMissing));
     }
-    check_space(&dir, need)?;
+    std::fs::create_dir_all(&dir)?;
+    check_space(&dir, need, have)?;
 
     // Fetch the pieces that are missing.
     {
@@ -577,40 +659,51 @@ pub(crate) async fn drive(inner: &Arc<Inner>, id: i64, run: &Arc<Running>) -> Re
         .map_or(name.as_str(), |(s, _)| s)
         .to_string();
     let target_name = format!("{stem}.{ext}");
-    let final_name =
-        if dir.join(&target_name).exists() && rec.on_conflict != crate::OnConflict::Overwrite {
-            filename::unique_name(&dir, &target_name, |n| dir.join(n).exists())
-        } else {
-            target_name
-        };
+    let mut st = inner.state();
+    let Some(on_conflict) = st.records.get(&id).map(|r| r.on_conflict) else {
+        // Removed in the last moment; run() deletes the Work Directory.
+        return Ok(Outcome::Stopped);
+    };
+    let final_name = if dir.join(&target_name).exists() && on_conflict != OnConflict::Overwrite {
+        filename::unique_name(&dir, &target_name, |n| {
+            crate::manager::name_claimed(&st, &dir, n, Some(id))
+        })
+    } else {
+        target_name
+    };
     let path = dir.join(&final_name);
     std::fs::rename(&out, &path)?;
+    let final_stem = final_name
+        .rsplit_once('.')
+        .map_or(final_name.as_str(), |(s, _)| s)
+        .to_string();
     let mut sidecars = Vec::new();
-    for (label, src_path) in &sidecar_sources {
-        let wanted = filename::unique_name(&dir, &format!("{stem}.{label}.vtt"), |n| {
-            dir.join(n).exists()
-        });
-        std::fs::copy(src_path, dir.join(&wanted))?;
+    for sub in &sidecar_sources {
+        let wanted = format!("{final_stem}.{}.vtt", sub.label);
+        let wanted = if dir.join(&wanted).exists() && on_conflict != OnConflict::Overwrite {
+            filename::unique_name(&dir, &wanted, |_| false)
+        } else {
+            wanted
+        };
+        std::fs::copy(&sub.path, dir.join(&wanted))?;
         sidecars.push(wanted);
     }
     let _ = std::fs::remove_dir_all(&work);
     *run.part.lock().expect("part lock") = None;
 
     let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-    {
-        let mut st = inner.state();
-        let r = st.records.get_mut(&id).ok_or(Error::NotFound)?;
-        r.filename = Some(final_name.clone());
-        r.status = Status::Completed;
-        r.completed_at = Some(crate::manager::now_ms());
-        r.segments.clear();
-        r.downloaded = size;
-        r.total_size = Some(size);
-        if let Some(m) = r.media.as_mut() {
-            m.sidecars = sidecars;
-        }
-        inner.persist_and_emit(r, None)?;
+    let r = st.records.get_mut(&id).ok_or(Error::NotFound)?;
+    r.filename = Some(final_name.clone());
+    r.status = Status::Completed;
+    r.completed_at = Some(crate::manager::now_ms());
+    r.segments.clear();
+    r.downloaded = size;
+    r.total_size = Some(size);
+    if let Some(m) = r.media.as_mut() {
+        m.sidecars = sidecars;
     }
+    inner.persist_and_emit(r, None)?;
+    drop(st);
     inner.emit(Event::Completed {
         id,
         filename: final_name,
@@ -621,12 +714,6 @@ pub(crate) async fn drive(inner: &Arc<Inner>, id: i64, run: &Arc<Running>) -> Re
 
 fn set_media_start(run: &Running) {
     *run.media.lock().expect("media lock") = Some(MediaProgress::default());
-}
-
-/// A subtitle label is its language when it has one; a plain number otherwise. Only a
-/// language becomes the MP4/MKV `language` tag.
-fn resolved_lang(label: &str) -> Option<String> {
-    (!label.is_empty() && !label.chars().all(|c| c.is_ascii_digit())).then(|| label.to_string())
 }
 
 #[cfg(test)]
@@ -650,6 +737,15 @@ mod tests {
             None
         );
         assert_eq!(range_of(None), None);
+    }
+
+    #[test]
+    fn subtitle_labels_are_safe_in_file_names() {
+        assert_eq!(file_label(Some("en-US"), 0), "en-US");
+        assert_eq!(file_label(Some("../../etc/x"), 1), "etcx");
+        assert_eq!(file_label(Some("/"), 2), "3");
+        assert_eq!(file_label(None, 0), "1");
+        assert_eq!(file_label(Some("a".repeat(40).as_str()), 0).len(), 16);
     }
 
     #[test]

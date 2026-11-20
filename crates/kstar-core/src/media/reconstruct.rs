@@ -31,8 +31,15 @@ pub(crate) fn whole_path(work: &Path, track: &Track) -> PathBuf {
     track_dir(work, track).join("whole.bin")
 }
 
+/// The file a track's pieces are joined into.
+pub(crate) fn joined_path(work: &Path, track: &Track) -> PathBuf {
+    track_dir(work, track).join(format!("track.{}", track.container.extension()))
+}
+
 /// Joins a track's pieces into one file: its initialisation segment (when the container
-/// needs one), then its segments in order. A whole-file track is already one file.
+/// needs one), then its segments in order. The pieces are deleted once the joined file is
+/// complete, so the track is on disk once, not twice; a later attempt reuses the joined
+/// file. A whole-file track is already one file.
 pub(crate) fn join_track(work: &Path, track: &Track) -> Result<PathBuf> {
     if track.plan.whole {
         let p = whole_path(work, track);
@@ -41,7 +48,10 @@ pub(crate) fn join_track(work: &Path, track: &Track) -> Result<PathBuf> {
         }
         return Ok(p);
     }
-    let out = track_dir(work, track).join(format!("track.{}", track.container.extension()));
+    let out = joined_path(work, track);
+    if out.exists() {
+        return Ok(out);
+    }
     let part = PathBuf::from(format!("{}.part", out.display()));
     let inits: Vec<usize> = {
         let mut v: Vec<usize> = track.plan.segments.iter().filter_map(|s| s.init).collect();
@@ -59,7 +69,8 @@ pub(crate) fn join_track(work: &Path, track: &Track) -> Result<PathBuf> {
         let mut file = std::io::BufWriter::new(std::fs::File::create(&part)?);
         if let Some(&first) = inits.first() {
             std::io::copy(
-                &mut std::fs::File::open(init_path(work, track, first))?,
+                &mut std::fs::File::open(init_path(work, track, first))
+                    .map_err(|_| Error::Media(MediaError::SegmentInvalid))?,
                 &mut file,
             )?;
         }
@@ -70,8 +81,15 @@ pub(crate) fn join_track(work: &Path, track: &Track) -> Result<PathBuf> {
             std::io::copy(&mut src, &mut file)?;
         }
         file.flush()?;
+        file.get_ref().sync_all()?;
     }
     std::fs::rename(&part, &out)?;
+    for i in 0..track.plan.segments.len() {
+        let _ = std::fs::remove_file(piece_path(work, track, i));
+    }
+    for i in 0..track.plan.inits.len() {
+        let _ = std::fs::remove_file(init_path(work, track, i));
+    }
     Ok(out)
 }
 
@@ -79,25 +97,26 @@ pub(crate) fn join_track(work: &Path, track: &Track) -> Result<PathBuf> {
 /// file's path.
 pub(crate) fn join_subtitles(work: &Path, track: &Track, lim: &ParseLimits) -> Result<PathBuf> {
     let out = track_dir(work, track).join("subs.vtt");
-    let mut bodies: Vec<(f64, Vec<u8>)> = Vec::new();
+    let mut bodies: Vec<Vec<u8>> = Vec::new();
     if track.plan.whole {
-        bodies.push((0.0, std::fs::read(whole_path(work, track))?));
+        bodies.push(std::fs::read(whole_path(work, track))?);
     } else {
-        for (i, seg) in track.plan.segments.iter().enumerate() {
-            let body = std::fs::read(piece_path(work, track, i))
-                .map_err(|_| Error::Media(MediaError::SegmentInvalid))?;
-            bodies.push((seg.start, body));
+        for i in 0..track.plan.segments.len() {
+            bodies.push(
+                std::fs::read(piece_path(work, track, i))
+                    .map_err(|_| Error::Media(MediaError::SegmentInvalid))?,
+            );
         }
     }
-    // Each piece is WebVTT with times relative to its own start, or TTML with absolute times.
-    let mut converted: Vec<(f64, Vec<u8>)> = Vec::with_capacity(bodies.len());
-    for (start, body) in bodies {
+    // Each piece is WebVTT on the stream's timeline, or TTML with absolute times.
+    let mut converted: Vec<Vec<u8>> = Vec::with_capacity(bodies.len());
+    for body in bodies {
         match sniff_segment(&body) {
             SegmentContainer::Ttml => {
                 let vtt = subtitle::ttml_to_webvtt(&body, lim).map_err(super::probe::map_parse)?;
-                converted.push((0.0, vtt.into_bytes()));
+                converted.push(vtt.into_bytes());
             }
-            SegmentContainer::Vtt => converted.push((start, body)),
+            SegmentContainer::Vtt => converted.push(body),
             _ => {
                 return Err(Error::Media(MediaError::Unsupported(
                     "this subtitle format isn't supported yet".into(),
@@ -107,10 +126,7 @@ pub(crate) fn join_subtitles(work: &Path, track: &Track, lim: &ParseLimits) -> R
     }
     let parts: Vec<subtitle::VttPart<'_>> = converted
         .iter()
-        .map(|(start, body)| subtitle::VttPart {
-            start: *start,
-            body,
-        })
+        .map(|body| subtitle::VttPart { body })
         .collect();
     let merged = subtitle::merge_webvtt(&parts).map_err(super::probe::map_parse)?;
     std::fs::write(&out, merged)?;
@@ -181,9 +197,21 @@ pub(crate) fn mux_args(inputs: &[MuxInput], output: Output, out: &Path) -> Vec<S
         a.push("-i".into());
         a.push(format!("file:{}", i.path.display()));
     }
-    for idx in 0..inputs.len() {
-        a.push("-map".into());
-        a.push(idx.to_string());
+    // Streams are mapped by type, so a segment's timed metadata (ID3 in MPEG-TS) never
+    // reaches a container that can't hold it. The video input keeps its own audio only when
+    // no audio track was chosen separately (and an audio-only stream works the same way).
+    let separate_audio = inputs.iter().any(|i| i.kind == TrackKind::Audio);
+    for (idx, i) in inputs.iter().enumerate() {
+        let maps: &[&str] = match i.kind {
+            TrackKind::Video if separate_audio => &["v?"],
+            TrackKind::Video => &["v?", "a?"],
+            TrackKind::Audio => &["a"],
+            TrackKind::Subtitle => &["s"],
+        };
+        for m in maps {
+            a.push("-map".into());
+            a.push(format!("{idx}:{m}"));
+        }
     }
     a.push("-c".into());
     a.push("copy".into());
@@ -230,6 +258,7 @@ pub(crate) fn mux_args(inputs: &[MuxInput], output: Output, out: &Path) -> Vec<S
             TrackKind::Video => {}
         }
     }
+    a.push("-y".into());
     a.push(format!("file:{}", out.display()));
     a
 }
@@ -259,7 +288,7 @@ mod tests {
         assert!(
             joined.contains("-i file:/w/Video.bin -i file:/w/Audio.bin -i file:/w/Subtitle.bin")
         );
-        assert!(joined.contains("-map 0 -map 1 -map 2 -c copy"));
+        assert!(joined.contains("-map 0:v? -map 1:a -map 2:s -c copy"));
         assert!(joined.contains("-c:s mov_text"));
         assert!(joined.contains("-bsf:a aac_adtstoasc"));
         assert!(
@@ -269,7 +298,7 @@ mod tests {
         assert!(joined.contains("-metadata:s:a:0 language=en"));
         assert!(joined.contains("-metadata:s:s:0 language=de"));
         assert!(joined.contains("-protocol_whitelist file,pipe"));
-        assert!(joined.ends_with("file:/w/out.mp4"));
+        assert!(joined.ends_with("-y file:/w/out.mp4"));
     }
 
     #[test]
@@ -284,6 +313,20 @@ mod tests {
         assert!(!joined.contains("mov_text"));
         assert!(!joined.contains("aac_adtstoasc"));
         assert!(!joined.contains("-movflags"));
+    }
+
+    #[test]
+    fn a_video_track_keeps_its_own_audio_only_without_a_separate_one() {
+        let alone = [input(TrackKind::Video, None, false)];
+        let joined = mux_args(&alone, Output::Mkv, Path::new("/w/o.mkv")).join(" ");
+        assert!(joined.contains("-map 0:v? -map 0:a? -c copy"), "{joined}");
+        let with_audio = [
+            input(TrackKind::Video, None, false),
+            input(TrackKind::Audio, Some("en"), false),
+        ];
+        let joined = mux_args(&with_audio, Output::Mkv, Path::new("/w/o.mkv")).join(" ");
+        assert!(joined.contains("-map 0:v? -map 1:a -c copy"), "{joined}");
+        assert!(!joined.contains("0:a"), "{joined}");
     }
 
     #[test]
@@ -346,7 +389,11 @@ mod tests {
         }
         let out = join_track(&dir, &track).expect("joins");
         assert_eq!(std::fs::read(&out).expect("read"), b"INITp0p1p2");
-        std::fs::remove_file(piece_path(&dir, &track, 1)).expect("remove");
+        // The pieces are gone, and joining again reuses the joined file.
+        assert!(!piece_path(&dir, &track, 0).exists());
+        assert!(!init_path(&dir, &track, 0).exists());
+        assert_eq!(join_track(&dir, &track).expect("again"), out);
+        std::fs::remove_file(&out).expect("remove");
         assert!(matches!(
             join_track(&dir, &track),
             Err(Error::Media(MediaError::SegmentInvalid))

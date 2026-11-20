@@ -32,13 +32,15 @@ if [ ! -d "$src" ]; then
     tar -C "$build/src" -xf "$tarball"
 fi
 
-# What K-Star needs (§12.3) and what its fixtures and reconstruction use. Nothing that needs a
-# library: no network, no zlib, no hardware. Subtitle encoders are for MP4's mov_text.
+# What K-Star needs (§12.3) and what its fixtures and reconstruction use: H.264, HEVC, AV1 and
+# VP9 video, AAC, AC-3, E-AC-3, MP3 and Opus audio, in MPEG-TS, MP4 and Matroska/WebM. Nothing
+# that needs a library: no network, no zlib, no hardware. Subtitle encoders are for MP4's
+# mov_text. Nothing here needs --enable-gpl, so the build is LGPL-2.1-or-later.
 demuxers="mpegts,mov,matroska,aac,mp3,ac3,eac3,webvtt,srt,concat"
 muxers="mp4,matroska,mpegts,webvtt,srt"
 decoders="h264,hevc,aac,mp3,ac3,eac3,opus,webvtt,subrip,movtext"
-parsers="h264,hevc,aac,ac3,mpegaudio,opus"
-bsfs="aac_adtstoasc,h264_mp4toannexb,hevc_mp4toannexb,extract_extradata,null"
+parsers="h264,hevc,av1,vp9,aac,ac3,mpegaudio,opus"
+bsfs="aac_adtstoasc,h264_mp4toannexb,hevc_mp4toannexb,extract_extradata,vp9_superframe,null"
 encoders="movtext,webvtt,srt,subrip"
 
 out="$build/install"

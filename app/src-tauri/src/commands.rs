@@ -208,15 +208,28 @@ pub fn add_download(state: State<'_, AppState>, args: AddArgs) -> Res<i64> {
     Ok(id)
 }
 
-/// Looks at a link as a media source: a stream with its tracks, or why it isn't one.
+/// Looks at a link as a media source: a stream with its tracks, or why it isn't one. A saved
+/// login is used without asking, as for files; otherwise the error says which login is needed.
 #[tauri::command]
 pub async fn probe_media(
     state: State<'_, AppState>,
     url: String,
     pending_id: Option<u64>,
-) -> Result<kstar_core::MediaProbe, String> {
+) -> Result<kstar_core::MediaProbe, ProbeError> {
     let meta = pending_meta(&state, pending_id).unwrap_or_default();
-    state.engine.probe_media(&url, &meta).await.map_err(err)
+    let mut result = state.engine.probe_media(&url, &meta).await;
+    if let Err(e) = &result
+        && let Some(req) = e.login_request()
+        && !req.rejected
+        && let Some(login) = logins::find(&req.host).await
+    {
+        let _ = state.engine.set_login(&req.host, login);
+        result = state.engine.probe_media(&url, &meta).await;
+    }
+    result.map_err(|e| ProbeError {
+        message: e.to_string(),
+        login: e.login_request(),
+    })
 }
 
 #[derive(Debug, Deserialize)]

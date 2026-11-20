@@ -429,12 +429,38 @@ fn is_generic(segment: &str) -> bool {
     GENERIC.contains(&stem.to_ascii_lowercase().as_str())
 }
 
+/// Extensions a media output can have; a name given with one has it replaced by the
+/// output's own.
+const MEDIA_EXTENSIONS: &[&str] = &[
+    "mp4", "mkv", "m4a", "m4v", "mov", "webm", "ts", "aac", "mp3", "ac3", "vtt", "ttml", "bin",
+];
+
+/// `name` without a media file extension.
+pub(crate) fn strip_media_extension(name: &str) -> &str {
+    match name.rsplit_once('.') {
+        Some((stem, ext))
+            if !stem.is_empty()
+                && MEDIA_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()) =>
+        {
+            stem
+        }
+        _ => name,
+    }
+}
+
 /// The file extension of a single-track output, or of the container a selection muxes into.
 pub(crate) fn extension(output: Output, track: Option<&Track>) -> &'static str {
     match output {
         Output::Mp4 => "mp4",
         Output::Mkv => "mkv",
-        Output::Original => track.map_or("bin", |t| t.container.extension()),
+        // A subtitle track on its own is written as one WebVTT file.
+        Output::Original => track.map_or("bin", |t| {
+            if t.kind == TrackKind::Subtitle {
+                "vtt"
+            } else {
+                t.container.extension()
+            }
+        }),
     }
 }
 
@@ -465,6 +491,15 @@ mod tests {
             default_name(None, &u("https://cdn.example/")),
             "cdn.example video"
         );
+    }
+
+    #[test]
+    fn a_given_media_extension_is_replaced() {
+        assert_eq!(strip_media_extension("Movie.mp4"), "Movie");
+        assert_eq!(strip_media_extension("Movie.MKV"), "Movie");
+        assert_eq!(strip_media_extension("Dr. Who"), "Dr. Who");
+        assert_eq!(strip_media_extension("talk.v2"), "talk.v2");
+        assert_eq!(strip_media_extension(".mp4"), ".mp4");
     }
 
     #[test]

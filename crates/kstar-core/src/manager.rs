@@ -9,7 +9,7 @@ use tokio::runtime::Handle;
 use tokio::sync::broadcast;
 
 use crate::error::MediaError;
-use crate::http::Limiters;
+use crate::http::{Http, Limiters};
 use crate::media::{
     self, FfmpegStatus, JobKind, MediaInfo, MediaProbe, MediaRecord, NewMediaDownload,
 };
@@ -592,6 +592,9 @@ impl Engine {
     pub fn set_sync(&self, id: i64, every_secs: u64) -> Result<()> {
         let mut st = self.inner.state();
         let rec = st.records.get_mut(&id).ok_or(Error::NotFound)?;
+        if rec.kind == JobKind::Media && every_secs > 0 {
+            return Err(Error::Protocol("Streams aren't kept up to date".into()));
+        }
         rec.sync_every = i64::try_from(every_secs).unwrap_or(i64::MAX);
         if rec.sync_checked_at.is_none() {
             rec.sync_checked_at = Some(now_ms());
@@ -746,16 +749,40 @@ impl Engine {
     /// keeping the progress. Refused if the new link is evidently a different file.
     pub async fn refresh_url(&self, id: i64, url: &str, meta: Option<RequestMeta>) -> Result<()> {
         let url = probe::parse_url(&self.inner.strip_login(url)?)?;
-        let (old_size, old_meta) = {
+        let (old_size, old_meta, is_media) = {
             let st = self.inner.state();
             let rec = st.records.get(&id).ok_or(Error::NotFound)?;
             if rec.status == Status::Completed {
                 return Err(Error::Protocol("This download has already finished".into()));
             }
-            (rec.total_size, rec.meta.clone())
+            (rec.total_size, rec.meta.clone(), rec.kind == JobKind::Media)
         };
         let meta = meta.unwrap_or(old_meta);
         let s = self.settings();
+        if is_media {
+            // A stream is checked when it runs: the same tracks must be offered, and the
+            // fingerprint tells whether the finished pieces still belong to it.
+            let probe = self.probe_media(url.as_str(), &meta).await?;
+            if !matches!(probe.kind, media::MediaKind::Hls | media::MediaKind::Dash) {
+                return Err(Error::LinkMismatch(
+                    probe
+                        .message
+                        .unwrap_or_else(|| "The new link isn't a stream.".into()),
+                ));
+            }
+            self.stop_and_wait(id).await;
+            let mut st = self.inner.state();
+            let rec = st.records.get_mut(&id).ok_or(Error::NotFound)?;
+            rec.url = url.to_string();
+            rec.meta = meta;
+            rec.error = None;
+            rec.notice = Some("The download link was updated.".into());
+            rec.status = Status::Queued;
+            self.inner.persist_and_emit(rec, None)?;
+            drop(st);
+            self.inner.schedule();
+            return Ok(());
+        }
         // Probe first, so a bad link doesn't interrupt a running download.
         let p = probe::probe(&self.inner.net, url.as_str(), &meta, &s.user_agent).await?;
         match (old_size, p.total_size) {
@@ -946,6 +973,12 @@ impl Engine {
         {
             let mut st = self.inner.state();
             let rec = st.records.get_mut(&id).ok_or(Error::NotFound)?;
+            if rec.kind == JobKind::Media
+                && rec.status == Status::Completed
+                && let (Some(nd), Some(nn)) = (&dir, &name)
+            {
+                move_sidecars(rec, nd, nn);
+            }
             rec.filename = name;
             rec.dir = dir;
             if was_running {
@@ -1020,6 +1053,9 @@ impl Engine {
                     }
                 } else if delete_files {
                     let _ = std::fs::remove_file(dir.join(name));
+                    for s in rec.media.iter().flat_map(|m| &m.sidecars) {
+                        let _ = std::fs::remove_file(dir.join(s));
+                    }
                 }
             }
             self.inner.emit(Event::Removed { id: rec.id });
@@ -1043,7 +1079,6 @@ impl Engine {
         self.inner.persist_and_emit(rec, run.map(|a| a.as_ref()))
     }
 
-    /// The finished file, or the partial file while the download is unfinished.
     /// Looks at a link before anything is downloaded: a plain file, a page, or a stream with
     /// the video, audio and subtitles it offers.
     pub async fn probe_media(&self, url: &str, meta: &RequestMeta) -> Result<MediaProbe> {
@@ -1053,17 +1088,16 @@ impl Engine {
         let io = Limiters {
             global: &self.inner.global,
             run: &run_limit,
+            count: None,
         };
-        let src = media::source(
-            &self.inner.net,
+        let http = Http::new(
+            self.inner.net.clone(),
             &url,
-            meta,
+            meta.clone(),
             &s.user_agent,
             s.allow_private_media_addresses,
-            &ParseLimits::default(),
-            &io,
-        )
-        .await?;
+        );
+        let src = media::source(&http, &url, &ParseLimits::default(), &io).await?;
         Ok(media::probe_view(
             src,
             &media::preferences(&s),
@@ -1076,21 +1110,25 @@ impl Engine {
     pub async fn add_media(&self, nd: NewMediaDownload) -> Result<i64> {
         let s = self.settings();
         let url = probe::parse_url(&self.inner.strip_login(&nd.url)?)?;
+        if nd.meta.body.as_ref().is_some_and(|b| b.len() > MAX_BODY) {
+            return Err(Error::Protocol(
+                "The form data is too large to send again".into(),
+            ));
+        }
         let run_limit = RateLimiter::new(0);
         let io = Limiters {
             global: &self.inner.global,
             run: &run_limit,
+            count: None,
         };
-        let src = media::source(
-            &self.inner.net,
+        let http = Http::new(
+            self.inner.net.clone(),
             &url,
-            &nd.meta,
+            nd.meta.clone(),
             &s.user_agent,
             s.allow_private_media_addresses,
-            &ParseLimits::default(),
-            &io,
-        )
-        .await?;
+        );
+        let src = media::source(&http, &url, &ParseLimits::default(), &io).await?;
         let final_url = src.final_url.clone();
         let pres = media::presentation_or_error(src)?;
         let selection = nd
@@ -1117,11 +1155,8 @@ impl Engine {
             .filename
             .clone()
             .unwrap_or_else(|| media::default_name(title.as_deref(), &final_url));
-        let stem = base
-            .strip_suffix(&format!(".{ext}"))
-            .unwrap_or(&base)
-            .to_string();
-        let name = filename::sanitize(&format!("{stem}.{ext}"))
+        let stem = media::strip_media_extension(&base).to_string();
+        let wanted = filename::sanitize(&format!("{stem}.{ext}"))
             .ok_or_else(|| Error::Protocol("That file name isn't allowed".into()))?;
         let dir = nd
             .dir
@@ -1148,6 +1183,9 @@ impl Engine {
             sidecars: Vec::new(),
         };
         let mut st = self.inner.state();
+        // Two unfinished media downloads never share a name, so never a Work Directory. An
+        // existing file of that name is dealt with when the output is published.
+        let name = free_media_name(&st, &dir, &wanted);
         let queue_id = nd
             .queue_id
             .filter(|q| st.queues.contains_key(q))
@@ -1219,12 +1257,16 @@ impl Engine {
         self.inner.ffmpeg_status.lock().unwrap().clone()
     }
 
+    /// The finished file, or the partial data while the download is unfinished (the part
+    /// file, or a media download's Work Directory).
     pub fn file_path(&self, id: i64) -> Option<PathBuf> {
         let st = self.inner.state();
         let r = st.records.get(&id)?;
         let (dir, name) = (r.dir.as_ref()?, r.filename.as_ref()?);
         Some(if r.status == Status::Completed {
             dir.join(name)
+        } else if r.kind == JobKind::Media {
+            media::workdir(dir, name)
         } else {
             filename::part_path(dir, name)
         })
@@ -1257,8 +1299,50 @@ fn partial_remove(rec: &Record, dir: &Path, name: &str) -> std::io::Result<()> {
     }
 }
 
+/// `name`, or the first `name (n)` that no unfinished download claims and no Work Directory
+/// uses in `dir`.
+fn free_media_name(st: &State, dir: &Path, name: &str) -> String {
+    let taken = |n: &str| name_claimed(st, dir, n, None) || media::workdir(dir, n).exists();
+    if !taken(name) {
+        return name.to_string();
+    }
+    let (stem, ext) = filename::split_ext(name);
+    (1..)
+        .map(|i| format!("{stem} ({i}){ext}"))
+        .find(|n| !taken(n))
+        .unwrap_or_else(|| name.to_string())
+}
+
+/// Moves (and renames, with the output) the subtitle files written beside a finished media
+/// download. Missing files are left out; a file in the way is not replaced.
+fn move_sidecars(rec: &mut Record, new_dir: &Path, new_name: &str) {
+    let (Some(old_dir), Some(old_name)) = (rec.dir.clone(), rec.filename.clone()) else {
+        return;
+    };
+    let Some(m) = rec.media.as_mut() else { return };
+    let old_stem = filename::split_ext(&old_name).0.to_string();
+    let new_stem = filename::split_ext(new_name).0;
+    let mut kept = Vec::new();
+    for s in &m.sidecars {
+        let renamed = match s.strip_prefix(&old_stem) {
+            Some(rest) if rest.starts_with('.') => format!("{new_stem}{rest}"),
+            _ => s.clone(),
+        };
+        let (from, to) = (old_dir.join(s), new_dir.join(&renamed));
+        if !from.exists() {
+            continue;
+        }
+        if from == to || (!to.exists() && move_file(&from, &to).is_ok()) {
+            kept.push(renamed);
+        } else {
+            kept.push(s.clone());
+        }
+    }
+    m.sidecars = kept;
+}
+
 /// True if another unfinished download already intends to write `dir/name`.
-fn name_claimed(st: &State, dir: &Path, name: &str, except: Option<i64>) -> bool {
+pub(crate) fn name_claimed(st: &State, dir: &Path, name: &str, except: Option<i64>) -> bool {
     st.records.values().any(|r| {
         Some(r.id) != except
             && r.status != Status::Completed
@@ -1295,7 +1379,7 @@ impl Inner {
                     table.segs.clone()
                 };
                 (
-                    if table.segs.is_empty() {
+                    if table.segs.is_empty() && r.kind != JobKind::Media {
                         r.downloaded
                     } else {
                         run.downloaded.load(Relaxed)
@@ -1777,6 +1861,8 @@ impl Inner {
                     if !table.segs.is_empty() {
                         rec.segments = table.segs.clone();
                         rec.downloaded = table.downloaded();
+                    } else if rec.kind == JobKind::Media {
+                        rec.downloaded = run.downloaded.load(Relaxed);
                     }
                     drop(table);
                     match (&result, reason) {

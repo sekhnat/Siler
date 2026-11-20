@@ -1,13 +1,23 @@
-//! Bounded and object-level HTTP for media. A small body is read into memory (manifests,
-//! keys, the first bytes of a source); one object (a segment, or a whole track) is written
-//! to a file through a `.part` file and renamed when complete. Both go through [`Net`]
-//! (proxy, logins) and the rate limiters, and use the same error classes as file downloads.
+//! HTTP for media. A small body is read into memory (manifests, keys, the first bytes of a
+//! source); one object (a segment, or a whole track) is written to a file through a `.part`
+//! file and renamed when complete. Both go through [`Net`] (proxy, logins) and the rate
+//! limiters, and use the same error classes as file downloads.
+//!
+//! Redirects are followed here, one hop at a time, so every address a manifest leads to is
+//! checked against the URL policy before it is contacted, not just the first one. Cookies and
+//! the browser's extra headers go only to the source's own server (and its subdomains or
+//! parents), never to the other servers a manifest names.
 
 use futures_util::StreamExt;
-use reqwest::header::{CONTENT_RANGE, CONTENT_TYPE, RANGE};
+use reqwest::header::{CONTENT_RANGE, CONTENT_TYPE, LOCATION, RANGE};
 use reqwest::{Response, StatusCode, Url};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use std::sync::{Arc, Mutex};
 use tokio::io::AsyncWriteExt;
+
+use kstar_media::policy;
 
 use crate::error::{MediaError, describe};
 use crate::net::{Net, host_key, parse_challenge};
@@ -15,16 +25,265 @@ use crate::probe::{build_request, busy, parse_content_range};
 use crate::ratelimit::RateLimiter;
 use crate::{Error, RequestMeta, Result};
 
-/// The limiters every byte passes through: the engine-wide one and the download's own.
+/// Redirects followed for one request.
+const MAX_REDIRECTS: usize = 10;
+
+/// The limiters every byte passes through, and the counter it is added to.
 pub(crate) struct Limiters<'a> {
     pub global: &'a RateLimiter,
     pub run: &'a RateLimiter,
+    /// The download's byte count, updated as data arrives.
+    pub count: Option<&'a AtomicU64>,
 }
 
 impl Limiters<'_> {
     async fn take(&self, n: u64) {
         self.global.acquire(n).await;
         self.run.acquire(n).await;
+        if let Some(c) = self.count {
+            c.fetch_add(n, Relaxed);
+        }
+    }
+}
+
+/// Takes back the bytes of an object that wasn't kept (failed, or stopped part way), so the
+/// download's count only holds what is on disk.
+struct Uncount<'a> {
+    count: Option<&'a AtomicU64>,
+    n: u64,
+}
+
+impl Drop for Uncount<'_> {
+    fn drop(&mut self) {
+        if let Some(c) = self.count
+            && self.n > 0
+        {
+            let _ = c.try_update(Relaxed, Relaxed, |v| Some(v.saturating_sub(self.n)));
+        }
+    }
+}
+
+/// Decides which addresses may be contacted (media-design §16.2): the URL itself (scheme,
+/// credentials, literal addresses), and, when no proxy carries the connection, the addresses
+/// its name resolves to. Names are looked up once per host.
+pub(crate) struct Guard {
+    allow_private: bool,
+    checked: Mutex<HashSet<String>>,
+}
+
+impl Guard {
+    pub fn new(allow_private: bool) -> Guard {
+        Guard {
+            allow_private,
+            checked: Mutex::new(HashSet::new()),
+        }
+    }
+
+    pub async fn check(&self, net: &Net, url: &Url) -> Result<()> {
+        policy::check(url, self.allow_private)
+            .map_err(|e| Error::Media(MediaError::UrlForbidden(e.to_string())))?;
+        if self.allow_private {
+            return Ok(());
+        }
+        let route = net.route();
+        if route.http.is_some() || route.https.is_some() {
+            // The proxy resolves the name; only the literal check above applies.
+            return Ok(());
+        }
+        let Some(url::Host::Domain(host)) = url.host() else {
+            return Ok(());
+        };
+        let host = host.to_ascii_lowercase();
+        if self.checked.lock().unwrap().contains(&host) {
+            return Ok(());
+        }
+        let port = url.port_or_known_default().unwrap_or(443);
+        let addrs = tokio::net::lookup_host((host.as_str(), port))
+            .await
+            .map_err(|e| Error::Network(format!("could not look up {host} ({e})")))?;
+        for a in addrs {
+            if policy::is_private(a.ip()) {
+                return Err(Error::Media(MediaError::UrlForbidden(format!(
+                    "{host} points to an address on this computer or the local network"
+                ))));
+            }
+        }
+        self.checked.lock().unwrap().insert(host);
+        Ok(())
+    }
+}
+
+/// Everything a media request needs: the network, how the source was requested, and the
+/// URL policy.
+pub(crate) struct Http {
+    pub net: Arc<Net>,
+    ua: String,
+    /// How the source was requested (method, body, cookies, headers).
+    meta: RequestMeta,
+    /// The source's host: cookies and extra headers go only to it and its relatives.
+    origin: String,
+    pub guard: Guard,
+}
+
+/// Which request this is: the source itself (sent as the browser sent it), or something the
+/// source names (a playlist, a key, a segment: always a plain GET).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Req {
+    Source,
+    Derived,
+}
+
+impl Http {
+    /// `allow_private` is the user's setting; a source on a private address may also point
+    /// at other private addresses (a media server at home).
+    pub fn new(
+        net: Arc<Net>,
+        source: &Url,
+        meta: RequestMeta,
+        ua: &str,
+        allow_private: bool,
+    ) -> Http {
+        Http {
+            net,
+            ua: ua.to_string(),
+            meta,
+            origin: source.host_str().unwrap_or("").to_ascii_lowercase(),
+            guard: Guard::new(allow_private || policy::is_private_source(source)),
+        }
+    }
+
+    /// The request details for `url`.
+    fn meta_for(&self, url: &Url, kind: Req) -> RequestMeta {
+        let mut m = RequestMeta {
+            referrer: self.meta.referrer.clone(),
+            user_agent: self.meta.user_agent.clone(),
+            ..Default::default()
+        };
+        if kind == Req::Source {
+            m.method = self.meta.method.clone();
+            m.body = self.meta.body.clone();
+        }
+        if related_hosts(&self.origin, url.host_str().unwrap_or("")) {
+            m.cookies = self.meta.cookies.clone();
+            m.headers = self.meta.headers.clone();
+        }
+        m
+    }
+}
+
+/// Whether cookies for host `a` may go to host `b`: the same host, one a subdomain of the
+/// other, or both on the same site (`www.example.com` and `cdn.example.com`). Addresses only
+/// match themselves.
+fn related_hosts(a: &str, b: &str) -> bool {
+    let a = a.trim_end_matches('.').to_ascii_lowercase();
+    let b = b.trim_end_matches('.').to_ascii_lowercase();
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    if a == b {
+        return true;
+    }
+    let is_ip = |h: &str| {
+        h.trim_matches(['[', ']'])
+            .parse::<std::net::IpAddr>()
+            .is_ok()
+    };
+    if is_ip(&a) || is_ip(&b) {
+        return false;
+    }
+    let under = |h: &str, parent: &str| h.ends_with(&format!(".{parent}"));
+    let site = site_of(&a);
+    under(&b, &a) || under(&a, &b) || (site != a && (b == site || under(&b, site)))
+}
+
+/// The site a host belongs to: the host without its first label, unless that would leave a
+/// public suffix (`example.com` stays; `www.example.com` gives `example.com`;
+/// `example.co.uk` stays, since `co.uk` is shared by unrelated sites).
+fn site_of(host: &str) -> &str {
+    let labels: Vec<&str> = host.split('.').collect();
+    if labels.len() <= 2 {
+        return host;
+    }
+    let parent = &labels[1..];
+    // A short second level under a country code (co.uk, com.au, ne.jp) is a public suffix.
+    let country_suffix = parent.len() == 2 && parent[1].len() == 2 && parent[0].len() <= 3;
+    if country_suffix {
+        return host;
+    }
+    &host[labels[0].len() + 1..]
+}
+
+/// One request, following redirects with every hop checked. A 401 is retried when the
+/// server just said how to log in, or a Digest nonce went stale (as in `probe`).
+async fn request(http: &Http, url: &Url, mut kind: Req, range: Option<String>) -> Result<Response> {
+    let mut target = url.clone();
+    let mut hops = 0;
+    let mut logins = 0;
+    loop {
+        http.guard.check(&http.net, &target).await?;
+        let meta = http.meta_for(&target, kind);
+        let auth = http.net.auth_for(&target);
+        let sent = auth.as_ref().is_some_and(|a| a.ready());
+        let mut rb = build_request(
+            &http.net.manual_client(),
+            target.clone(),
+            &meta,
+            &http.ua,
+            auth.as_deref(),
+        );
+        if let Some(r) = &range {
+            rb = rb.header(RANGE, r.as_str());
+        }
+        let resp = rb.send().await.map_err(|e| Error::Network(describe(&e)))?;
+        let status = resp.status();
+        if status.is_redirection()
+            && let Some(loc) = resp.headers().get(LOCATION).and_then(|v| v.to_str().ok())
+        {
+            hops += 1;
+            if hops > MAX_REDIRECTS {
+                return Err(Error::Protocol(
+                    "The server redirected too many times".into(),
+                ));
+            }
+            let next = target.join(loc.trim()).map_err(|_| {
+                Error::Protocol("The server redirected to an address that isn't valid".into())
+            })?;
+            // 303, and 301/302 after anything but GET, continue as a plain GET.
+            let not_get = meta
+                .method
+                .as_deref()
+                .is_some_and(|m| !m.eq_ignore_ascii_case("GET"));
+            if status == StatusCode::SEE_OTHER
+                || (not_get && matches!(status, StatusCode::MOVED_PERMANENTLY | StatusCode::FOUND))
+            {
+                kind = Req::Derived;
+            }
+            target = next;
+            continue;
+        }
+        match status {
+            StatusCode::UNAUTHORIZED => {
+                let challenge = parse_challenge(resp.headers());
+                let realm = challenge.as_ref().and_then(|c| c.realm.clone());
+                let host = host_key(&target);
+                let retry = challenge.is_some_and(|c| http.net.entry(&host).learn(c, sent));
+                logins += 1;
+                if retry && logins < 3 {
+                    continue;
+                }
+                return Err(Error::AuthRequired {
+                    host,
+                    realm,
+                    rejected: sent,
+                });
+            }
+            StatusCode::PROXY_AUTHENTICATION_REQUIRED => return Err(Error::ProxyAuth),
+            StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE => {
+                return Err(busy(&resp));
+            }
+            s if s.is_success() => return Ok(resp),
+            s => return Err(Error::Http(s.as_u16())),
+        }
     }
 }
 
@@ -44,67 +303,20 @@ pub(crate) struct Fetched {
     pub final_url: Url,
     pub content_type: Option<String>,
     pub body: Vec<u8>,
-}
-
-/// One request, with logins and the answers that become errors. A 401 is retried when the
-/// server just said how to log in, or a Digest nonce went stale (as in `probe`).
-async fn request(
-    net: &Net,
-    url: &Url,
-    meta: &RequestMeta,
-    ua: &str,
-    range: Option<String>,
-) -> Result<Response> {
-    let mut target = url.clone();
-    let mut attempts = 0;
-    loop {
-        let auth = net.auth_for(&target);
-        let sent = auth.as_ref().is_some_and(|a| a.ready());
-        let mut rb = build_request(&net.client(), target.clone(), meta, ua, auth.as_deref());
-        if let Some(r) = &range {
-            rb = rb.header(RANGE, r.as_str());
-        }
-        let resp = rb.send().await.map_err(|e| Error::Network(describe(&e)))?;
-        match resp.status() {
-            StatusCode::UNAUTHORIZED => {
-                let at = resp.url().clone();
-                let sent_here = sent && host_key(&at) == host_key(&target);
-                let challenge = parse_challenge(resp.headers());
-                let realm = challenge.as_ref().and_then(|c| c.realm.clone());
-                let retry =
-                    challenge.is_some_and(|c| net.entry(&host_key(&at)).learn(c, sent_here));
-                attempts += 1;
-                if retry && attempts < 3 {
-                    target = at;
-                    continue;
-                }
-                return Err(Error::AuthRequired {
-                    host: host_key(&at),
-                    realm,
-                    rejected: sent_here,
-                });
-            }
-            StatusCode::PROXY_AUTHENTICATION_REQUIRED => return Err(Error::ProxyAuth),
-            StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE => {
-                return Err(busy(&resp));
-            }
-            s if s.is_success() => return Ok(resp),
-            s => return Err(Error::Http(s.as_u16())),
-        }
-    }
+    /// The whole body was read (it wasn't cut at the cap).
+    pub complete: bool,
 }
 
 /// Reads a body into memory, up to `max` bytes.
 pub(crate) async fn fetch_bounded(
-    net: &Net,
+    http: &Http,
     url: &Url,
-    meta: &RequestMeta,
-    ua: &str,
+    kind: Req,
     max: u64,
     overflow: Overflow,
     lim: &Limiters<'_>,
 ) -> Result<Fetched> {
-    let resp = request(net, url, meta, ua, None).await?;
+    let resp = request(http, url, kind, None).await?;
     let final_url = resp.url().clone();
     let content_type = resp
         .headers()
@@ -115,6 +327,7 @@ pub(crate) async fn fetch_bounded(
         return Err(Error::Media(MediaError::BodyTooLarge(max)));
     }
     let mut body = Vec::new();
+    let mut complete = true;
     let mut stream = resp.bytes_stream();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| Error::Network(describe(&e)))?;
@@ -125,6 +338,7 @@ pub(crate) async fn fetch_bounded(
                 Overflow::Refuse => return Err(Error::Media(MediaError::BodyTooLarge(max))),
                 Overflow::Truncate => {
                     body.extend_from_slice(&chunk[..room]);
+                    complete = false;
                     break;
                 }
             }
@@ -135,6 +349,7 @@ pub(crate) async fn fetch_bounded(
         final_url,
         content_type,
         body,
+        complete,
     })
 }
 
@@ -147,55 +362,63 @@ pub(crate) fn part_of(dest: &Path) -> PathBuf {
 
 /// Fetches one object into `dest`, through `dest.part`, which is renamed on success.
 ///
-/// With `range`, the server must answer `206` for exactly that byte range. With
-/// `resume_from`, the `.part` file (which must be that long) is continued with a range
-/// request from that byte. Exactly one GET per call; retries belong to the caller.
-/// Returns the size of `dest`.
-#[allow(clippy::too_many_arguments)]
+/// With `range`, the server must answer `206` for exactly that byte range. A `whole` file
+/// (a track that is one file) keeps its `.part` file between attempts and is continued from
+/// where it stopped; a server that answers with the whole file starts it over. Exactly one
+/// GET per call; retries belong to the caller. Returns the size of `dest`.
 pub(crate) async fn fetch_object(
-    net: &Net,
+    http: &Http,
     url: &Url,
-    meta: &RequestMeta,
-    ua: &str,
     dest: &Path,
     range: Option<(u64, u64)>,
-    resume_from: Option<u64>,
+    whole: bool,
     lim: &Limiters<'_>,
 ) -> Result<u64> {
     let part = part_of(dest);
-    let start = match (range, resume_from) {
-        (Some((a, _)), _) => a,
-        (None, Some(n)) => n,
-        (None, None) => 0,
+    let resume_from = if whole && range.is_none() {
+        tokio::fs::metadata(&part)
+            .await
+            .ok()
+            .map(|m| m.len())
+            .filter(|n| *n > 0)
+    } else {
+        None
     };
     let header = match (range, resume_from) {
         (Some((a, b)), _) => Some(format!("bytes={a}-{b}")),
-        (None, Some(n)) if n > 0 => Some(format!("bytes={n}-")),
-        _ => None,
+        (None, Some(n)) => Some(format!("bytes={n}-")),
+        (None, None) => None,
     };
-    let resp = request(net, url, meta, ua, header.clone()).await?;
-    let partial = header.is_some();
-    if partial {
+    let resp = request(http, url, Req::Derived, header.clone()).await?;
+    let mut start = range.map_or(resume_from.unwrap_or(0), |(a, _)| a);
+    let mut appending = resume_from.is_some();
+    if header.is_some() {
         if resp.status() != StatusCode::PARTIAL_CONTENT {
-            // The server ignored the range. A resume can't continue from there.
-            return Err(Error::Protocol(
-                "The server stopped accepting range requests".into(),
-            ));
-        }
-        let got = resp
-            .headers()
-            .get(CONTENT_RANGE)
-            .and_then(|v| v.to_str().ok())
-            .and_then(parse_content_range)
-            .map(|r| r.0);
-        if got != Some(start) {
-            return Err(Error::Protocol(
-                "The server returned an unexpected byte range".into(),
-            ));
+            if range.is_none() {
+                // The server sent the whole file instead of the rest: start it over.
+                appending = false;
+                start = 0;
+            } else {
+                return Err(Error::Protocol(
+                    "The server doesn't send parts of this file, which this stream needs".into(),
+                ));
+            }
+        } else {
+            let got = resp
+                .headers()
+                .get(CONTENT_RANGE)
+                .and_then(|v| v.to_str().ok())
+                .and_then(parse_content_range)
+                .map(|r| r.0);
+            if got != Some(start) {
+                return Err(Error::Protocol(
+                    "The server returned an unexpected byte range".into(),
+                ));
+            }
         }
     }
 
-    let mut file = if resume_from.is_some() {
+    let mut file = if appending {
         let len = tokio::fs::metadata(&part)
             .await
             .map(|m| m.len())
@@ -210,11 +433,18 @@ pub(crate) async fn fetch_object(
     } else {
         tokio::fs::File::create(&part).await?
     };
+    // Until a piece is complete, its bytes are taken back if this stops (a failure, a pause
+    // that drops this future): only a finished piece counts. A whole file keeps its part.
+    let mut taken = Uncount {
+        count: lim.count.filter(|_| !whole),
+        n: 0,
+    };
     let mut written = 0u64;
     let mut stream = resp.bytes_stream();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| Error::Network(describe(&e)))?;
         lim.take(chunk.len() as u64).await;
+        taken.n += chunk.len() as u64;
         file.write_all(&chunk).await?;
         written += chunk.len() as u64;
     }
@@ -226,6 +456,7 @@ pub(crate) async fn fetch_object(
         return Err(Error::Network("connection closed early".into()));
     }
     tokio::fs::rename(&part, dest).await?;
+    taken.n = 0;
     // A range is the whole object; a resumed whole file includes the bytes already there.
     Ok(if range.is_some() {
         written
@@ -243,6 +474,83 @@ mod tests {
         assert_eq!(
             part_of(Path::new("/w/t/00000001.seg")),
             PathBuf::from("/w/t/00000001.seg.part")
+        );
+    }
+
+    #[test]
+    fn cookies_stay_with_the_source_site() {
+        assert!(related_hosts("example.com", "example.com"));
+        assert!(related_hosts("example.com", "cdn.example.com"));
+        assert!(related_hosts("www.example.com", "example.com"));
+        assert!(related_hosts("www.example.com", "cdn.example.com"));
+        assert!(related_hosts("www.example.com", "WWW.EXAMPLE.COM"));
+        assert!(related_hosts("www.bbc.co.uk", "media.bbc.co.uk"));
+        assert!(!related_hosts("example.com", "evil-example.com"));
+        assert!(!related_hosts("example.com", "cdn.other.net"));
+        assert!(!related_hosts("example.co.uk", "evil.co.uk"));
+        assert!(!related_hosts("127.0.0.1", "1.0.0.1"));
+        assert!(!related_hosts("", "example.com"));
+    }
+
+    #[test]
+    fn derived_requests_are_plain_gets_and_keep_cookies_at_home() {
+        let net = Arc::new(Net::new(&Default::default(), None).expect("net"));
+        let src = Url::parse("https://www.example.com/v/master.m3u8").expect("URL");
+        let meta = RequestMeta {
+            referrer: Some("https://www.example.com/watch".into()),
+            cookies: Some("session=1".into()),
+            headers: vec![("X-Token".into(), "t".into())],
+            method: Some("POST".into()),
+            body: Some(b"a=1".to_vec()),
+            ..Default::default()
+        };
+        let http = Http::new(net, &src, meta, "ua", false);
+        let home = http.meta_for(&src, Req::Source);
+        assert_eq!(home.method.as_deref(), Some("POST"));
+        assert_eq!(home.cookies.as_deref(), Some("session=1"));
+        let seg = http.meta_for(
+            &Url::parse("https://cdn.example.com/s1.ts").expect("URL"),
+            Req::Derived,
+        );
+        assert_eq!(seg.method, None);
+        assert_eq!(seg.body, None);
+        assert_eq!(seg.cookies.as_deref(), Some("session=1"));
+        let elsewhere = http.meta_for(
+            &Url::parse("https://cdn.other.net/s1.ts").expect("URL"),
+            Req::Derived,
+        );
+        assert_eq!(elsewhere.cookies, None);
+        assert!(elsewhere.headers.is_empty());
+        assert_eq!(
+            elsewhere.referrer.as_deref(),
+            Some("https://www.example.com/watch")
+        );
+    }
+
+    #[tokio::test]
+    async fn the_guard_refuses_private_targets_from_a_public_source() {
+        let net = Net::new(&Default::default(), None).expect("net");
+        let g = Guard::new(false);
+        for u in [
+            "http://127.0.0.1/a",
+            "http://169.254.169.254/latest",
+            "http://localhost/x",
+            "file:///etc/passwd",
+        ] {
+            let url = Url::parse(u).expect("URL");
+            assert!(
+                matches!(
+                    g.check(&net, &url).await,
+                    Err(Error::Media(MediaError::UrlForbidden(_)))
+                ),
+                "{u}"
+            );
+        }
+        assert!(
+            Guard::new(true)
+                .check(&net, &Url::parse("http://127.0.0.1/a").expect("URL"))
+                .await
+                .is_ok()
         );
     }
 }

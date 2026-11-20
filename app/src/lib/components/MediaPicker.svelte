@@ -1,7 +1,7 @@
 <script lang="ts">
   import { Film, Info, TriangleAlert } from "@lucide/svelte";
   import type { ContainerChoice, MediaProbe, Selection, SubtitleMode, TrackView } from "../api";
-  import { bytes } from "../format";
+  import { bytes, duration as formatDuration } from "../format";
 
   let {
     probe,
@@ -51,10 +51,6 @@
     selection = { ...selection, [kind]: list.includes(id) ? list.filter((x) => x !== id) : [...list, id] };
   }
 
-  function label(t: TrackView): string {
-    return t.label;
-  }
-
   // The original format is the track's own container: only possible for a single track.
   const originalAllowed = $derived(trackCount === 1);
 </script>
@@ -73,7 +69,7 @@
     <div class="head">
       <span class="pill" style:--c="var(--accent)">{KIND_LABEL[probe.kind]}</span>
       {#if probe.title}<span class="title truncate" title={probe.title}>{probe.title}</span>{/if}
-      {#if probe.duration}<span class="hint">{Math.round(probe.duration)} s</span>{/if}
+      {#if probe.duration}<span class="hint num">{formatDuration(probe.duration)}</span>{/if}
       <span class="grow"></span>
       {#if estimate != null}<span class="hint num">About {bytes(estimate)}</span>{/if}
     </div>
@@ -85,7 +81,7 @@
           {#each choices as v (v.video.id)}
             <label class="opt" class:on={selection.video === v.video.id}>
               <input type="radio" name="video" checked={selection.video === v.video.id} onchange={() => pickVideo(v.video.id)} />
-              <span class="truncate">{label(v.video)}</span>
+              <span class="truncate">{v.video.label}</span>
               {#if v.video.estimated_bytes}<span class="hint num">{bytes(v.video.estimated_bytes)}</span>{/if}
             </label>
           {/each}
@@ -100,7 +96,7 @@
           {#each audioChoices as a (a.id)}
             <label class="opt" class:on={selection.audio.includes(a.id)}>
               <input type="checkbox" checked={selection.audio.includes(a.id)} onchange={() => toggle("audio", a.id)} />
-              <span class="truncate">{label(a)}</span>
+              <span class="truncate">{a.label}</span>
               {#if a.is_default}<span class="hint">default</span>{/if}
             </label>
           {/each}
@@ -115,7 +111,7 @@
           {#each subtitleChoices as s (s.id)}
             <label class="opt" class:on={selection.subtitles.includes(s.id)}>
               <input type="checkbox" checked={selection.subtitles.includes(s.id)} onchange={() => toggle("subtitles", s.id)} />
-              <span class="truncate">{label(s)}</span>
+              <span class="truncate">{s.label}</span>
             </label>
           {/each}
         </div>

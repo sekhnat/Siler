@@ -52,7 +52,7 @@ pub enum MediaError {
     LiveUnsupported,
     #[error("This video is protected by DRM. K-Star doesn't download DRM-protected media.")]
     Drm,
-    #[error("This stream uses encryption K-Star can't decrypt: {0}")]
+    #[error("This stream uses something K-Star doesn't support yet: {0}")]
     Unsupported(String),
     #[error("The playlist can't be read: {0}")]
     Invalid(String),

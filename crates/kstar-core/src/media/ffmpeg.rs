@@ -29,6 +29,8 @@ const DEMUXERS: &[&str] = &[
 ];
 const PROTOCOLS: &[&str] = &["file", "pipe"];
 const BSFS: &[&str] = &["aac_adtstoasc"];
+/// MP4 holds subtitles as `mov_text`, which is an encoder even under stream copy.
+const ENCODERS: &[&str] = &["mov_text"];
 
 /// Runs `ffmpeg -version` and each capability list, and checks them against what K-Star
 /// needs. FFmpeg answers one list option per run (the others are ignored), so each is asked
@@ -36,7 +38,14 @@ const BSFS: &[&str] = &["aac_adtstoasc"];
 pub(crate) fn probe(path: &Path) -> FfmpegStatus {
     let shown = Some(path.display().to_string());
     let mut text = String::new();
-    for option in ["-version", "-muxers", "-demuxers", "-protocols", "-bsfs"] {
+    for option in [
+        "-version",
+        "-muxers",
+        "-demuxers",
+        "-protocols",
+        "-bsfs",
+        "-encoders",
+    ] {
         let out = std::process::Command::new(path)
             .args(["-hide_banner", option])
             .stdin(Stdio::null())
@@ -60,7 +69,8 @@ pub(crate) fn probe(path: &Path) -> FfmpegStatus {
 }
 
 /// Reads the output of the list options. Muxer and demuxer lines carry flag columns (`D` for
-/// demuxing at column 1, `E` for muxing at column 2); protocols and filters are plain names.
+/// demuxing at column 1, `E` for muxing at column 2); encoder lines start with six flag
+/// characters; protocols and filters are plain names.
 pub(crate) fn parse(text: &str, path: Option<String>) -> FfmpegStatus {
     let version = text
         .lines()
@@ -72,6 +82,7 @@ pub(crate) fn parse(text: &str, path: Option<String>) -> FfmpegStatus {
     let mut demuxers = HashSet::new();
     let mut protocols = HashSet::new();
     let mut bsfs = HashSet::new();
+    let mut encoders = HashSet::new();
     let mut section = "";
     for line in text.lines() {
         let t = line.trim();
@@ -85,6 +96,10 @@ pub(crate) fn parse(text: &str, path: Option<String>) -> FfmpegStatus {
         }
         if t.starts_with("Bitstream filters:") {
             section = "bsfs";
+            continue;
+        }
+        if t == "Encoders:" {
+            section = "encoders";
             continue;
         }
         if t.is_empty() || t.ends_with(':') && !t.contains(' ') {
@@ -115,6 +130,15 @@ pub(crate) fn parse(text: &str, path: Option<String>) -> FfmpegStatus {
                 }
             }
             "bsfs" => bsfs.extend(t.split_whitespace().map(str::to_string)),
+            "encoders" => {
+                let mut cols = t.split_whitespace();
+                if let (Some(flags), Some(name)) = (cols.next(), cols.next())
+                    && flags.len() == 6
+                    && !flags.contains('=')
+                {
+                    encoders.insert(name.to_string());
+                }
+            }
             _ => {}
         }
     }
@@ -124,6 +148,7 @@ pub(crate) fn parse(text: &str, path: Option<String>) -> FfmpegStatus {
         (DEMUXERS, &demuxers, "demuxer"),
         (PROTOCOLS, &protocols, "protocol"),
         (BSFS, &bsfs, "bitstream filter"),
+        (ENCODERS, &encoders, "encoder"),
     ] {
         for n in names {
             if !have.contains(*n) {
@@ -171,12 +196,22 @@ pub(crate) async fn run(
             }
         }
     });
+    // Keeps the last 64 KiB of the error output, reading all of it so FFmpeg never blocks
+    // on a full pipe.
     let err_reader = tokio::spawn(async move {
-        let mut buf = Vec::new();
-        if let Some(e) = stderr {
-            let _ = e.take(64 * 1024).read_to_end(&mut buf).await;
+        let mut kept = Vec::new();
+        let Some(mut e) = stderr else { return kept };
+        let mut chunk = [0u8; 8192];
+        while let Ok(n) = e.read(&mut chunk).await {
+            if n == 0 {
+                break;
+            }
+            kept.extend_from_slice(&chunk[..n]);
+            if kept.len() > 64 * 1024 {
+                kept.drain(..kept.len() - 64 * 1024);
+            }
         }
-        buf
+        kept
     });
     let status = tokio::select! {
         s = child.wait() => s.map_err(|e| Error::Media(MediaError::FfmpegFailed(e.to_string())))?,
@@ -231,7 +266,12 @@ mod tests {
           file\n\
         Bitstream filters:\n\
         aac_adtstoasc\n\
-        noise\n";
+        noise\n\
+        Encoders:\n\
+        \x20V..... = Video\n\
+        \x20------\n\
+        \x20S..... mov_text             3GPP Timed Text subtitle\n\
+        \x20S..... webvtt               WebVTT subtitle\n";
 
     #[test]
     fn capabilities_are_read_from_the_lists() {
@@ -253,6 +293,11 @@ mod tests {
                 .missing
                 .iter()
                 .any(|m| m.contains("aac_adtstoasc"))
+        );
+        let no_movtext = SAMPLE.replace("mov_text", "other");
+        assert_eq!(
+            parse(&no_movtext, None).missing,
+            vec!["encoder mov_text".to_string()]
         );
     }
 

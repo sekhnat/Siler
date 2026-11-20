@@ -42,6 +42,8 @@ pub enum SegmentContainer {
     Ts,
     /// Fragmented MP4 (CMAF, DASH ISO BMFF), with an initialisation segment.
     Fmp4,
+    /// WebM (Matroska), with an initialisation segment.
+    Webm,
     Aac,
     Mp3,
     Ac3,
@@ -56,6 +58,7 @@ impl SegmentContainer {
         match self {
             SegmentContainer::Ts => "ts",
             SegmentContainer::Fmp4 => "mp4",
+            SegmentContainer::Webm => "webm",
             SegmentContainer::Aac => "aac",
             SegmentContainer::Mp3 => "mp3",
             SegmentContainer::Ac3 => "ac3",
@@ -331,6 +334,22 @@ pub(crate) fn resolve(base: &Url, uri: &str) -> Result<Url, ParseError> {
     base.join(uri)
         .map_err(|_| ParseError::invalid("a reference can't be understood as a URL"))
 }
+
+/// A language tag from a manifest, or `None` for none: empty, or `und` (undetermined).
+pub(crate) fn language(tag: Option<&str>) -> Option<String> {
+    let t = tag?.trim();
+    (!t.is_empty() && !t.eq_ignore_ascii_case("und")).then(|| t.to_string())
+}
+
+/// Whether a subtitle track can be downloaded: WebVTT or TTML files. Subtitles carried
+/// inside MP4 segments (`wvtt`, `stpp`) can't be yet.
+pub(crate) fn subtitle_supported(t: &Track) -> bool {
+    !matches!(t.container, SegmentContainer::Fmp4 | SegmentContainer::Webm)
+}
+
+/// The warning for subtitles that were left out.
+pub(crate) const SUBTITLES_IN_MP4: &str =
+    "subtitles carried inside MP4 segments aren't supported yet and were left out";
 
 /// The URL without its query and fragment: the identity used for [`TrackId`]s and the
 /// segment fingerprint, which must not change when signed query strings rotate.

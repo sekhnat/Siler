@@ -104,6 +104,10 @@ pub fn sniff_segment(bytes: &[u8]) -> SegmentContainer {
     if b.len() >= 8 && matches!(&b[4..8], b"ftyp" | b"styp" | b"moof" | b"sidx") {
         return SegmentContainer::Fmp4;
     }
+    if b.starts_with(&[0x1a, 0x45, 0xdf, 0xa3]) || b.starts_with(&[0x1f, 0x43, 0xb6, 0x75]) {
+        // An EBML header (an initialisation segment), or a Matroska cluster (a segment).
+        return SegmentContainer::Webm;
+    }
     if b.starts_with(b"WEBVTT") {
         return SegmentContainer::Vtt;
     }

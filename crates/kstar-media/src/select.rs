@@ -310,7 +310,18 @@ pub fn resolve_container(
                 if t.kind == TrackKind::Subtitle {
                     continue;
                 }
+                // An HLS audio rendition names no codecs: the variant's list covers it.
+                let covered = t.kind == TrackKind::Audio
+                    && r.video.and_then(|v| v.codecs.as_deref()).is_some_and(|c| {
+                        c.split(',').any(|x| {
+                            let x = x.trim().to_ascii_lowercase();
+                            ["mp4a", "ac-3", "ec-3", "opus", "flac", "vorbis", "mp3"]
+                                .iter()
+                                .any(|p| x.starts_with(p))
+                        })
+                    });
                 match t.codecs.as_deref() {
+                    None if covered => {}
                     None => {
                         return Ok((
                             Output::Mkv,
@@ -655,6 +666,39 @@ mod tests {
                 .expect("ok")
                 .0,
             Output::Original
+        );
+    }
+
+    #[test]
+    fn hls_audio_renditions_take_their_codecs_from_the_variant() {
+        let mut p = presentation();
+        p.audio[0].codecs = None;
+        // "lo" lists mp4a.40.2 for its audio: the rendition fits MP4.
+        let lo = p.variants[0].video.id.clone();
+        let sel = Selection {
+            video: Some(lo),
+            audio: vec![p.audio[0].id.clone()],
+            subtitles: vec![],
+        };
+        let r = resolve(&p, &sel).expect("resolves");
+        assert_eq!(
+            resolve_container(ContainerChoice::Auto, &r, SubtitleMode::Embed)
+                .expect("ok")
+                .0,
+            Output::Mp4
+        );
+        // "mid" lists only its video codec: the audio's codec is unknown, so MKV.
+        let mid = p.variants[2].video.id.clone();
+        let sel = Selection {
+            video: Some(mid),
+            ..sel
+        };
+        let r = resolve(&p, &sel).expect("resolves");
+        assert_eq!(
+            resolve_container(ContainerChoice::Auto, &r, SubtitleMode::Embed)
+                .expect("ok")
+                .0,
+            Output::Mkv
         );
     }
 
