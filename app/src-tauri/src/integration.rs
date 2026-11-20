@@ -145,9 +145,8 @@ fn stable_host(app: &Path) -> std::io::Result<PathBuf> {
             "kstar-nmhost was not found inside the AppImage",
         )
     })?;
-    let dir = stable_host_dir().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::NotFound, "no data folder")
-    })?;
+    let dir = stable_host_dir()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no data folder"))?;
     std::fs::create_dir_all(&dir)?;
     let host = dir.join("kstar-nmhost");
     // Through a temporary name: the browser may be running the old copy.
