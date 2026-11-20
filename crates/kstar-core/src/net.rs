@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use crate::proxy::{self, ProxyRoute, ProxySettings};
+use crate::resolve::{self, Lookuper, PublicOnly};
 use crate::{Error, Result};
 
 /// A username and password for one server.
@@ -149,13 +150,35 @@ pub fn host_key(url: &Url) -> String {
 pub(crate) struct Net {
     /// Follows redirects itself (file downloads).
     client: RwLock<Client>,
-    /// Never follows redirects, so the caller can check every hop (media).
+    /// Never follows redirects, so the caller can check every hop, and refuses names that
+    /// resolve to private addresses (media).
     manual: RwLock<Client>,
+    /// Like `manual`, without the address check (a media download allowed to use private
+    /// addresses).
+    manual_any: RwLock<Client>,
+    lookup: Arc<dyn Lookuper>,
     route: RwLock<ProxyRoute>,
     hosts: Mutex<HashMap<String, Arc<HostAuth>>>,
 }
 
-fn build_client(route: &ProxyRoute, login: Option<(&str, &str)>, follow: bool) -> Result<Client> {
+/// How a client follows redirects and resolves names.
+#[derive(Clone, Copy)]
+enum Kind {
+    /// Follows redirects; the system resolver.
+    Follow,
+    /// Returns redirects; refuses private addresses.
+    Public,
+    /// Returns redirects; any address.
+    Any,
+}
+
+fn build_client(
+    route: &ProxyRoute,
+    login: Option<(&str, &str)>,
+    kind: Kind,
+    lookup: &Arc<dyn Lookuper>,
+) -> Result<Client> {
+    let follow = matches!(kind, Kind::Follow);
     let mut b = Client::builder()
         .redirect(if follow {
             reqwest::redirect::Policy::default()
@@ -166,6 +189,14 @@ fn build_client(route: &ProxyRoute, login: Option<(&str, &str)>, follow: bool) -
         .read_timeout(Duration::from_secs(60))
         .pool_idle_timeout(Duration::from_secs(30))
         .no_proxy();
+    match kind {
+        Kind::Follow => {}
+        Kind::Public => {
+            let exempt = resolve::proxy_hosts(&[route.http.as_deref(), route.https.as_deref()]);
+            b = b.dns_resolver(PublicOnly::new(lookup.clone(), exempt));
+        }
+        Kind::Any => b = b.dns_resolver(resolve::Any(lookup.clone())),
+    }
     let no_proxy = || reqwest::NoProxy::from_string(&route.no_proxy);
     let make = |url: &str, https: bool| {
         let p = if https {
@@ -190,11 +221,36 @@ fn build_client(route: &ProxyRoute, login: Option<(&str, &str)>, follow: bool) -
     b.build().map_err(|e| Error::Network(e.to_string()))
 }
 
+/// The three clients for one route.
+fn build_all(
+    route: &ProxyRoute,
+    login: Option<(&str, &str)>,
+    lookup: &Arc<dyn Lookuper>,
+) -> Result<(Client, Client, Client)> {
+    Ok((
+        build_client(route, login, Kind::Follow, lookup)?,
+        build_client(route, login, Kind::Public, lookup)?,
+        build_client(route, login, Kind::Any, lookup)?,
+    ))
+}
+
 impl Net {
     pub fn new(proxy: &ProxySettings, password: Option<&str>) -> Result<Net> {
+        Net::with_lookup(proxy, password, Arc::new(resolve::System))
+    }
+
+    /// A `Net` whose media clients look names up through `lookup`.
+    pub(crate) fn with_lookup(
+        proxy: &ProxySettings,
+        password: Option<&str>,
+        lookup: Arc<dyn Lookuper>,
+    ) -> Result<Net> {
+        let (client, manual, manual_any) = build_all(&ProxyRoute::default(), None, &lookup)?;
         let net = Net {
-            client: RwLock::new(build_client(&ProxyRoute::default(), None, true)?),
-            manual: RwLock::new(build_client(&ProxyRoute::default(), None, false)?),
+            client: RwLock::new(client),
+            manual: RwLock::new(manual),
+            manual_any: RwLock::new(manual_any),
+            lookup,
             route: RwLock::new(ProxyRoute::default()),
             hosts: Mutex::new(HashMap::new()),
         };
@@ -209,9 +265,8 @@ impl Net {
         let login = proxy
             .needs_password()
             .then(|| (proxy.username.trim(), password.unwrap_or("")));
-        let built = build_client(&route, login, true)
-            .and_then(|c| Ok((c, build_client(&route, login, false)?)));
-        let (client, manual) = match built {
+        let built = build_all(&route, login, &self.lookup);
+        let (client, manual, manual_any) = match built {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!("{e}");
@@ -220,9 +275,7 @@ impl Net {
                     note: Some(format!("{e}; connecting directly")),
                     ..Default::default()
                 };
-                match build_client(&route, None, true)
-                    .and_then(|c| Ok((c, build_client(&route, None, false)?)))
-                {
+                match build_all(&route, None, &self.lookup) {
                     Ok(c) => c,
                     Err(e) => {
                         tracing::error!("can't create the HTTP client: {e}");
@@ -234,6 +287,7 @@ impl Net {
         tracing::info!("proxy: {}", route.summary());
         *self.client.write().unwrap() = client;
         *self.manual.write().unwrap() = manual;
+        *self.manual_any.write().unwrap() = manual_any;
         *self.route.write().unwrap() = route;
     }
 
@@ -241,9 +295,14 @@ impl Net {
         self.client.read().unwrap().clone()
     }
 
-    /// A client that returns redirects instead of following them.
-    pub fn manual_client(&self) -> Client {
-        self.manual.read().unwrap().clone()
+    /// A client that returns redirects instead of following them. Unless `allow_private`,
+    /// it refuses names that resolve to this computer or the local network.
+    pub fn manual_client(&self, allow_private: bool) -> Client {
+        if allow_private {
+            self.manual_any.read().unwrap().clone()
+        } else {
+            self.manual.read().unwrap().clone()
+        }
     }
 
     pub fn route(&self) -> ProxyRoute {

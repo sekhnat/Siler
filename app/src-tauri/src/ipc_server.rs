@@ -132,9 +132,20 @@ fn likely_name(item: &BrowserItem) -> Option<String> {
         .or_else(|| kstar_core::filename::name_from_url(&item.url))
 }
 
+/// Where links waiting in the Add window came from (shown under its title).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Origin {
+    #[default]
+    Browser,
+    CommandLine,
+    Clipboard,
+}
+
 /// How downloads from the browser or the command line are added.
 #[derive(Debug, Default, Clone)]
 pub struct AddOptions {
+    pub origin: Origin,
     /// Add without the dialog.
     pub silent: bool,
     /// Save into this folder instead of the category folder.

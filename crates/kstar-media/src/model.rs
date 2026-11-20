@@ -185,6 +185,21 @@ pub struct Key {
     pub iv: Option<[u8; 16]>,
 }
 
+/// An initialisation segment, and the key it is encrypted with (HLS: the `EXT-X-KEY` in
+/// effect where its `EXT-X-MAP` appears). The key's IV is always set for an init.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Init {
+    pub object: Object,
+    pub key: Option<Key>,
+}
+
+impl Init {
+    /// An initialisation segment that isn't encrypted.
+    pub fn plain(object: Object) -> Init {
+        Init { object, key: None }
+    }
+}
+
 /// One media segment of a track.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Segment {
@@ -205,7 +220,7 @@ pub struct Segment {
 /// The ordered objects that make up a track.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SegmentPlan {
-    pub inits: Vec<Object>,
+    pub inits: Vec<Init>,
     pub segments: Vec<Segment>,
     /// The track is one file (DASH `SegmentBase`, or a plain URL): fetched whole, resumable.
     pub whole: bool,
@@ -341,15 +356,15 @@ pub(crate) fn language(tag: Option<&str>) -> Option<String> {
     (!t.is_empty() && !t.eq_ignore_ascii_case("und")).then(|| t.to_string())
 }
 
-/// Whether a subtitle track can be downloaded: WebVTT or TTML files. Subtitles carried
-/// inside MP4 segments (`wvtt`, `stpp`) can't be yet.
+/// Whether a subtitle track can be downloaded: WebVTT or TTML files, or carried inside MP4
+/// (`wvtt`, `stpp`). Subtitles inside WebM can't be yet.
 pub(crate) fn subtitle_supported(t: &Track) -> bool {
-    !matches!(t.container, SegmentContainer::Fmp4 | SegmentContainer::Webm)
+    t.container != SegmentContainer::Webm
 }
 
 /// The warning for subtitles that were left out.
 pub(crate) const SUBTITLES_IN_MP4: &str =
-    "subtitles carried inside MP4 segments aren't supported yet and were left out";
+    "subtitles carried inside WebM aren't supported yet and were left out";
 
 /// The URL without its query and fragment: the identity used for [`TrackId`]s and the
 /// segment fingerprint, which must not change when signed query strings rotate.

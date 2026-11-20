@@ -38,7 +38,11 @@
   });
 
   const nameOf = (i: BatchItem) => i.filename ?? nameFromUrl(i.url);
-  const typed = $derived(items.map((i) => ({ ...i, name: nameOf(i), category: categoryOf(nameOf(i), settings?.categories) })));
+  // A manifest is a stream: it becomes a video, whatever its own name says.
+  const isStream = (url: string) => /\.(m3u8|mpd)(\?|#|$)/i.test(url);
+  const typed = $derived(
+    items.map((i) => ({ ...i, name: nameOf(i), category: isStream(i.url) ? "video" : categoryOf(nameOf(i), settings?.categories) })),
+  );
   const types = $derived(CATEGORIES.map((c) => ({ ...c, n: typed.filter((i) => i.category === c.key).length })).filter((c) => c.n > 0));
   const shown = $derived.by(() => {
     const q = query.trim().toLowerCase();
@@ -59,7 +63,7 @@
     let failed = 0;
     for (const it of items) {
       try {
-        if (checked[it.key] && /\.(m3u8|mpd)(\?|#|$)/i.test(it.url)) {
+        if (checked[it.key] && isStream(it.url)) {
           // A manifest is a stream: its default tracks, as a media download.
           await api.addMedia({ url: it.url, startPaused, pendingId: it.pendingId, onConflict: conflict, queueId });
         } else if (checked[it.key]) {

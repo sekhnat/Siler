@@ -12,8 +12,8 @@ use url::Url;
 use crate::error::ParseError;
 use crate::limits::ParseLimits;
 use crate::model::{
-    ByteRange, Liveness, ManifestKind, Object, Presentation, Protection, SUBTITLES_IN_MP4, Segment,
-    SegmentContainer, SegmentPlan, Track, TrackId, TrackKind, Variant, language, resolve,
+    ByteRange, Init, Liveness, ManifestKind, Object, Presentation, Protection, SUBTITLES_IN_MP4,
+    Segment, SegmentContainer, SegmentPlan, Track, TrackId, TrackKind, Variant, language, resolve,
     subtitle_supported,
 };
 use crate::protection;
@@ -460,10 +460,10 @@ fn template_plan(
     let mut plan = SegmentPlan::default();
     if let Some(init) = t.attr("initialization") {
         let s = expand(init, rep_id, None, bandwidth, None)?;
-        plan.inits.push(Object {
+        plan.inits.push(Init::plain(Object {
             url: resolve(base, &s)?,
             range: None,
-        });
+        }));
     }
 
     // (number, time in timescale ticks, duration in ticks)
@@ -582,10 +582,10 @@ fn list_plan(
             Some(s) => resolve(base, s)?,
             None => base.clone(),
         };
-        plan.inits.push(Object {
+        plan.inits.push(Init::plain(Object {
             url,
             range: init.attr("range").map(parse_range).transpose()?,
-        });
+        }));
     }
     let urls: Vec<&Node> = l.children_named("SegmentURL").collect();
     if urls.len() > lim.max_segments_per_track {
@@ -1018,7 +1018,7 @@ mod tests {
         let p = parse(list.as_bytes(), &base(), &lim()).expect("parses");
         let v = &p.variants[0].video;
         assert_eq!(
-            v.plan.inits[0].range,
+            v.plan.inits[0].object.range,
             Some(ByteRange {
                 offset: 0,
                 length: 100
@@ -1070,6 +1070,7 @@ mod regressions {
         assert!((segs[0].duration - 4.0).abs() < 1e-9);
         assert!(
             p.variants[0].video.plan.inits[0]
+                .object
                 .url
                 .as_str()
                 .ends_with("/v/hd/init.mp4")
@@ -1111,11 +1112,10 @@ mod regressions {
             p.audio.is_empty(),
             "the representation with no segments is skipped"
         );
-        assert!(
-            p.subtitles.is_empty(),
-            "subtitles inside MP4 aren't offered"
-        );
-        assert_eq!(p.warnings.len(), 2, "{:?}", p.warnings);
+        assert_eq!(p.subtitles.len(), 1, "subtitles inside MP4 are offered");
+        assert_eq!(p.subtitles[0].container, SegmentContainer::Fmp4);
+        assert_eq!(p.subtitles[0].plan.inits.len(), 1);
+        assert_eq!(p.warnings.len(), 1, "{:?}", p.warnings);
     }
 
     #[test]

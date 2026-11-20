@@ -23,7 +23,7 @@ use tauri_plugin_notification::{Action, ActionType, NotificationExt};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::watch;
 
-use ipc_server::AddOptions;
+use ipc_server::{AddOptions, Origin};
 
 /// A download handed over by the browser that is waiting for the user to confirm it.
 pub struct Pending {
@@ -37,6 +37,7 @@ pub struct Pending {
     pub queue_id: Option<i64>,
     /// `--filename`: keep the given name.
     pub keep_name: bool,
+    pub origin: Origin,
 }
 
 #[derive(Serialize, Clone)]
@@ -54,6 +55,7 @@ pub struct PendingView {
     pub start_paused: bool,
     pub queue_id: Option<i64>,
     pub keep_name: bool,
+    pub origin: Origin,
     /// A paused or failed download this one looks like, which its link could continue.
     pub resumable: Option<kstar_core::DownloadInfo>,
 }
@@ -89,6 +91,7 @@ impl AppState {
                 start_paused: opts.later,
                 queue_id: opts.queue_id,
                 keep_name: opts.keep_name && item.filename.is_some(),
+                origin: opts.origin,
                 item,
             });
         }
@@ -549,6 +552,7 @@ fn add_from_args(app: &AppHandle, args: &Args) -> Result<(), String> {
             })
             .collect();
         let opts = AddOptions {
+            origin: Origin::CommandLine,
             silent: args.silent,
             dir: args.dir.clone(),
             later: args.queue,
@@ -571,13 +575,16 @@ fn add_from_args(app: &AppHandle, args: &Args) -> Result<(), String> {
 
 fn open_engine(app: &tauri::App) -> Result<Engine, String> {
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    // Known before the engine resumes anything, so a media download picked up at start can
+    // be rebuilt.
+    let ffmpeg = media::find_ffmpeg(app.handle());
     tauri::async_runtime::block_on(async {
         // The manual proxy's password is the only secret needed before anything runs.
         let proxy_password = match Engine::peek_settings(&data_dir) {
             Ok(s) if s.proxy.needs_password() => logins::proxy_password().await,
             _ => None,
         };
-        Engine::open_with(&data_dir, proxy_password)
+        Engine::open_with(&data_dir, proxy_password, ffmpeg)
     })
     .map_err(|e| {
         format!(
@@ -646,7 +653,7 @@ fn main() {
         .setup(move |app| {
             match open_engine(app) {
                 Ok(engine) => {
-                    let ffmpeg = engine.set_ffmpeg_path(media::find_ffmpeg(app.handle()));
+                    let ffmpeg = engine.ffmpeg_status();
                     if ffmpeg.ok {
                         tracing::info!(
                             "media: using {}",

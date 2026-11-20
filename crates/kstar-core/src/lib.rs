@@ -16,6 +16,7 @@ mod probe;
 pub mod proxy;
 mod queue;
 mod ratelimit;
+mod resolve;
 pub mod scheduler;
 mod segment;
 mod settings;

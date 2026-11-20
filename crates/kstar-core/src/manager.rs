@@ -169,7 +169,7 @@ impl Engine {
     /// Opens (or creates) the engine database in `data_dir` and starts any queued
     /// downloads. Must be called from within a Tokio runtime.
     pub fn open(data_dir: impl AsRef<Path>) -> Result<Engine> {
-        Self::open_with(data_dir, None)
+        Self::open_with(data_dir, None, None)
     }
 
     /// The saved settings, without opening the engine (e.g. to fetch the proxy password
@@ -186,7 +186,14 @@ impl Engine {
     }
 
     /// Like [`Engine::open`], with the password of the manual proxy.
-    pub fn open_with(data_dir: impl AsRef<Path>, proxy_password: Option<String>) -> Result<Engine> {
+    ///
+    /// `ffmpeg` is checked before any download is resumed: a media download picked up at start
+    /// must already know it (see [`Engine::set_ffmpeg_path`], which can change it later).
+    pub fn open_with(
+        data_dir: impl AsRef<Path>,
+        proxy_password: Option<String>,
+        ffmpeg: Option<PathBuf>,
+    ) -> Result<Engine> {
         use std::os::unix::fs::PermissionsExt;
         let dir = data_dir.as_ref();
         std::fs::create_dir_all(dir)?;
@@ -274,8 +281,10 @@ impl Engine {
             }
         });
 
-        inner.schedule();
-        Ok(Engine { inner })
+        let engine = Engine { inner };
+        engine.set_ffmpeg_path(ffmpeg);
+        engine.inner.schedule();
+        Ok(engine)
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {

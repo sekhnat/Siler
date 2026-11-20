@@ -315,6 +315,8 @@ export interface Pending {
   queue_id: number | null;
   /** The name was given on the command line: don't replace it with the server's. */
   keep_name: boolean;
+  /** Where the link came from. */
+  origin: "browser" | "command_line" | "clipboard";
   resumable: Download | null;
 }
 

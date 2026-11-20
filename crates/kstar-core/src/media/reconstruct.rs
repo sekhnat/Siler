@@ -1,8 +1,14 @@
-//! Rebuilding the output from the fetched pieces (media-design §13): each track's
-//! initialisation segment and segments are joined into one file, subtitles become one
-//! WebVTT file, and FFmpeg muxes the tracks with stream copy (no re-encoding).
+//! Rebuilding the output from the fetched pieces (media-design §13). FFmpeg muxes the tracks
+//! with stream copy (no re-encoding). Each track's initialisation segment and segments are
+//! streamed into FFmpeg through a named pipe, so the media isn't copied once more on disk;
+//! when that isn't possible, or FFmpeg can't read a track from a pipe, the pieces are joined
+//! into one file per track instead. Subtitles become one WebVTT file.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
+
+use tokio_util::sync::CancellationToken;
 
 use kstar_media::classify::sniff_segment;
 use kstar_media::select::Output;
@@ -36,23 +42,9 @@ pub(crate) fn joined_path(work: &Path, track: &Track) -> PathBuf {
     track_dir(work, track).join(format!("track.{}", track.container.extension()))
 }
 
-/// Joins a track's pieces into one file: its initialisation segment (when the container
-/// needs one), then its segments in order. The pieces are deleted once the joined file is
-/// complete, so the track is on disk once, not twice; a later attempt reuses the joined
-/// file. A whole-file track is already one file.
-pub(crate) fn join_track(work: &Path, track: &Track) -> Result<PathBuf> {
-    if track.plan.whole {
-        let p = whole_path(work, track);
-        if !p.exists() {
-            return Err(Error::Media(MediaError::SegmentInvalid));
-        }
-        return Ok(p);
-    }
-    let out = joined_path(work, track);
-    if out.exists() {
-        return Ok(out);
-    }
-    let part = PathBuf::from(format!("{}.part", out.display()));
+/// The files that make up a track, in order: its initialisation segment (when the container
+/// needs one), then its segments. All of them must be there.
+pub(crate) fn pieces_of(work: &Path, track: &Track) -> Result<Vec<PathBuf>> {
     let inits: Vec<usize> = {
         let mut v: Vec<usize> = track.plan.segments.iter().filter_map(|s| s.init).collect();
         v.sort_unstable();
@@ -64,20 +56,46 @@ pub(crate) fn join_track(work: &Path, track: &Track) -> Result<PathBuf> {
             "the stream starts over with a new header partway through".into(),
         )));
     }
+    let mut files = Vec::with_capacity(track.plan.segments.len() + 1);
+    if let Some(&first) = inits.first() {
+        files.push(init_path(work, track, first));
+    }
+    files.extend((0..track.plan.segments.len()).map(|i| piece_path(work, track, i)));
+    if files.iter().any(|f| !f.is_file()) {
+        return Err(Error::Media(MediaError::SegmentInvalid));
+    }
+    Ok(files)
+}
+
+/// A track that is already one file: a whole-file track, or one joined by an earlier attempt.
+fn one_file(work: &Path, track: &Track) -> Result<Option<PathBuf>> {
+    if track.plan.whole {
+        let p = whole_path(work, track);
+        if !p.exists() {
+            return Err(Error::Media(MediaError::SegmentInvalid));
+        }
+        return Ok(Some(p));
+    }
+    let joined = joined_path(work, track);
+    Ok(joined.exists().then_some(joined))
+}
+
+/// Joins a track's pieces into one file. The pieces are deleted once the joined file is
+/// complete, so the track is on disk once, not twice; a later attempt reuses the joined
+/// file. A whole-file track is already one file.
+pub(crate) fn join_track(work: &Path, track: &Track) -> Result<PathBuf> {
+    if let Some(p) = one_file(work, track)? {
+        return Ok(p);
+    }
+    let out = joined_path(work, track);
+    let part = PathBuf::from(format!("{}.part", out.display()));
+    let files = pieces_of(work, track)?;
     {
         use std::io::Write;
         let mut file = std::io::BufWriter::new(std::fs::File::create(&part)?);
-        if let Some(&first) = inits.first() {
-            std::io::copy(
-                &mut std::fs::File::open(init_path(work, track, first))
-                    .map_err(|_| Error::Media(MediaError::SegmentInvalid))?,
-                &mut file,
-            )?;
-        }
-        for (i, _) in track.plan.segments.iter().enumerate() {
-            let p = piece_path(work, track, i);
+        for p in &files {
             let mut src =
-                std::fs::File::open(&p).map_err(|_| Error::Media(MediaError::SegmentInvalid))?;
+                std::fs::File::open(p).map_err(|_| Error::Media(MediaError::SegmentInvalid))?;
             std::io::copy(&mut src, &mut file)?;
         }
         file.flush()?;
@@ -93,10 +111,111 @@ pub(crate) fn join_track(work: &Path, track: &Track) -> Result<PathBuf> {
     Ok(out)
 }
 
-/// Joins the cues of a subtitle track into one WebVTT file (converting TTML). Returns the
-/// file's path.
-pub(crate) fn join_subtitles(work: &Path, track: &Track, lim: &ParseLimits) -> Result<PathBuf> {
+/// Where the rebuilt output's zero is on a track's media timeline, in seconds: FFmpeg moves
+/// each input so it starts at zero, and subtitles carried in MP4 (timed on the media
+/// timeline) must move with it. FFmpeg's own prober says where the track starts (after edit
+/// lists and composition offsets), from its header and first segment. Without `ffprobe`, a
+/// fragmented MP4 track's first decode time is used. `None` when neither works.
+pub(crate) async fn start_time(work: &Path, track: &Track, ffprobe: Option<&Path>) -> Option<f64> {
+    use std::io::Read;
+    // The header and the first segment are in the first few megabytes.
+    let head = |p: &Path| -> Option<Vec<u8>> {
+        let mut buf = Vec::new();
+        std::fs::File::open(p)
+            .ok()?
+            .take(4 << 20)
+            .read_to_end(&mut buf)
+            .ok()?;
+        Some(buf)
+    };
+    let bytes = match one_file(work, track).ok().flatten() {
+        Some(p) => head(&p)?,
+        None => {
+            let files = pieces_of(work, track).ok()?;
+            let take = if track.plan.inits.is_empty() { 1 } else { 2 };
+            let mut b = Vec::new();
+            for f in files.iter().take(take) {
+                b.extend(head(f)?);
+            }
+            b
+        }
+    };
+    if let Some(probe) = ffprobe {
+        let sample = track_dir(work, track).join(format!("start.{}", track.container.extension()));
+        if std::fs::write(&sample, &bytes).is_ok() {
+            let out = tokio::process::Command::new(probe)
+                .args(["-v", "error", "-protocol_whitelist", "file"])
+                .args(["-show_entries", "format=start_time", "-of", "csv=p=0"])
+                .arg(format!("file:{}", sample.display()))
+                .stdin(std::process::Stdio::null())
+                .kill_on_drop(true)
+                .output()
+                .await;
+            let _ = std::fs::remove_file(&sample);
+            if let Some(t) = out
+                .ok()
+                .filter(|o| o.status.success())
+                .and_then(|o| {
+                    String::from_utf8_lossy(&o.stdout)
+                        .trim()
+                        .parse::<f64>()
+                        .ok()
+                })
+                .filter(|t| t.is_finite())
+            {
+                return Some(t);
+            }
+        }
+    }
+    if track.container != SegmentContainer::Fmp4 {
+        return None;
+    }
+    let ts = kstar_media::mp4::timescale(&bytes)?;
+    let t = kstar_media::mp4::first_decode_time(&bytes)?;
+    Some(t as f64 / ts as f64)
+}
+
+/// Joins the cues of a subtitle track into one WebVTT file (converting TTML, and reading
+/// subtitles carried in MP4). Returns the file's path.
+///
+/// `zero` is where the video starts on the media timeline (subtitles in MP4 are timed on
+/// it, and segmented WebVTT maps onto it with `X-TIMESTAMP-MAP`); `until` is the end of the
+/// video and audio: cues are cut
+/// there, so the subtitles never make the file longer than its picture and sound.
+pub(crate) fn join_subtitles(
+    work: &Path,
+    track: &Track,
+    lim: &ParseLimits,
+    zero: Option<f64>,
+    until: Option<f64>,
+) -> Result<PathBuf> {
     let out = track_dir(work, track).join("subs.vtt");
+    if track.container == SegmentContainer::Fmp4 {
+        let read =
+            |p: &Path| std::fs::read(p).map_err(|_| Error::Media(MediaError::SegmentInvalid));
+        let (init, pieces) = if track.plan.whole {
+            (None, vec![read(&whole_path(work, track))?])
+        } else {
+            let files = pieces_of(work, track)?;
+            let mut bodies = files.iter().map(|f| read(f)).collect::<Result<Vec<_>>>()?;
+            let init =
+                (!track.plan.inits.is_empty() && !bodies.is_empty()).then(|| bodies.remove(0));
+            (init, bodies)
+        };
+        let refs: Vec<&[u8]> = pieces.iter().map(Vec::as_slice).collect();
+        let vtt = subtitle::mp4_to_webvtt(init.as_deref(), &refs, zero, lim)
+            .map_err(super::probe::map_parse)?;
+        let merged = subtitle::merge_webvtt(
+            &[subtitle::VttPart {
+                body: vtt.as_bytes(),
+            }],
+            None,
+            until,
+        )
+        .map_err(super::probe::map_parse)?;
+        std::fs::write(&out, merged)?;
+        return Ok(out);
+    }
     let mut bodies: Vec<Vec<u8>> = Vec::new();
     if track.plan.whole {
         bodies.push(std::fs::read(whole_path(work, track))?);
@@ -128,9 +247,205 @@ pub(crate) fn join_subtitles(work: &Path, track: &Track, lim: &ParseLimits) -> R
         .iter()
         .map(|body| subtitle::VttPart { body })
         .collect();
-    let merged = subtitle::merge_webvtt(&parts).map_err(super::probe::map_parse)?;
+    let merged = subtitle::merge_webvtt(&parts, zero, until).map_err(super::probe::map_parse)?;
     std::fs::write(&out, merged)?;
     Ok(out)
+}
+
+/// A track to mux, before it is decided whether it is streamed or joined.
+pub(crate) struct Source<'a> {
+    pub track: &'a Track,
+    pub kind: TrackKind,
+    pub lang: Option<String>,
+    pub adts: bool,
+}
+
+/// Where the named pipes for one rebuild go: under `$XDG_RUNTIME_DIR` (memory, private to the
+/// user), else in the Work Directory.
+fn pipe_dir(work: &Path) -> PathBuf {
+    use std::hash::{Hash, Hasher};
+    match std::env::var_os("XDG_RUNTIME_DIR").filter(|d| !d.is_empty()) {
+        Some(run) => {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            work.hash(&mut h);
+            PathBuf::from(run)
+                .join("kstar")
+                .join("media")
+                .join(format!("{:016x}", h.finish()))
+        }
+        None => work.join("out").join("pipes"),
+    }
+}
+
+/// Makes a named pipe only this user can open.
+fn make_pipe(path: &Path) -> std::io::Result<()> {
+    use rustix::fs::{CWD, FileType, Mode, mknodat};
+    let _ = std::fs::remove_file(path);
+    mknodat(CWD, path, FileType::Fifo, Mode::from_raw_mode(0o600), 0)?;
+    Ok(())
+}
+
+/// Writes `files` in order into the pipe at `pipe`, once FFmpeg has opened it for reading.
+/// Opening first would be wrong both ways: a writer that finishes before FFmpeg opens the
+/// pipe takes the unread data with it, and FFmpeg then waits for a writer forever. The
+/// caller aborts this when FFmpeg exits.
+async fn feed(pipe: PathBuf, files: Vec<PathBuf>) -> std::io::Result<()> {
+    let mut tx = loop {
+        match tokio::net::unix::pipe::OpenOptions::new().open_sender(&pipe) {
+            Ok(tx) => break tx,
+            // No reader yet.
+            Err(e) if e.raw_os_error() == Some(rustix::io::Errno::NXIO.raw_os_error()) => {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Err(e) => return Err(e),
+        }
+    };
+    for f in files {
+        let mut src = tokio::fs::File::open(&f).await?;
+        tokio::io::copy(&mut src, &mut tx).await?;
+    }
+    Ok(())
+}
+
+type Progress = Arc<dyn Fn(u32) + Send + Sync>;
+
+/// Muxes `tracks` (and the subtitle files in `subs`) into `out`. Tracks are streamed through
+/// named pipes when `stream` is set; if that can't be set up, or FFmpeg fails reading from
+/// the pipes, the tracks are joined into files and FFmpeg runs again. Returns `Ok(false)`
+/// when stopped through `cancel`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn mux(
+    ff: &Path,
+    work: &Path,
+    tracks: &[Source<'_>],
+    subs: Vec<MuxInput>,
+    output: Output,
+    out: &Path,
+    cancel: &CancellationToken,
+    total_us: u64,
+    progress: Progress,
+    stream: bool,
+) -> Result<bool> {
+    if stream {
+        let dir = pipe_dir(work);
+        match streamed(
+            ff, work, &dir, tracks, &subs, output, out, cancel, total_us, &progress,
+        )
+        .await
+        {
+            Ok(Some(done)) => {
+                let _ = std::fs::remove_dir_all(&dir);
+                return Ok(done);
+            }
+            Ok(None) => {}
+            Err(e) if cancel.is_cancelled() => {
+                let _ = std::fs::remove_dir_all(&dir);
+                return Err(e);
+            }
+            Err(e) => {
+                tracing::warn!("rebuilding through pipes failed ({e}); joining the tracks first");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(out);
+    }
+    let mut inputs = Vec::with_capacity(tracks.len() + subs.len());
+    for s in tracks {
+        inputs.push(MuxInput {
+            path: join_track(work, s.track)?,
+            kind: s.kind,
+            lang: s.lang.clone(),
+            adts: s.adts,
+        });
+    }
+    inputs.extend(subs);
+    let args = mux_args(&inputs, output, out);
+    super::ffmpeg::run(ff, &args, cancel, total_us, move |p| progress(p)).await
+}
+
+/// The streamed attempt. `Ok(None)` when no track needs streaming (each is one file already).
+#[allow(clippy::too_many_arguments)]
+async fn streamed(
+    ff: &Path,
+    work: &Path,
+    dir: &Path,
+    tracks: &[Source<'_>],
+    subs: &[MuxInput],
+    output: Output,
+    out: &Path,
+    cancel: &CancellationToken,
+    total_us: u64,
+    progress: &Progress,
+) -> Result<Option<bool>> {
+    let mut inputs = Vec::with_capacity(tracks.len() + subs.len());
+    let mut feeds = Vec::new();
+    for (i, s) in tracks.iter().enumerate() {
+        let path = match one_file(work, s.track)? {
+            Some(p) => p,
+            None => {
+                let files = pieces_of(work, s.track)?;
+                if feeds.is_empty() {
+                    // Pipes left by an attempt that was killed (same download, same folder).
+                    let _ = std::fs::remove_dir_all(dir);
+                    std::fs::create_dir_all(dir)?;
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+                }
+                let pipe = dir.join(format!("in{i}.{}", s.track.container.extension()));
+                make_pipe(&pipe)?;
+                feeds.push((pipe.clone(), files));
+                pipe
+            }
+        };
+        inputs.push(MuxInput {
+            path,
+            kind: s.kind,
+            lang: s.lang.clone(),
+            adts: s.adts,
+        });
+    }
+    if feeds.is_empty() {
+        return Ok(None);
+    }
+    inputs.extend(subs.iter().map(|m| MuxInput {
+        path: m.path.clone(),
+        kind: m.kind,
+        lang: m.lang.clone(),
+        adts: m.adts,
+    }));
+    // From a pipe, FFmpeg can't seek back: a track that needs it (an MP4 with its index at
+    // the end) fails to demux, and FFmpeg would still exit cleanly with an empty or partial
+    // output. `-xerror` makes that an error, so the file attempt takes over.
+    let mut args = mux_args(&inputs, output, out);
+    args.insert(1, "-xerror".into());
+    let mut writers: Vec<_> = feeds
+        .into_iter()
+        .map(|(pipe, files)| tokio::spawn(feed(pipe, files)))
+        .collect();
+    let p = progress.clone();
+    let res = super::ffmpeg::run(ff, &args, cancel, total_us, move |x| p(x)).await;
+    // FFmpeg finished reading every pipe, so each writer is done: a writer that failed means
+    // FFmpeg saw a track cut short, and the output can't be trusted.
+    let mut fed = true;
+    for w in &mut writers {
+        if matches!(res, Ok(true)) {
+            match tokio::time::timeout(Duration::from_secs(10), &mut *w).await {
+                Ok(Ok(Ok(()))) => {}
+                Ok(Ok(Err(e))) => {
+                    tracing::warn!("writing a track into FFmpeg failed: {e}");
+                    fed = false;
+                }
+                _ => fed = false,
+            }
+        }
+        w.abort();
+    }
+    match res {
+        Ok(true) if !fed => Err(Error::Media(MediaError::FfmpegFailed(
+            "a track couldn't be passed to FFmpeg".into(),
+        ))),
+        r => r.map(Some),
+    }
 }
 
 /// One input to the mux.
@@ -361,10 +676,10 @@ mod tests {
             is_default: false,
             protection: Protection::Clear,
             plan: SegmentPlan {
-                inits: vec![Object {
+                inits: vec![kstar_media::model::Init::plain(Object {
                     url: url::Url::parse("https://x/i").expect("URL"),
                     range: None,
-                }],
+                })],
                 segments: (0..3)
                     .map(|i| Segment {
                         seq: i,
@@ -399,5 +714,323 @@ mod tests {
             Err(Error::Media(MediaError::SegmentInvalid))
         ));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---------------------------------------------------------- rebuilds with FFmpeg
+
+    fn ffmpeg() -> Option<PathBuf> {
+        let found = std::env::var_os("KSTAR_FFMPEG")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("PATH").and_then(|p| {
+                    std::env::split_paths(&p)
+                        .map(|d| d.join("ffmpeg"))
+                        .find(|f| f.is_file())
+                })
+            });
+        if found.is_none() && std::env::var_os("KSTAR_REQUIRE_FFMPEG").is_some() {
+            panic!("KSTAR_REQUIRE_FFMPEG is set but there is no FFmpeg");
+        }
+        found
+    }
+
+    fn fixture(rel: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/media")
+            .join(rel)
+    }
+
+    /// A track of `n` segments (with an init when `init`), its pieces copied from `files`.
+    fn staged(
+        work: &Path,
+        id: &str,
+        container: SegmentContainer,
+        files: &[PathBuf],
+        init: bool,
+    ) -> Track {
+        use kstar_media::{Object, Protection, Segment, SegmentPlan, TrackId};
+        let obj = || Object {
+            url: url::Url::parse("https://x/s").expect("URL"),
+            range: None,
+        };
+        let n = files.len() - usize::from(init);
+        let track = Track {
+            id: TrackId::of(&[id]),
+            kind: TrackKind::Video,
+            lang: None,
+            name: None,
+            codecs: None,
+            container,
+            bandwidth: None,
+            resolution: None,
+            channels: None,
+            is_default: false,
+            protection: Protection::Clear,
+            plan: SegmentPlan {
+                inits: if init {
+                    vec![kstar_media::model::Init::plain(obj())]
+                } else {
+                    vec![]
+                },
+                segments: (0..n)
+                    .map(|i| Segment {
+                        seq: i as u64,
+                        object: obj(),
+                        init: init.then_some(0),
+                        key: None,
+                        discontinuity: 0,
+                        start: 2.0 * i as f64,
+                        duration: 2.0,
+                    })
+                    .collect(),
+                whole: false,
+            },
+        };
+        std::fs::create_dir_all(track_dir(work, &track)).expect("dirs");
+        let mut it = files.iter();
+        if init {
+            std::fs::copy(it.next().expect("init"), init_path(work, &track, 0)).expect("copy");
+        }
+        for (i, f) in it.enumerate() {
+            std::fs::copy(f, piece_path(work, &track, i)).expect("copy");
+        }
+        track
+    }
+
+    fn fmp4_files() -> Vec<PathBuf> {
+        let mut v = vec![fixture("fmp4/init.mp4")];
+        v.extend((0..3).map(|i| fixture(&format!("fmp4/seg{i}.m4s"))));
+        v
+    }
+
+    fn ts_files() -> Vec<PathBuf> {
+        (0..3)
+            .map(|i| fixture(&format!("muxed/seg{i}.ts")))
+            .collect()
+    }
+
+    fn no_progress() -> Progress {
+        Arc::new(|_| {})
+    }
+
+    /// What FFmpeg's own prober says the output holds: stream kinds and the duration.
+    fn probe_out(ff: &Path, file: &Path) -> (Vec<String>, f64) {
+        let probe = ff.with_file_name("ffprobe");
+        let out = std::process::Command::new(probe)
+            .args([
+                "-v",
+                "error",
+                "-show_entries",
+                "stream=codec_type:format=duration",
+                "-of",
+                "csv=p=0",
+            ])
+            .arg(file)
+            .output()
+            .expect("ffprobe runs");
+        let text = String::from_utf8_lossy(&out.stdout).to_string();
+        let mut kinds = Vec::new();
+        let mut dur = 0.0;
+        for l in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            match l.parse::<f64>() {
+                Ok(d) => dur = d,
+                Err(_) => kinds.push(l.trim_end_matches(',').to_string()),
+            }
+        }
+        (kinds, dur)
+    }
+
+    fn sources<'a>(v: &'a Track, a: &'a Track) -> Vec<Source<'a>> {
+        vec![
+            Source {
+                track: v,
+                kind: TrackKind::Video,
+                lang: None,
+                adts: false,
+            },
+            Source {
+                track: a,
+                kind: TrackKind::Audio,
+                lang: Some("en".into()),
+                adts: true,
+            },
+        ]
+    }
+
+    #[tokio::test]
+    async fn tracks_stream_through_pipes_without_a_joined_copy() {
+        let Some(ff) = ffmpeg() else { return };
+        let work = tempfile::tempdir().expect("tmp");
+        let v = staged(
+            work.path(),
+            "v",
+            SegmentContainer::Fmp4,
+            &fmp4_files(),
+            true,
+        );
+        let a = staged(work.path(), "a", SegmentContainer::Ts, &ts_files(), false);
+        let out = work.path().join("out.mp4");
+        let done = mux(
+            &ff,
+            work.path(),
+            &sources(&v, &a),
+            vec![],
+            Output::Mp4,
+            &out,
+            &CancellationToken::new(),
+            6_000_000,
+            no_progress(),
+            true,
+        )
+        .await
+        .expect("muxes");
+        assert!(done);
+        let (kinds, dur) = probe_out(&ff, &out);
+        assert_eq!(kinds, ["video", "audio"]);
+        assert!((dur - 6.0).abs() < 0.6, "{dur}");
+        // Streamed: no joined file was written, and the pieces are still there.
+        assert!(!joined_path(work.path(), &v).exists());
+        assert!(!joined_path(work.path(), &a).exists());
+        assert!(piece_path(work.path(), &v, 2).exists());
+        assert!(!pipe_dir(work.path()).exists(), "the pipes are removed");
+    }
+
+    #[tokio::test]
+    async fn without_streaming_the_tracks_are_joined_first() {
+        let Some(ff) = ffmpeg() else { return };
+        let work = tempfile::tempdir().expect("tmp");
+        let v = staged(
+            work.path(),
+            "v",
+            SegmentContainer::Fmp4,
+            &fmp4_files(),
+            true,
+        );
+        let a = staged(work.path(), "a", SegmentContainer::Ts, &ts_files(), false);
+        let out = work.path().join("out.mkv");
+        let done = mux(
+            &ff,
+            work.path(),
+            &sources(&v, &a),
+            vec![],
+            Output::Mkv,
+            &out,
+            &CancellationToken::new(),
+            6_000_000,
+            no_progress(),
+            false,
+        )
+        .await
+        .expect("muxes");
+        assert!(done);
+        assert_eq!(probe_out(&ff, &out).0, ["video", "audio"]);
+        assert!(joined_path(work.path(), &v).exists());
+        assert!(!piece_path(work.path(), &v, 0).exists());
+    }
+
+    /// A regular MP4 with its index at the end can't be read from a pipe: the rebuild joins
+    /// the track into a file and runs FFmpeg again.
+    #[tokio::test]
+    async fn a_track_ffmpeg_cant_read_from_a_pipe_is_joined_instead() {
+        let Some(ff) = ffmpeg() else { return };
+        let work = tempfile::tempdir().expect("tmp");
+        let plain = work.path().join("plain.mp4");
+        // Big enough that FFmpeg can't keep all of it in its read buffer.
+        let st = std::process::Command::new(&ff)
+            .args(["-v", "error", "-y", "-stream_loop", "40", "-i"])
+            .arg(fixture("muxed/seg0.ts"))
+            .args(["-c", "copy", "-bsf:a", "aac_adtstoasc", "-f", "mp4"])
+            .arg(&plain)
+            .status()
+            .expect("ffmpeg runs");
+        assert!(st.success());
+        let t = staged(
+            work.path(),
+            "m",
+            SegmentContainer::Fmp4,
+            std::slice::from_ref(&plain),
+            false,
+        );
+        let src = [Source {
+            track: &t,
+            kind: TrackKind::Video,
+            lang: None,
+            adts: false,
+        }];
+        let out = work.path().join("out.mkv");
+        let done = mux(
+            &ff,
+            work.path(),
+            &src,
+            vec![],
+            Output::Mkv,
+            &out,
+            &CancellationToken::new(),
+            2_000_000,
+            no_progress(),
+            true,
+        )
+        .await
+        .expect("muxes");
+        assert!(done);
+        let (kinds, dur) = probe_out(&ff, &out);
+        assert_eq!(kinds, ["video", "audio"]);
+        // The whole file, not the empty output FFmpeg leaves when the pipe can't be read.
+        assert!(dur > 70.0, "{dur}");
+        assert!(
+            joined_path(work.path(), &t).exists(),
+            "fell back to a joined file"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rebuild_stopped_partway_keeps_the_pieces_for_the_next_attempt() {
+        let Some(ff) = ffmpeg() else { return };
+        let work = tempfile::tempdir().expect("tmp");
+        let v = staged(
+            work.path(),
+            "v",
+            SegmentContainer::Fmp4,
+            &fmp4_files(),
+            true,
+        );
+        let a = staged(work.path(), "a", SegmentContainer::Ts, &ts_files(), false);
+        let out = work.path().join("out.mkv");
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let done = mux(
+            &ff,
+            work.path(),
+            &sources(&v, &a),
+            vec![],
+            Output::Mkv,
+            &out,
+            &cancel,
+            6_000_000,
+            no_progress(),
+            true,
+        )
+        .await
+        .expect("stops");
+        assert!(!done);
+        assert!(piece_path(work.path(), &v, 0).exists());
+        assert!(!joined_path(work.path(), &v).exists());
+        assert!(!pipe_dir(work.path()).exists());
+        let done = mux(
+            &ff,
+            work.path(),
+            &sources(&v, &a),
+            vec![],
+            Output::Mkv,
+            &out,
+            &CancellationToken::new(),
+            6_000_000,
+            no_progress(),
+            true,
+        )
+        .await
+        .expect("muxes");
+        assert!(done);
+        assert_eq!(probe_out(&ff, &out).0, ["video", "audio"]);
     }
 }

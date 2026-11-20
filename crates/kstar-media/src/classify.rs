@@ -123,6 +123,19 @@ pub fn sniff_segment(bytes: &[u8]) -> SegmentContainer {
     SegmentContainer::Unknown
 }
 
+/// Whether bytes start like an initialisation segment: an ISO BMFF box that begins one
+/// (`ftyp`, `moov`, …), an EBML header, or MPEG-TS packets. Used to check that an encrypted
+/// init was decrypted with the right key and IV.
+pub fn looks_like_init(bytes: &[u8]) -> bool {
+    is_ts(bytes)
+        || bytes.starts_with(&[0x1a, 0x45, 0xdf, 0xa3])
+        || (bytes.len() >= 8
+            && matches!(
+                &bytes[4..8],
+                b"ftyp" | b"styp" | b"moov" | b"free" | b"skip" | b"sidx"
+            ))
+}
+
 /// Whether a body looks like an HTML page (an expired link or a login screen).
 pub fn looks_like_html(bytes: &[u8]) -> bool {
     let head = &bytes[..bytes.len().min(512)];
@@ -306,5 +319,16 @@ mod tests {
         assert_eq!(sniff_segment(b"<html>"), SegmentContainer::Unknown);
         assert!(looks_like_html(b"  <!DOCTYPE html>"));
         assert!(!looks_like_html(&ts_bytes()));
+    }
+
+    #[test]
+    fn initialisation_segments_are_recognised() {
+        let mut ftyp = vec![0, 0, 0, 16];
+        ftyp.extend_from_slice(b"ftypiso6\0\0\0\0");
+        assert!(looks_like_init(&ftyp));
+        assert!(looks_like_init(b"\0\0\0\x08moov"));
+        assert!(looks_like_init(&[0x1a, 0x45, 0xdf, 0xa3, 0x9f]));
+        assert!(!looks_like_init(b"\x8f\x13\xa0\x77\x01\x02\x03\x04\x05"));
+        assert!(!looks_like_init(b""));
     }
 }

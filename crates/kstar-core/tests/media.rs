@@ -32,6 +32,8 @@ enum Fault {
     Html,
     /// Answer 403 (an expired signed URL).
     Forbidden,
+    /// Answer 200 with these bytes (a wrong key).
+    Bytes(&'static [u8]),
 }
 
 #[derive(Default)]
@@ -99,6 +101,7 @@ async fn serve(State(shared): State<Arc<Shared>>, AxPath(path): AxPath<String>) 
                         .status(StatusCode::FORBIDDEN)
                         .body(Body::empty())
                         .unwrap_or_default(),
+                    Fault::Bytes(b) => Response::new(Body::from(b)),
                 };
             }
         }
@@ -459,7 +462,94 @@ async fn aes_128_segments_decrypt_to_the_plain_bytes() {
         got == want,
         "decrypted output differs from the plain segments"
     );
-    assert!(_s.hits("/aes/key.bin") >= 1, "the key was fetched");
+    assert_eq!(_s.hits("/aes/key.bin"), 1, "the key is fetched once");
+    e.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_encrypted_init_segment_is_decrypted_with_the_segments() {
+    let (addr, s) = spawn_server().await;
+    let t = dir();
+    let e = engine_plain(t.path()).await;
+    // No IV on the key line: the init takes the next segment's sequence number. The original
+    // container is the joined, decrypted init and fragments, byte for byte.
+    let id = e
+        .add_media(NewMediaDownload {
+            url: url(addr, "aes-fmp4/seq/index.m3u8"),
+            dir: Some(t.path().join("out")),
+            container: Some(ContainerChoice::Original),
+            filename: Some("seq".into()),
+            ..Default::default()
+        })
+        .await
+        .expect("adds");
+    let d = wait_done(&e, id).await;
+    assert_eq!(d.status, Status::Completed, "{:?}", d.error);
+    let mut want = std::fs::read(fixtures().join("fmp4/init.mp4")).expect("fixture");
+    for i in 0..3 {
+        want.extend(std::fs::read(fixtures().join(format!("fmp4/seg{i}.m4s"))).expect("fixture"));
+    }
+    assert!(
+        std::fs::read(output_of(&d)).expect("output") == want,
+        "decrypted output differs from the plain init and fragments"
+    );
+    assert_eq!(s.hits("/aes/key.bin"), 1, "the key is fetched once");
+    e.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_encrypted_fmp4_stream_with_a_stated_iv_becomes_an_mp4() {
+    let ff = need_ffmpeg!();
+    let (addr, _s) = spawn_server().await;
+    let t = dir();
+    let e = engine(t.path(), &ff).await;
+    let id = e
+        .add_media(NewMediaDownload {
+            url: url(addr, "aes-fmp4/iv/index.m3u8"),
+            dir: Some(t.path().join("out")),
+            container: Some(ContainerChoice::Mp4),
+            filename: Some("iv".into()),
+            ..Default::default()
+        })
+        .await
+        .expect("adds");
+    let d = wait_done(&e, id).await;
+    assert_eq!(d.status, Status::Completed, "{:?}", d.error);
+    let file = output_of(&d);
+    let st = streams(&ff, &file);
+    assert!(st.iter().any(|x| x.0 == "video" && x.1 == "h264"), "{st:?}");
+    assert!(st.iter().any(|x| x.0 == "audio" && x.1 == "aac"), "{st:?}");
+    let len = duration_of(&ff, &file);
+    assert!((len - 6.0).abs() < 0.6, "duration {len}");
+    e.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_wrong_key_fails_with_a_decryption_error() {
+    let (addr, s) = spawn_server().await;
+    s.faults.lock().unwrap().insert(
+        "/aes/key.bin".into(),
+        (usize::MAX, Fault::Bytes(b"0123456789abcdef")),
+    );
+    let t = dir();
+    let e = engine_plain(t.path()).await;
+    let id = e
+        .add_media(NewMediaDownload {
+            url: url(addr, "aes-fmp4/iv/index.m3u8"),
+            dir: Some(t.path().join("out")),
+            container: Some(ContainerChoice::Original),
+            filename: Some("wrong".into()),
+            ..Default::default()
+        })
+        .await
+        .expect("adds");
+    let d = wait_done(&e, id).await;
+    assert_eq!(d.status, Status::Failed);
+    assert!(
+        d.error.as_deref().is_some_and(|m| m.contains("decrypted")),
+        "{:?}",
+        d.error
+    );
     e.shutdown().await;
 }
 
@@ -675,6 +765,51 @@ async fn pausing_keeps_finished_segments_and_resume_does_not_refetch_them() {
     e.shutdown().await;
 }
 
+/// A media download interrupted by a quit resumes when K-Star starts again, with FFmpeg
+/// known before anything is resumed (it used to be set just after, and a resumed rebuild
+/// failed with "FFmpeg is needed").
+#[tokio::test]
+async fn a_download_interrupted_by_a_quit_finishes_after_a_restart() {
+    let ff = need_ffmpeg!();
+    let (addr, s) = spawn_server().await;
+    *s.delay.lock().unwrap() = Some(Duration::from_millis(1500));
+    let t = dir();
+    let e = engine(t.path(), &ff).await;
+    e.set_settings(Settings {
+        media_segment_concurrency: 1,
+        ..e.settings()
+    })
+    .expect("settings");
+    let id = e
+        .add_media(NewMediaDownload {
+            url: url(addr, "muxed/index.m3u8"),
+            dir: Some(t.path().join("out")),
+            container: Some(ContainerChoice::Mkv),
+            filename: Some("quit".into()),
+            ..Default::default()
+        })
+        .await
+        .expect("adds");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while s.hits("/muxed/seg1.ts") == 0 && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    e.shutdown().await;
+    drop(e);
+    *s.delay.lock().unwrap() = None;
+    let seg0 = s.hits("/muxed/seg0.ts");
+    let e = Engine::open_with(t.path(), None, Some(ff.clone())).expect("reopens");
+    let d = wait_done(&e, id).await;
+    assert_eq!(d.status, Status::Completed, "{:?}", d.error);
+    assert_eq!(
+        s.hits("/muxed/seg0.ts"),
+        seg0,
+        "a finished segment isn't fetched again"
+    );
+    assert!(streams(&ff, &output_of(&d)).iter().any(|x| x.0 == "video"));
+    e.shutdown().await;
+}
+
 #[tokio::test]
 async fn removing_a_media_download_deletes_its_work_directory() {
     let (addr, s) = spawn_server().await;
@@ -856,6 +991,165 @@ async fn subtitles_keep_their_times_beside_and_inside_the_video() {
     e.remove(beside, true).expect("removes");
     assert!(!t.path().join("out/beside.en.vtt").exists());
     assert!(!t.path().join("out/beside.mkv").exists());
+    e.shutdown().await;
+}
+
+/// The cues of a WebVTT file: (start, end, text).
+fn cues_of(vtt: &str) -> Vec<(f64, f64, String)> {
+    let secs = |t: &str| {
+        t.trim()
+            .split(':')
+            .map(|x| x.parse::<f64>().unwrap_or(-1.0))
+            .fold(0.0, |acc, x| acc * 60.0 + x)
+    };
+    vtt.split("\n\n")
+        .filter_map(|block| {
+            let mut lines = block.lines().skip_while(|l| !l.contains(" --> "));
+            let (a, b) = lines.next()?.split_once(" --> ")?;
+            let b = b.split_whitespace().next()?;
+            Some((secs(a), secs(b), lines.collect::<Vec<_>>().join("\n")))
+        })
+        .collect()
+}
+
+/// WebVTT inside fMP4 (HLS), on a timeline that starts 10 s in: the cues come out once,
+/// in step with the video, and none runs past its end.
+#[tokio::test]
+async fn subtitles_inside_mp4_follow_the_video_and_stop_at_its_end() {
+    let ff = need_ffmpeg!();
+    let (addr, _s) = spawn_server().await;
+    let t = dir();
+    let e = engine(t.path(), &ff).await;
+    let p = probe(&e, &url(addr, "sub-fmp4/master.m3u8")).await;
+    assert_eq!(p.subtitles.len(), 1, "{:?}", p.warnings);
+    let selection = Selection {
+        video: Some(p.variants[0].video.id.clone()),
+        audio: Vec::new(),
+        subtitles: vec![p.subtitles[0].id.clone()],
+    };
+    let add = |mode: SubtitleMode, name: &str| NewMediaDownload {
+        url: url(addr, "sub-fmp4/master.m3u8"),
+        dir: Some(t.path().join("out")),
+        container: Some(ContainerChoice::Mkv),
+        subtitles: Some(mode),
+        selection: Some(selection.clone()),
+        filename: Some(name.into()),
+        ..Default::default()
+    };
+    let beside = e
+        .add_media(add(SubtitleMode::Sidecar, "beside"))
+        .await
+        .expect("adds");
+    let inside = e
+        .add_media(add(SubtitleMode::Embed, "inside"))
+        .await
+        .expect("adds");
+
+    let d = wait_done(&e, beside).await;
+    assert_eq!(d.status, Status::Completed, "{:?}", d.error);
+    let vtt = std::fs::read_to_string(t.path().join("out/beside.en.vtt")).expect("sidecar");
+    let cues = cues_of(&vtt);
+    // The stream's zero is its first sound, 10.179 s on its timeline (FFmpeg starts the file
+    // there): "one" at 10.5 s plays 0.321 s in.
+    let want = [
+        (0.321, 1.321, "one"),
+        (1.621, 2.421, "two, across a fragment"),
+        (5.321, 6.0, "past the end"),
+    ];
+    assert_eq!(cues.len(), want.len(), "{vtt}");
+    for (got, want) in cues.iter().zip(want) {
+        assert!(
+            (got.0 - want.0).abs() < 0.01 && (got.1 - want.1).abs() < 0.01,
+            "{vtt}"
+        );
+        assert_eq!(got.2, want.2);
+    }
+
+    let d = wait_done(&e, inside).await;
+    assert_eq!(d.status, Status::Completed, "{:?}", d.error);
+    let file = output_of(&d);
+    assert!(streams(&ff, &file).iter().any(|x| x.0 == "subtitle"));
+    let len = duration_of(&ff, &file);
+    assert!(
+        len < 6.3,
+        "the subtitles don't make the file longer than its video: {len}"
+    );
+    e.shutdown().await;
+}
+
+/// DASH with a `wvtt` track as one whole file and an `stpp` (TTML) track in segments.
+#[tokio::test]
+async fn dash_subtitles_in_mp4_become_tracks_of_the_file() {
+    let ff = need_ffmpeg!();
+    let (addr, _s) = spawn_server().await;
+    let t = dir();
+    let e = engine(t.path(), &ff).await;
+    let p = probe(&e, &url(addr, "dash/subs.mpd")).await;
+    assert_eq!(p.subtitles.len(), 2, "{:?}", p.warnings);
+    assert!(
+        p.warnings.iter().all(|w| !w.contains("subtitles")),
+        "{:?}",
+        p.warnings
+    );
+    let selection = Selection {
+        video: Some(p.variants[0].video.id.clone()),
+        audio: vec![p.audio[0].id.clone()],
+        subtitles: p.subtitles.iter().map(|s| s.id.clone()).collect(),
+    };
+    let add = |mode: SubtitleMode, name: &str| NewMediaDownload {
+        url: url(addr, "dash/subs.mpd"),
+        dir: Some(t.path().join("out")),
+        container: Some(ContainerChoice::Mkv),
+        subtitles: Some(mode),
+        selection: Some(selection.clone()),
+        filename: Some(name.into()),
+        ..Default::default()
+    };
+    let beside = e
+        .add_media(add(SubtitleMode::Sidecar, "dash"))
+        .await
+        .expect("adds");
+    let inside = e
+        .add_media(add(SubtitleMode::Embed, "dashin"))
+        .await
+        .expect("adds");
+
+    let d = wait_done(&e, beside).await;
+    assert_eq!(d.status, Status::Completed, "{:?}", d.error);
+    let mut sidecars = d.media.clone().expect("media").sidecars;
+    sidecars.sort();
+    assert_eq!(sidecars, ["dash.de.vtt", "dash.en.vtt"]);
+    let en = cues_of(&std::fs::read_to_string(t.path().join("out/dash.en.vtt")).expect("en"));
+    let de = cues_of(&std::fs::read_to_string(t.path().join("out/dash.de.vtt")).expect("de"));
+    let starts = |c: &[(f64, f64, String)]| {
+        c.iter()
+            .map(|x| (x.0 * 10.0).round() / 10.0)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(starts(&en), [0.5, 1.8, 5.5], "{en:?}");
+    assert_eq!(en[1].2, "across");
+    // Cut where the sound ends (6.037 s, a little after the picture), not at 7 s.
+    assert!(
+        (en[2].1 - 6.037).abs() < 0.01,
+        "cut at the end of the media: {en:?}"
+    );
+    assert_eq!(starts(&de), [1.0, 2.5, 4.2], "{de:?}");
+    assert_eq!(de[0].2, "eins");
+
+    let d = wait_done(&e, inside).await;
+    assert_eq!(d.status, Status::Completed, "{:?}", d.error);
+    let st = streams(&ff, &output_of(&d));
+    let subs: Vec<_> = st
+        .iter()
+        .filter(|x| x.0 == "subtitle")
+        .map(|x| x.2.clone())
+        .collect();
+    assert_eq!(subs.len(), 2, "{st:?}");
+    assert!(subs.contains(&Some("eng".into())), "{st:?}");
+    assert!(
+        subs.contains(&Some("ger".into())) || subs.contains(&Some("deu".into())),
+        "{st:?}"
+    );
     e.shutdown().await;
 }
 

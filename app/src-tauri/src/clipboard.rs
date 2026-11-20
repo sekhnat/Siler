@@ -98,7 +98,13 @@ fn offer(app: &AppHandle, links: Vec<String>) {
             ..Default::default()
         })
         .collect();
-    state.push_pending(items, &AddOptions::default());
+    state.push_pending(
+        items,
+        &AddOptions {
+            origin: crate::ipc_server::Origin::Clipboard,
+            ..Default::default()
+        },
+    );
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
         let _ = handle.emit("pending-changed", ());

@@ -13,9 +13,9 @@ use crate::classify::extension;
 use crate::error::ParseError;
 use crate::limits::ParseLimits;
 use crate::model::{
-    ByteRange, Key, Liveness, ManifestKind, Object, Presentation, Protection, SUBTITLES_IN_MP4,
-    Segment, SegmentContainer, SegmentPlan, Track, TrackId, TrackKind, Variant, language, resolve,
-    subtitle_supported, without_query,
+    ByteRange, Init, Key, Liveness, ManifestKind, Object, Presentation, Protection,
+    SUBTITLES_IN_MP4, Segment, SegmentContainer, SegmentPlan, Track, TrackId, TrackKind, Variant,
+    language, resolve, subtitle_supported, without_query,
 };
 use crate::protection;
 
@@ -75,7 +75,7 @@ pub struct Media {
     pub vod: bool,
     /// Every key tag in the playlist, for protection assessment.
     pub keys: Vec<KeyTag>,
-    pub inits: Vec<Object>,
+    pub inits: Vec<Init>,
     pub segments: Vec<Segment>,
     /// Segments marked `EXT-X-GAP`: skipped, and counted for the user.
     pub gaps: usize,
@@ -426,9 +426,20 @@ pub fn parse_media(body: &[u8], base: &Url, lim: &ParseLimits) -> Result<Media, 
                 }
                 None => None,
             };
-            let obj = Object {
-                url: uri_of(uri, base, &defines)?,
-                range,
+            // The key in effect encrypts the map too (RFC 8216 §4.3.2.5). Its IV is
+            // required there; without one, the next segment's sequence IV is the usual
+            // packager choice, and a wrong guess is caught when the init is checked.
+            let obj = Init {
+                object: Object {
+                    url: uri_of(uri, base, &defines)?,
+                    range,
+                },
+                key: key.as_ref().map(|k| Key {
+                    url: k.url.clone(),
+                    iv: Some(k.iv.unwrap_or_else(|| {
+                        crate::crypto::iv_from_sequence(m.media_sequence + index)
+                    })),
+                }),
             };
             let idx = match m.inits.iter().position(|o| *o == obj) {
                 Some(i) => i,
@@ -883,7 +894,7 @@ mod tests {
         assert_eq!(m.gaps, 1);
         assert_eq!(m.inits.len(), 1);
         assert_eq!(
-            m.inits[0].range,
+            m.inits[0].object.range,
             Some(ByteRange {
                 offset: 0,
                 length: 720
@@ -1196,9 +1207,79 @@ mod regressions {
         );
         let p = assemble(&master, &lists, &lim()).expect("assembles");
         assert_eq!(p.audio[0].lang, None, "“und” is no language");
-        assert!(p.subtitles.is_empty());
-        assert!(p.variants[0].subtitles.is_empty());
-        assert!(p.warnings.iter().any(|w| w.contains("subtitles")));
+        // Offered: K-Star reads WebVTT out of MP4 itself.
+        assert_eq!(p.subtitles.len(), 1);
+        assert_eq!(p.subtitles[0].container, SegmentContainer::Fmp4);
+        assert_eq!(p.variants[0].subtitles, vec![p.subtitles[0].id.clone()]);
+        assert!(!p.warnings.iter().any(|w| w.contains("subtitles")));
+    }
+
+    #[test]
+    fn an_init_written_under_a_key_is_encrypted_with_it() {
+        let b = url("https://cdn.example/v/index.m3u8");
+        // Explicit IV on the key line.
+        let m = parse_media(
+            b"#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:7\n\
+              #EXT-X-KEY:METHOD=AES-128,URI=\"k.bin\",IV=0x000102030405060708090a0b0c0d0e0f\n\
+              #EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:4,\ns0.m4s\n#EXT-X-ENDLIST\n",
+            &b,
+            &lim(),
+        )
+        .expect("parses");
+        let k = m.inits[0].key.as_ref().expect("the init is encrypted");
+        assert_eq!(k.url.as_str(), "https://cdn.example/v/k.bin");
+        assert_eq!(k.iv.map(|iv| iv[15]), Some(0x0f));
+        assert_eq!(
+            m.segments[0].key.as_ref().map(|k| k.iv.is_some()),
+            Some(true)
+        );
+
+        // No IV: the next segment's sequence number, as packagers do.
+        let m = parse_media(
+            b"#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:7\n#EXT-X-KEY:METHOD=AES-128,URI=\"k.bin\"\n\
+              #EXTINF:4,\ns0.m4s\n#EXT-X-MAP:URI=\"init2.mp4\"\n#EXTINF:4,\ns1.m4s\n#EXT-X-ENDLIST\n",
+            &b,
+            &lim(),
+        )
+        .expect("parses");
+        assert_eq!(
+            m.inits[0].key.as_ref().and_then(|k| k.iv),
+            Some(crate::crypto::iv_from_sequence(8))
+        );
+        // The segments keep the sequence-derived IV (`None`).
+        assert_eq!(m.segments[1].key.as_ref().map(|k| k.iv), Some(None));
+    }
+
+    #[test]
+    fn an_init_before_any_key_or_after_method_none_is_clear() {
+        let b = url("https://cdn.example/v/index.m3u8");
+        let m = parse_media(
+            b"#EXTM3U\n#EXT-X-MAP:URI=\"a.mp4\"\n#EXTINF:4,\ns0.m4s\n\
+              #EXT-X-KEY:METHOD=AES-128,URI=\"k.bin\"\n#EXTINF:4,\ns1.m4s\n\
+              #EXT-X-KEY:METHOD=NONE\n#EXT-X-MAP:URI=\"b.mp4\"\n#EXTINF:4,\ns2.m4s\n#EXT-X-ENDLIST\n",
+            &b,
+            &lim(),
+        )
+        .expect("parses");
+        assert_eq!(m.inits.len(), 2);
+        assert!(m.inits.iter().all(|i| i.key.is_none()));
+        assert!(m.segments[1].key.is_some());
+        assert!(m.segments[2].key.is_none());
+    }
+
+    #[test]
+    fn a_map_reused_under_another_key_is_a_second_init() {
+        let b = url("https://cdn.example/v/index.m3u8");
+        let m = parse_media(
+            b"#EXTM3U\n#EXT-X-MAP:URI=\"i.mp4\"\n#EXTINF:4,\ns0.m4s\n\
+              #EXT-X-KEY:METHOD=AES-128,URI=\"k.bin\",IV=0x00000000000000000000000000000001\n#EXT-X-MAP:URI=\"i.mp4\"\n#EXTINF:4,\ns1.m4s\n#EXT-X-ENDLIST\n",
+            &b,
+            &lim(),
+        )
+        .expect("parses");
+        assert_eq!(m.inits.len(), 2);
+        assert_eq!(m.segments[0].init, Some(0));
+        assert_eq!(m.segments[1].init, Some(1));
     }
 
     #[test]

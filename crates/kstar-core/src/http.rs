@@ -11,10 +11,9 @@
 use futures_util::StreamExt;
 use reqwest::header::{CONTENT_RANGE, CONTENT_TYPE, LOCATION, RANGE};
 use reqwest::{Response, StatusCode, Url};
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
-use std::sync::{Arc, Mutex};
 use tokio::io::AsyncWriteExt;
 
 use kstar_media::policy;
@@ -23,6 +22,7 @@ use crate::error::{MediaError, describe};
 use crate::net::{Net, host_key, parse_challenge};
 use crate::probe::{build_request, busy, parse_content_range};
 use crate::ratelimit::RateLimiter;
+use crate::resolve;
 use crate::{Error, RequestMeta, Result};
 
 /// Redirects followed for one request.
@@ -63,53 +63,21 @@ impl Drop for Uncount<'_> {
     }
 }
 
-/// Decides which addresses may be contacted (media-design §16.2): the URL itself (scheme,
-/// credentials, literal addresses), and, when no proxy carries the connection, the addresses
-/// its name resolves to. Names are looked up once per host.
+/// Decides which addresses may be contacted (media-design §16.2). The URL itself is checked
+/// here (scheme, credentials, literal addresses); the addresses a name resolves to are checked
+/// by the client's resolver, in the same lookup the connection uses (`resolve::PublicOnly`).
 pub(crate) struct Guard {
-    allow_private: bool,
-    checked: Mutex<HashSet<String>>,
+    pub allow_private: bool,
 }
 
 impl Guard {
     pub fn new(allow_private: bool) -> Guard {
-        Guard {
-            allow_private,
-            checked: Mutex::new(HashSet::new()),
-        }
+        Guard { allow_private }
     }
 
-    pub async fn check(&self, net: &Net, url: &Url) -> Result<()> {
+    pub fn check(&self, url: &Url) -> Result<()> {
         policy::check(url, self.allow_private)
-            .map_err(|e| Error::Media(MediaError::UrlForbidden(e.to_string())))?;
-        if self.allow_private {
-            return Ok(());
-        }
-        let route = net.route();
-        if route.http.is_some() || route.https.is_some() {
-            // The proxy resolves the name; only the literal check above applies.
-            return Ok(());
-        }
-        let Some(url::Host::Domain(host)) = url.host() else {
-            return Ok(());
-        };
-        let host = host.to_ascii_lowercase();
-        if self.checked.lock().unwrap().contains(&host) {
-            return Ok(());
-        }
-        let port = url.port_or_known_default().unwrap_or(443);
-        let addrs = tokio::net::lookup_host((host.as_str(), port))
-            .await
-            .map_err(|e| Error::Network(format!("could not look up {host} ({e})")))?;
-        for a in addrs {
-            if policy::is_private(a.ip()) {
-                return Err(Error::Media(MediaError::UrlForbidden(format!(
-                    "{host} points to an address on this computer or the local network"
-                ))));
-            }
-        }
-        self.checked.lock().unwrap().insert(host);
-        Ok(())
+            .map_err(|e| Error::Media(MediaError::UrlForbidden(e.to_string())))
     }
 }
 
@@ -220,12 +188,12 @@ async fn request(http: &Http, url: &Url, mut kind: Req, range: Option<String>) -
     let mut hops = 0;
     let mut logins = 0;
     loop {
-        http.guard.check(&http.net, &target).await?;
+        http.guard.check(&target)?;
         let meta = http.meta_for(&target, kind);
         let auth = http.net.auth_for(&target);
         let sent = auth.as_ref().is_some_and(|a| a.ready());
         let mut rb = build_request(
-            &http.net.manual_client(),
+            &http.net.manual_client(http.guard.allow_private),
             target.clone(),
             &meta,
             &http.ua,
@@ -234,7 +202,10 @@ async fn request(http: &Http, url: &Url, mut kind: Req, range: Option<String>) -
         if let Some(r) = &range {
             rb = rb.header(RANGE, r.as_str());
         }
-        let resp = rb.send().await.map_err(|e| Error::Network(describe(&e)))?;
+        let resp = rb.send().await.map_err(|e| match resolve::refused(&e) {
+            Some(why) => Error::Media(MediaError::UrlForbidden(why)),
+            None => Error::Network(describe(&e)),
+        })?;
         let status = resp.status();
         if status.is_redirection()
             && let Some(loc) = resp.headers().get(LOCATION).and_then(|v| v.to_str().ok())
@@ -468,6 +439,7 @@ pub(crate) async fn fetch_object(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
 
     #[test]
     fn part_files_sit_beside_their_objects() {
@@ -527,9 +499,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn the_guard_refuses_private_targets_from_a_public_source() {
-        let net = Net::new(&Default::default(), None).expect("net");
+    #[test]
+    fn the_guard_refuses_private_targets_from_a_public_source() {
         let g = Guard::new(false);
         for u in [
             "http://127.0.0.1/a",
@@ -540,7 +511,7 @@ mod tests {
             let url = Url::parse(u).expect("URL");
             assert!(
                 matches!(
-                    g.check(&net, &url).await,
+                    g.check(&url),
                     Err(Error::Media(MediaError::UrlForbidden(_)))
                 ),
                 "{u}"
@@ -548,9 +519,48 @@ mod tests {
         }
         assert!(
             Guard::new(true)
-                .check(&net, &Url::parse("http://127.0.0.1/a").expect("URL"))
-                .await
+                .check(&Url::parse("http://127.0.0.1/a").expect("URL"))
                 .is_ok()
         );
+    }
+
+    /// A name that resolves to this computer is refused from a public source when the
+    /// connection is made, not only when the name is first checked.
+    #[tokio::test]
+    async fn a_name_resolving_to_this_computer_is_refused_at_connect() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let app = axum::Router::new().route("/a", axum::routing::get(|| async { "ok" }));
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        let local = vec![vec![std::net::SocketAddr::from(([127, 0, 0, 1], 0))]];
+        let table = crate::resolve::Table(Mutex::new(
+            [("rebind.test".to_string(), local)].into_iter().collect(),
+        ));
+        let net =
+            Arc::new(Net::with_lookup(&Default::default(), None, Arc::new(table)).expect("net"));
+        let url = Url::parse(&format!("http://rebind.test:{port}/a")).expect("URL");
+        let limit = RateLimiter::new(0);
+        let get = |allow| {
+            let http = Http::new(net.clone(), &url, RequestMeta::default(), "ua", allow);
+            let url = url.clone();
+            let limit = &limit;
+            async move {
+                let lim = Limiters {
+                    global: limit,
+                    run: limit,
+                    count: None,
+                };
+                fetch_bounded(&http, &url, Req::Source, 1024, Overflow::Refuse, &lim).await
+            }
+        };
+        match get(false).await {
+            Err(Error::Media(MediaError::UrlForbidden(m))) => {
+                assert!(m.contains("rebind.test"), "{m}")
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(get(true).await.expect("allowed").body, b"ok");
     }
 }

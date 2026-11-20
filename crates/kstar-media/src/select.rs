@@ -236,7 +236,13 @@ pub fn fingerprint(r: &Resolved<'_>) -> String {
         h.update(t.id.as_str().as_bytes());
         h.update([0x1e]);
         for init in &t.plan.inits {
-            update_object(&mut h, &init.url, init.range);
+            update_object(&mut h, &init.object.url, init.object.range);
+            // Only an encrypted init adds its key, so a clear stream's fingerprint is the
+            // same as in 0.5.0 and its downloads resume.
+            if let Some(k) = &init.key {
+                h.update([0x1f]);
+                h.update(without_query(&k.url).as_bytes());
+            }
         }
         h.update([0x1d]);
         for s in &t.plan.segments {
@@ -375,7 +381,8 @@ fn codec_name(c: &str) -> String {
 mod tests {
     use super::*;
     use crate::model::{
-        Liveness, ManifestKind, Object, Protection, Segment, SegmentContainer, SegmentPlan,
+        Init, Key, Liveness, ManifestKind, Object, Protection, Segment, SegmentContainer,
+        SegmentPlan,
     };
     use url::Url;
 
@@ -549,6 +556,34 @@ mod tests {
             Url::parse("https://cdn.example/other.ts").expect("URL");
         let r3 = resolve(&changed, &sel).expect("resolves");
         assert_ne!(fingerprint(&r3), fp);
+    }
+
+    #[test]
+    fn a_clear_init_keeps_the_0_5_0_fingerprint_and_a_key_changes_it() {
+        let with_init = |key: Option<Key>| {
+            let mut p = presentation();
+            for v in &mut p.variants {
+                v.video.plan.inits.push(Init {
+                    object: Object {
+                        url: Url::parse("https://cdn.example/init.mp4?sig=2").expect("URL"),
+                        range: None,
+                    },
+                    key: key.clone(),
+                });
+            }
+            let sel = default_selection(&p, &Preferences::default());
+            fingerprint(&resolve(&p, &sel).expect("resolves"))
+        };
+        // Computed by 0.5.0 for the same presentation: downloads started there resume.
+        assert_eq!(
+            with_init(None),
+            "f5cd0ab441a19be4edb9108c2e374c4bc9829138dfda340dab0816ce32fc8f1b"
+        );
+        let key = Key {
+            url: Url::parse("https://cdn.example/k.bin").expect("URL"),
+            iv: Some([0; 16]),
+        };
+        assert_ne!(with_init(Some(key)), with_init(None));
     }
 
     #[test]

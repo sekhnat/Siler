@@ -304,6 +304,7 @@ pub fn pending_adds(state: State<'_, AppState>) -> Vec<PendingView> {
                 start_paused: p.start_paused,
                 queue_id: p.queue_id,
                 keep_name: p.keep_name,
+                origin: p.origin,
                 resumable: if single {
                     name.and_then(|n| state.engine.find_resumable(&n, p.item.size))
                 } else {

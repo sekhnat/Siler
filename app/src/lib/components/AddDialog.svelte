@@ -292,7 +292,7 @@
     <div>
       <h2>New download</h2>
       <div class="hint">
-        {#if pending}From Firefox{pending.page_url ? ` · ${host(pending.page_url)}` : ""}{pending.method === "POST" ? " · form submission" : ""}{:else}Paste one or more links{/if}
+        {#if pending && pending.origin === "command_line"}From the command line{:else if pending && pending.origin === "clipboard"}Copied to the clipboard{:else if pending}From Firefox{pending.page_url ? ` · ${host(pending.page_url)}` : ""}{pending.method === "POST" ? " · form submission" : ""}{:else}Paste one or more links{/if}
         {#if position}<span class="pos">{position}</span>{/if}
       </div>
     </div>

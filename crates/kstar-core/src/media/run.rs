@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::sync::OnceCell;
 use tokio::task::JoinSet;
 
 use kstar_media::classify;
@@ -18,7 +19,7 @@ use kstar_media::select::{self, Output, Selection, SubtitleMode};
 use kstar_media::{Key, ParseLimits, Presentation, SegmentContainer, TrackKind, protection};
 
 use super::probe;
-use super::reconstruct::{self, MuxInput};
+use super::reconstruct::{self, MuxInput, Source};
 use crate::error::MediaError;
 use crate::http::{self, Http, Limiters, Overflow, Req};
 use crate::manager::Inner;
@@ -34,7 +35,9 @@ struct Fetch {
     http: Http,
     global: Arc<RateLimiter>,
     run: Arc<Running>,
-    keys: Mutex<HashMap<Url, Arc<AesKey>>>,
+    /// One cell per key URL: the first piece that needs a key fetches it, and the pieces
+    /// that need it meanwhile wait for that fetch instead of starting their own.
+    keys: Mutex<HashMap<Url, Arc<OnceCell<Arc<AesKey>>>>>,
     max_key: u64,
 }
 
@@ -104,9 +107,9 @@ fn jobs_of(pres: &Presentation, sel: &Selection, work: &Path) -> Result<Vec<Job>
         for (i, init) in t.plan.inits.iter().enumerate() {
             jobs.push(Job {
                 dest: reconstruct::init_path(work, t, i),
-                url: init.url.clone(),
-                range: range_of(init.range),
-                key: None,
+                url: init.object.url.clone(),
+                range: range_of(init.object.range),
+                key: init.key.clone(),
                 seq: 0,
                 whole: false,
                 init: true,
@@ -180,8 +183,14 @@ async fn keep_piece(c: &Fetch, job: &Job, bytes: Vec<u8>) -> Result<()> {
         Some(k) => {
             let key = key_for(c, &k.url, &c.io_uncounted()).await?;
             let iv = k.iv.unwrap_or_else(|| crypto::iv_from_sequence(job.seq));
-            crypto::decrypt_aes128_cbc(&bytes, &key, &iv)
-                .map_err(|_| Error::Media(MediaError::Decrypt))?
+            let plain = crypto::decrypt_aes128_cbc(&bytes, &key, &iv)
+                .map_err(|_| Error::Media(MediaError::Decrypt))?;
+            // An init's IV may have been guessed (no IV on the key line): the result must
+            // look like the start of an initialisation segment.
+            if job.init && !classify::looks_like_init(&plain) {
+                return Err(Error::Media(MediaError::Decrypt));
+            }
+            plain
         }
         None => bytes,
     };
@@ -206,22 +215,25 @@ async fn read_head(path: &Path) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
-/// An AES-128 key, fetched once per URL and kept in memory only.
+/// An AES-128 key, fetched once per URL and kept in memory only. A failed fetch leaves the
+/// cell empty, so the piece's retry fetches it again.
 async fn key_for(c: &Fetch, url: &Url, io: &Limiters<'_>) -> Result<Arc<AesKey>> {
-    if let Some(k) = c.keys.lock().expect("keys lock").get(url) {
-        return Ok(k.clone());
-    }
-    let f =
-        http::fetch_bounded(&c.http, url, Req::Derived, c.max_key, Overflow::Refuse, io).await?;
-    let key = Arc::new(
-        AesKey::from_bytes(&f.body)
-            .map_err(|e| Error::Media(MediaError::KeyFetch(e.to_string())))?,
-    );
-    c.keys
+    let cell = c
+        .keys
         .lock()
         .expect("keys lock")
-        .insert(url.clone(), key.clone());
-    Ok(key)
+        .entry(url.clone())
+        .or_default()
+        .clone();
+    cell.get_or_try_init(|| async {
+        let f = http::fetch_bounded(&c.http, url, Req::Derived, c.max_key, Overflow::Refuse, io)
+            .await?;
+        Ok(Arc::new(AesKey::from_bytes(&f.body).map_err(|e| {
+            Error::Media(MediaError::KeyFetch(e.to_string()))
+        })?))
+    })
+    .await
+    .cloned()
 }
 
 fn set_media(run: &Running, f: impl FnOnce(&mut MediaProgress)) {
@@ -391,12 +403,31 @@ async fn build(
         m.phase = "rebuilding";
         m.permille = 0;
     });
+    // The subtitles follow the picture: zero where the video (or audio) starts, and no cue
+    // past the end of the longest video or audio track.
+    let main = resolved.video.or_else(|| resolved.audio.first().copied());
+    let ffprobe = ffmpeg
+        .map(|f| f.with_file_name("ffprobe"))
+        .filter(|p| p.is_file());
+    let zero = match main {
+        Some(t) if !resolved.subtitles.is_empty() => {
+            reconstruct::start_time(work, t, ffprobe.as_deref()).await
+        }
+        _ => None,
+    };
+    let until = resolved
+        .video
+        .into_iter()
+        .chain(resolved.audio.iter().copied())
+        .map(|t| t.plan.duration())
+        .fold(None, |m: Option<f64>, d| Some(m.map_or(d, |m| m.max(d))))
+        .filter(|d| *d > 0.0);
     let mut sub_files: Vec<SubFile> = Vec::new();
     for (k, t) in resolved.subtitles.iter().enumerate() {
         sub_files.push(SubFile {
             label: file_label(t.lang.as_deref(), k),
             lang: t.lang.clone(),
-            path: reconstruct::join_subtitles(work, t, lim)?,
+            path: reconstruct::join_subtitles(work, t, lim, zero, until)?,
         });
     }
     if output == Output::Original {
@@ -412,32 +443,33 @@ async fn build(
         return Ok(Some((path, Vec::new())));
     }
     let ff = ffmpeg.ok_or(Error::Media(MediaError::FfmpegMissing))?;
-    let mut inputs = Vec::new();
     let mut total_us = 0f64;
     for t in resolved.tracks() {
         total_us = total_us.max(t.plan.duration() * 1e6);
     }
+    let mut tracks = Vec::new();
     if let Some(v) = resolved.video {
-        inputs.push(MuxInput {
-            path: reconstruct::join_track(work, v)?,
+        tracks.push(Source {
+            track: v,
             kind: TrackKind::Video,
             lang: None,
             adts: false,
         });
     }
     for a in &resolved.audio {
-        inputs.push(MuxInput {
-            path: reconstruct::join_track(work, a)?,
+        tracks.push(Source {
+            track: a,
             kind: TrackKind::Audio,
             lang: a.lang.clone(),
             adts: matches!(a.container, SegmentContainer::Ts | SegmentContainer::Aac),
         });
     }
+    let mut subs = Vec::new();
     let mut sidecars = Vec::new();
     match subtitles {
         SubtitleMode::Embed => {
             for sub in &sub_files {
-                inputs.push(MuxInput {
+                subs.push(MuxInput {
                     path: sub.path.clone(),
                     kind: TrackKind::Subtitle,
                     lang: sub.lang.clone(),
@@ -453,11 +485,19 @@ async fn build(
     std::fs::create_dir_all(work.join("out"))?;
     // A rebuild that was stopped part way leaves its output behind.
     let _ = std::fs::remove_file(&out);
-    let args = reconstruct::mux_args(&inputs, output, &out);
     let run2 = run.clone();
-    let finished = super::ffmpeg::run(ff, &args, &run.cancel, total_us as u64, move |p| {
-        set_media(&run2, |m| m.permille = p);
-    })
+    let finished = reconstruct::mux(
+        ff,
+        work,
+        &tracks,
+        subs,
+        output,
+        &out,
+        &run.cancel,
+        total_us as u64,
+        Arc::new(move |p| set_media(&run2, |m| m.permille = p)),
+        true,
+    )
     .await?;
     if !finished {
         return Ok(None);

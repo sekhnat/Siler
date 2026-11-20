@@ -15,6 +15,7 @@ pub mod error;
 pub mod hls;
 pub mod limits;
 pub mod model;
+pub mod mp4;
 pub mod policy;
 pub mod protection;
 pub mod select;
@@ -24,6 +25,6 @@ mod xml;
 pub use error::ParseError;
 pub use limits::ParseLimits;
 pub use model::{
-    ByteRange, Key, Liveness, ManifestKind, Object, Presentation, Protection, Segment,
+    ByteRange, Init, Key, Liveness, ManifestKind, Object, Presentation, Protection, Segment,
     SegmentContainer, SegmentPlan, Track, TrackId, TrackKind, Variant,
 };
