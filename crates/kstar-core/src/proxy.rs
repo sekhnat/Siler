@@ -328,7 +328,7 @@ fn system() -> ProxyRoute {
         return from_kde(&text, &env);
     }
     let gsettings = |schema: &str, key: &str| {
-        let out = std::process::Command::new("gsettings")
+        let out = crate::host::command("gsettings")
             .args(["get", schema, key])
             .output()
             .ok()?;

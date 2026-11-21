@@ -46,7 +46,7 @@ pub(crate) fn probe(path: &Path) -> FfmpegStatus {
         "-bsfs",
         "-encoders",
     ] {
-        let out = std::process::Command::new(path)
+        let out = crate::host::command(path)
             .args(["-hide_banner", option])
             .stdin(Stdio::null())
             .output();
@@ -173,7 +173,7 @@ pub(crate) async fn run(
     total_us: u64,
     progress: impl Fn(u32) + Send + 'static,
 ) -> Result<bool> {
-    let mut child = tokio::process::Command::new(path)
+    let mut child = tokio::process::Command::from(crate::host::command(path))
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

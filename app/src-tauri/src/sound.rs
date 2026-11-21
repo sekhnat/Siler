@@ -4,7 +4,7 @@
 
 use kstar_core::SoundSettings;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -107,7 +107,7 @@ fn play_file(path: &Path) {
         ("canberra-gtk-play", &["-f"]),
     ];
     for (player, args) in players {
-        let started = Command::new(player)
+        let started = kstar_core::host::command(player)
             .args(args)
             .arg(path)
             .stdin(Stdio::null())

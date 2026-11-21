@@ -4,6 +4,7 @@ mod desktop;
 mod inhibit;
 mod integration;
 mod ipc_server;
+mod launch;
 mod logging;
 mod logins;
 mod media;

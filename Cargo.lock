@@ -2582,6 +2582,7 @@ dependencies = [
  "kstar-core",
  "kstar-ipc",
  "oo7",
+ "open",
  "percent-encoding",
  "rustix",
  "serde",

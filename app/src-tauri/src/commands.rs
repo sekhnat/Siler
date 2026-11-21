@@ -532,12 +532,12 @@ const REFRESH_WAIT: Duration = Duration::from_secs(120);
 /// matching hand-over from the browser updates this download. Returns whether a page was
 /// known.
 #[tauri::command]
-pub fn await_refresh(app: AppHandle, state: State<'_, AppState>, id: i64) -> Res<bool> {
+pub fn await_refresh(state: State<'_, AppState>, id: i64) -> Res<bool> {
     let d = state.engine.get(id).ok_or("Download not found")?;
     *state.awaiting_refresh.lock().unwrap() = Some((id, Instant::now() + REFRESH_WAIT));
     let page = d.page_url.or(d.referrer);
     if let Some(page) = &page {
-        app.opener().open_url(page, None::<&str>).map_err(err)?;
+        crate::launch::open(page).map_err(err)?;
     }
     Ok(page.is_some())
 }
@@ -612,9 +612,7 @@ pub fn open_path(app: &AppHandle, id: i64) -> Res<()> {
     if !path.exists() {
         return Err(kstar_core::Error::FileMissing.to_string());
     }
-    app.opener()
-        .open_path(path.to_string_lossy(), None::<&str>)
-        .map_err(err)
+    crate::launch::open(&path).map_err(err)
 }
 
 /// Shows the file (or the partial file) selected in its folder.
@@ -624,10 +622,7 @@ pub fn reveal(app: &AppHandle, id: i64) -> Res<()> {
         return app.opener().reveal_item_in_dir(&path).map_err(err);
     }
     match path.parent().filter(|d| d.exists()) {
-        Some(dir) => app
-            .opener()
-            .open_path(dir.to_string_lossy(), None::<&str>)
-            .map_err(err),
+        Some(dir) => crate::launch::open(dir).map_err(err),
         None => Err("The folder no longer exists".into()),
     }
 }
@@ -643,20 +638,18 @@ pub fn show_in_folder(app: AppHandle, id: i64) -> Res<()> {
 }
 
 #[tauri::command]
-pub fn open_url(app: AppHandle, url: String) -> Res<()> {
+pub fn open_url(url: String) -> Res<()> {
     if !(url.starts_with("http://") || url.starts_with("https://")) {
         return Err("Only web links can be opened".into());
     }
-    app.opener().open_url(url, None::<&str>).map_err(err)
+    crate::launch::open(&url).map_err(err)
 }
 
 #[tauri::command]
-pub fn open_log_folder(app: AppHandle) -> Res<()> {
+pub fn open_log_folder() -> Res<()> {
     let dir = crate::logging::dir();
     std::fs::create_dir_all(&dir).map_err(err)?;
-    app.opener()
-        .open_path(dir.to_string_lossy(), None::<&str>)
-        .map_err(err)
+    crate::launch::open(&dir).map_err(err)
 }
 
 fn status_of(state: &AppState) -> IntegrationStatus {
@@ -684,10 +677,7 @@ pub fn install_integration(state: State<'_, AppState>) -> Res<IntegrationStatus>
 pub fn install_extension() -> Res<()> {
     let xpi = integration::signed_xpi()
         .ok_or("No signed extension yet. Run scripts/sign-extension.sh first (see the README).")?;
-    std::process::Command::new("firefox")
-        .arg(&xpi)
-        .spawn()
-        .map(drop)
+    crate::launch::start("firefox", &[xpi.as_os_str()])
         .map_err(|e| format!("Couldn't start Firefox: {e}"))
 }
 

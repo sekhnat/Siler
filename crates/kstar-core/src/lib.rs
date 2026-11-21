@@ -8,6 +8,7 @@
 mod category;
 mod error;
 pub mod filename;
+pub mod host;
 mod http;
 mod manager;
 pub mod media;

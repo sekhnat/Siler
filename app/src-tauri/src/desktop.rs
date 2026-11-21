@@ -86,10 +86,10 @@ pub fn install() -> io::Result<()> {
     std::fs::create_dir_all(path.parent().expect("has parent"))?;
     std::fs::write(&path, entry(&exe()?))?;
     // Refresh the caches if the tools exist; desktops pick the files up anyway.
-    let _ = std::process::Command::new("update-desktop-database")
+    let _ = kstar_core::host::command("update-desktop-database")
         .arg(base.join("applications"))
         .output();
-    let _ = std::process::Command::new("gtk-update-icon-cache")
+    let _ = kstar_core::host::command("gtk-update-icon-cache")
         .args(["-q", "-t"])
         .arg(base.join("icons/hicolor"))
         .output();

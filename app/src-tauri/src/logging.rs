@@ -52,7 +52,7 @@ pub fn init() {
             .map(String::as_str)
             .or_else(|| info.payload().downcast_ref::<&str>().copied())
             .unwrap_or("unexpected error");
-        let _ = std::process::Command::new("notify-send")
+        let _ = kstar_core::host::command("notify-send")
             .args(["--app-name=K-Star", "--urgency=critical", "K-Star crashed"])
             .arg(format!("{reason}\nDetails are in {}", dir().display()))
             .stdout(std::process::Stdio::null())
