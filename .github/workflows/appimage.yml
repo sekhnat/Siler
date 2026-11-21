@@ -3,7 +3,9 @@
 #
 # The AppImage carries K-Star, its native messaging host (kstar-nmhost) and the bundled
 # FFmpeg (scripts/build-ffmpeg.sh). It is built on the oldest supported Ubuntu, so it runs
-# on distributions with that glibc or newer.
+# on distributions with that glibc or newer. It carries zsync update information, and its
+# .zsync file is attached beside it, so AppImage updaters fetch only what changed
+# (scripts/appimage-zsync.sh).
 name: AppImage
 
 on:
@@ -38,7 +40,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential curl file xz-utils patchelf \
+            build-essential curl file xz-utils patchelf zsync \
             libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev libxdo-dev
 
       - name: The tag matches the app's version
@@ -101,12 +103,13 @@ jobs:
         working-directory: app
         run: pnpm tauri build --bundles appimage --config src-tauri/tauri.appimage.json
 
-      - name: Name and checksum
+      - name: Name, update information and checksum
         run: |
           src=$(ls target/release/bundle/appimage/*.AppImage | head -n 1)
           name="K-Star-$VERSION-x86_64.AppImage"
           mkdir -p out
           cp "$src" "out/$name"
+          scripts/appimage-zsync.sh "out/$name"
           (cd out && sha256sum "$name" > "$name.sha256")
           ls -l out
 
