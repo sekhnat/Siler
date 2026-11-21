@@ -24,6 +24,12 @@ pub struct ProbeResult {
     pub exists: bool,
     /// A free name to use instead when `exists` is set, e.g. `name (1).ext`.
     pub suggested: String,
+    /// Other addresses of the same file the server named (RFC 6249 `rel=duplicate` links),
+    /// best first.
+    #[serde(default)]
+    pub duplicates: Vec<String>,
+    /// The file's checksum, when the server sent a `Digest` or `Repr-Digest` header.
+    pub digest: Option<crate::checksum::Checksum>,
 }
 
 pub(crate) fn parse_url(url: &str) -> Result<Url> {
@@ -196,7 +202,21 @@ pub(crate) async fn probe(
         .unwrap_or_else(|| "download".to_string());
     let name = filename::ensure_extension(name, content_type.as_deref());
 
+    let links: Vec<&str> = resp
+        .headers()
+        .get_all(header::LINK)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .collect();
+    let duplicates = duplicate_links(&links, &final_url);
+    let digest = crate::checksum::Checksum::from_headers(
+        get(HeaderName::from_static("digest")).as_deref(),
+        get(HeaderName::from_static("repr-digest")).as_deref(),
+    );
+
     Ok(ProbeResult {
+        duplicates,
+        digest,
         final_url: final_url.to_string(),
         total_size,
         resumable,
@@ -211,9 +231,162 @@ pub(crate) async fn probe(
     })
 }
 
+/// Reads `len` bytes of `url` from `start` with one range request (the way a file download
+/// fetches, with the browser's context and logins). The server must answer with exactly that
+/// range.
+pub(crate) async fn fetch_range(
+    net: &Net,
+    url: &str,
+    meta: &RequestMeta,
+    ua: &str,
+    start: u64,
+    len: u64,
+) -> Result<Vec<u8>> {
+    use futures_util::StreamExt;
+    if len == 0 {
+        return Ok(Vec::new());
+    }
+    let url = parse_url(url)?;
+    let auth = net.auth_for(&url);
+    let resp = build_request(&net.client(), url, meta, ua, auth.as_deref())
+        .header(
+            header::RANGE,
+            format!("bytes={}-{}", start, start + len - 1),
+        )
+        .send()
+        .await
+        .map_err(|e| Error::Network(describe(&e)))?;
+    match resp.status() {
+        StatusCode::PARTIAL_CONTENT => {}
+        StatusCode::UNAUTHORIZED => {
+            return Err(Error::AuthRequired {
+                host: host_key(resp.url()),
+                realm: None,
+                rejected: false,
+            });
+        }
+        StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE => return Err(busy(&resp)),
+        s if s.is_success() => {
+            return Err(Error::Protocol(
+                "The server doesn't send parts of files, which this needs".into(),
+            ));
+        }
+        s => return Err(Error::Http(s.as_u16())),
+    }
+    let got = resp
+        .headers()
+        .get(header::CONTENT_RANGE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(parse_content_range)
+        .map(|r| r.0);
+    if got != Some(start) {
+        return Err(Error::Protocol(
+            "The server returned an unexpected byte range".into(),
+        ));
+    }
+    let mut body = Vec::with_capacity(usize::try_from(len.min(1 << 20)).unwrap_or(0));
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| Error::Network(describe(&e)))?;
+        let room = usize::try_from(len).unwrap_or(usize::MAX) - body.len();
+        body.extend_from_slice(&chunk[..chunk.len().min(room)]);
+        if body.len() as u64 >= len {
+            break;
+        }
+    }
+    if (body.len() as u64) < len {
+        return Err(Error::Network("connection closed early".into()));
+    }
+    Ok(body)
+}
+
+/// The `rel=duplicate` targets of `Link` headers (RFC 6249), by `pri` (lowest first). Only
+/// http(s) addresses, at most 10.
+pub(crate) fn duplicate_links(values: &[&str], base: &Url) -> Vec<String> {
+    let mut found: Vec<(u32, String)> = Vec::new();
+    for v in values {
+        for link in split_links(v) {
+            let Some((target, params)) = link
+                .trim()
+                .strip_prefix('<')
+                .and_then(|l| l.split_once('>'))
+            else {
+                continue;
+            };
+            let mut duplicate = false;
+            let mut pri = 999_999u32;
+            for p in params.split(';') {
+                let Some((k, v)) = p.split_once('=') else {
+                    continue;
+                };
+                let v = v.trim().trim_matches('"');
+                match k.trim().to_ascii_lowercase().as_str() {
+                    "rel" => {
+                        duplicate = v
+                            .split_whitespace()
+                            .any(|r| r.eq_ignore_ascii_case("duplicate"))
+                    }
+                    "pri" => pri = v.parse().unwrap_or(pri),
+                    _ => {}
+                }
+            }
+            if !duplicate {
+                continue;
+            }
+            if let Ok(u) = base.join(target.trim())
+                && matches!(u.scheme(), "http" | "https")
+                && u != *base
+                && !found.iter().any(|(_, f)| *f == u.as_str())
+            {
+                found.push((pri, u.to_string()));
+            }
+        }
+    }
+    found.sort_by_key(|(p, _)| *p);
+    found.into_iter().take(10).map(|(_, u)| u).collect()
+}
+
+/// Splits a `Link` header at the commas between links (not those inside `<…>` or quotes).
+fn split_links(v: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let (mut start, mut in_url, mut in_quote) = (0, false, false);
+    for (i, c) in v.char_indices() {
+        match c {
+            '<' if !in_quote => in_url = true,
+            '>' if !in_quote => in_url = false,
+            '"' if !in_url => in_quote = !in_quote,
+            ',' if !in_url && !in_quote => {
+                out.push(&v[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(&v[start..]);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn duplicate_link_headers() {
+        let base = Url::parse("https://a.example/f.iso").unwrap();
+        let got = duplicate_links(
+            &[
+                "<https://m2.example/f.iso>; rel=duplicate; pri=2; geo=de, <https://a.example/f.iso.meta4>; rel=describedby; type=\"application/metalink4+xml\"",
+                "<http://m1.example/f.iso>; rel=\"duplicate\"; pri=1",
+                "<ftp://m3.example/f.iso>; rel=duplicate; pri=3",
+                "</f.iso>; rel=duplicate",
+            ],
+            &base,
+        );
+        assert_eq!(
+            got,
+            vec!["http://m1.example/f.iso", "https://m2.example/f.iso"]
+        );
+    }
 
     #[test]
     fn content_range() {

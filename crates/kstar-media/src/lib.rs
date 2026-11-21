@@ -20,7 +20,7 @@ pub mod policy;
 pub mod protection;
 pub mod select;
 pub mod subtitle;
-mod xml;
+pub mod xml;
 
 pub use error::ParseError;
 pub use limits::ParseLimits;

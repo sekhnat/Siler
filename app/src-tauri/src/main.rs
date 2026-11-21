@@ -10,6 +10,7 @@ mod logins;
 mod media;
 mod power;
 mod sound;
+mod tools;
 mod tray;
 
 use kstar_core::{Engine, Event, MAIN_QUEUE};
@@ -39,6 +40,8 @@ pub struct Pending {
     /// `--filename`: keep the given name.
     pub keep_name: bool,
     pub origin: Origin,
+    /// A checksum, mirrors and piece hashes (from a metalink or an imported list).
+    pub extra: Option<tools::PendingExtra>,
 }
 
 #[derive(Serialize, Clone)]
@@ -65,6 +68,10 @@ pub struct PendingView {
     pub stream: bool,
     /// A paused or failed download this one looks like, which its link could continue.
     pub resumable: Option<kstar_core::DownloadInfo>,
+    /// The checksum it comes with, as `SHA-256 ab12…`.
+    pub checksum: Option<String>,
+    /// How many mirrors it comes with.
+    pub mirrors: usize,
 }
 
 /// Set instead of [`AppState`] when K-Star couldn't start; the window shows it.
@@ -99,6 +106,7 @@ impl AppState {
                 queue_id: opts.queue_id,
                 keep_name: opts.keep_name && item.filename.is_some(),
                 origin: opts.origin,
+                extra: None,
                 item,
             });
         }
@@ -374,6 +382,9 @@ fn forward_engine_events(app: AppHandle, engine: Engine, activity: watch::Sender
                             _ => {}
                         }
                     }
+                    if tools::on_engine_event(&app, &engine, &ev) {
+                        continue;
+                    }
                     if let Event::LoginRequired {
                         id,
                         filename,
@@ -446,6 +457,9 @@ Usage: kstar [OPTIONS] [URL…]
                      start the downloads waiting in a queue (the main one)
   --dir PATH         save the URLs in this folder
   --filename NAME    save the URL under this name (one URL only)
+  --import FILE      add the downloads listed in a file (a list of links, a
+                     metalink, K-Star's JSON or IDM's .ef2); a .meta4 or
+                     .metalink file can also be given on its own
   -h, --help         show this help
   -V, --version      show the version
 
@@ -464,6 +478,7 @@ struct Args {
     dir: Option<PathBuf>,
     filename: Option<String>,
     urls: Vec<String>,
+    imports: Vec<PathBuf>,
     help: bool,
     version: bool,
 }
@@ -497,10 +512,18 @@ fn parse_args(argv: &[String], cwd: &Path) -> Result<Args, String> {
             }
             "--dir" => a.dir = Some(cwd.join(value("--dir")?)),
             "--filename" => a.filename = Some(value("--filename")?),
+            "--import" => a.imports.push(cwd.join(value("--import")?)),
             "-h" | "--help" => a.help = true,
             "-V" | "--version" => a.version = true,
             s if s.starts_with("http://") || s.starts_with("https://") => a.urls.push(s.into()),
             s if s.starts_with('-') => return Err(format!("unknown option {s}")),
+            s if {
+                let l = s.to_ascii_lowercase();
+                l.ends_with(".meta4") || l.ends_with(".metalink")
+            } =>
+            {
+                a.imports.push(cwd.join(s))
+            }
             s => tracing::debug!("ignoring argument {s:?}"),
         }
     }
@@ -524,7 +547,7 @@ fn forwarded_args(app: &AppHandle, argv: &[String], cwd: &str) {
         let _ = app.notification().builder().title("K-Star").body(e).show();
         return;
     }
-    if args.urls.is_empty() && !args.background && !args.start_queue {
+    if args.urls.is_empty() && args.imports.is_empty() && !args.background && !args.start_queue {
         show_main(app);
     }
 }
@@ -571,6 +594,9 @@ fn add_from_args(app: &AppHandle, args: &Args) -> Result<(), String> {
             tracing::warn!("could not add the downloads from the command line: {message}");
             show_main(app);
         }
+    }
+    for path in &args.imports {
+        tools::import_file(app, path).map_err(|e| format!("{}: {e}", path.display()))?;
     }
     if args.start_queue
         && let Err(e) = state.engine.start_queue(start_queue)
@@ -734,6 +760,27 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            tools::import_list,
+            tools::export_list,
+            tools::expand_batch,
+            tools::parse_checksum,
+            tools::accept_unverified,
+            tools::verify_file,
+            tools::file_digests,
+            tools::set_checksum,
+            tools::set_mirrors,
+            tools::zip_list,
+            tools::add_zip_entries,
+            tools::quota_status,
+            tools::ignore_quota,
+            tools::test_command,
+            tools::grab_projects,
+            tools::save_grab_project,
+            tools::delete_grab_project,
+            tools::grab_start,
+            tools::grab_cancel,
+            tools::review_grab,
+            tools::open_saved_site,
             commands::startup_error,
             commands::list_downloads,
             commands::probe_url,
@@ -863,6 +910,15 @@ mod tests {
             parse(&["--filename", "x", "http://a/1", "http://a/2"]).unwrap_err(),
             "--filename needs exactly one URL"
         );
+        let a = parse(&["--import", "list.txt", "Ubuntu.META4", "/tmp/x.metalink"]).unwrap();
+        assert_eq!(
+            a.imports,
+            [
+                PathBuf::from("/home/me/list.txt"),
+                PathBuf::from("/home/me/Ubuntu.META4"),
+                PathBuf::from("/tmp/x.metalink")
+            ]
+        );
     }
 
     #[test]
@@ -876,6 +932,8 @@ mod tests {
             active_connections: 1,
             segments: vec![],
             media: None,
+            phase: None,
+            source_bytes: vec![],
         };
         assert_eq!(
             tray_status(&[item(50, Some(100)), item(5, None)], 5_100_000),

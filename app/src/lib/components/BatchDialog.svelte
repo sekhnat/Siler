@@ -10,11 +10,17 @@
     queueId?: number | null;
     /** The browser extension handed over the stream itself. */
     stream?: boolean;
+    /** Where it goes (a saved site's folder, a metalink's folder). */
+    dir?: string | null;
+    /** The checksum it comes with, as `SHA-256 ab12…`. */
+    checksum?: string | null;
+    mirrors?: number;
+    origin?: string;
   }
 </script>
 
 <script lang="ts">
-  import { Search, X } from "@lucide/svelte";
+  import { Search, ShieldCheck, Waypoints, X } from "@lucide/svelte";
   import { onMount } from "svelte";
   import { api, MAIN_QUEUE, type Category, type OnConflict, type Settings } from "../api";
   import { CATEGORIES, categoryOf } from "../categories";
@@ -69,7 +75,7 @@
           // A manifest is a stream: its default tracks, as a media download.
           await api.addMedia({ url: it.url, startPaused, pendingId: it.pendingId, onConflict: conflict, queueId });
         } else if (checked[it.key]) {
-          await api.add({ url: it.url, filename: it.filename, startPaused, pendingId: it.pendingId, onConflict: conflict, queueId });
+          await api.add({ url: it.url, filename: it.filename, dir: it.dir ?? null, startPaused, pendingId: it.pendingId, onConflict: conflict, queueId });
         } else if (it.pendingId != null) {
           await api.dismissPending(it.pendingId);
         }
@@ -86,7 +92,9 @@
 <div class="batch">
   <div>
     <h2>Download {items.length} files</h2>
-    <div class="hint">Choose which files K-Star should download.</div>
+    <div class="hint">
+      {#if items[0]?.origin === "grabber"}Found by the site grabber.{" "}{:else if items[0]?.origin === "list"}From a list or metalink.{" "}{/if}Choose which files K-Star should download.
+    </div>
   </div>
 
   <div class="filters">
@@ -118,6 +126,8 @@
       <label class="row">
         <input type="checkbox" bind:checked={checked[it.key]} />
         <span class="name truncate" title={it.url}>{it.name}</span>
+        {#if it.checksum}<span class="badge" title="Checked against {it.checksum}"><ShieldCheck size={12} /></span>{/if}
+        {#if it.mirrors}<span class="badge" title="{it.mirrors} {it.mirrors === 1 ? 'mirror' : 'mirrors'}"><Waypoints size={12} /> {it.mirrors}</span>{/if}
         <span class="host truncate">{host(it.url)}</span>
         <span class="size">{it.size ? bytes(it.size) : ""}</span>
       </label>
@@ -144,6 +154,15 @@
 </div>
 
 <style>
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    color: var(--ok);
+    font-size: 11px;
+    font-weight: 600;
+    flex: none;
+  }
   .batch {
     display: flex;
     flex-direction: column;

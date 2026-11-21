@@ -1,5 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
-import { api, errorText, MAIN_QUEUE, type Download, type EngineEvent, type Queue } from "./api";
+import { api, errorText, MAIN_QUEUE, type Download, type EngineEvent, type GrabProgress, type Queue, type QuotaStatus } from "./api";
 
 const HISTORY = 90; // samples at ~4 Hz ≈ 22 s
 
@@ -10,6 +10,9 @@ class DownloadStore {
   perHistory = $state<Record<number, number[]>>({});
   loaded = $state(false);
   queues = $state<Queue[]>([]);
+  quota = $state<QuotaStatus | null>(null);
+  /** The latest progress of each site grab, by run. */
+  grabs = $state<Record<number, GrabProgress>>({});
 
   queueName(id: number): string {
     return this.queues.find((q) => q.id === id)?.name ?? "Main queue";
@@ -24,8 +27,9 @@ class DownloadStore {
   }
 
   async reload() {
-    const [list, queues] = await Promise.all([api.list(), api.queues()]);
+    const [list, queues, quota] = await Promise.all([api.list(), api.queues(), api.quotaStatus().catch(() => null)]);
     this.queues = queues;
+    this.quota = quota;
     const next: Record<number, Download> = {};
     for (const d of list) next[d.id] = d;
     this.items = next;
@@ -40,6 +44,16 @@ class DownloadStore {
       case "queues":
         this.queues = ev.queues;
         break;
+      case "quota": {
+        const { type: _t, ...q } = ev;
+        this.quota = q;
+        break;
+      }
+      case "grab": {
+        const { type: _t, ...g } = ev;
+        this.grabs[g.run_id] = g;
+        break;
+      }
       case "removed":
         delete this.items[ev.id];
         delete this.perHistory[ev.id];
@@ -53,6 +67,8 @@ class DownloadStore {
           d.active_connections = p.active_connections;
           d.segments = p.segments;
           if (p.media !== undefined) d.media_progress = p.media;
+          d.phase = p.phase ?? null;
+          if (p.source_bytes) p.source_bytes.forEach((b, i) => d.sources[i] && (d.sources[i].bytes = b));
           if (p.total_size != null) d.total_size = p.total_size;
           const h = this.perHistory[p.id] ?? new Array(HISTORY).fill(0);
           h.push(p.speed);

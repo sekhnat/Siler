@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { Film, FolderOpen, KeyRound, ListOrdered, LoaderCircle, Pause, Play, RefreshCw, RotateCw } from "@lucide/svelte";
-  import { api, MAIN_QUEUE, type Download } from "../api";
+  import { FileArchive, Film, FolderOpen, KeyRound, ListOrdered, LoaderCircle, Pause, Play, RefreshCw, RotateCw, ShieldCheck, ShieldX, SquareTerminal, Waypoints } from "@lucide/svelte";
+  import { ALGO_LABEL, api, MAIN_QUEUE, type Download } from "../api";
   import { STATUS_COLOR, STATUS_LABEL } from "../categories";
   import { bytes, eta, host, knownSize, nameFromUrl, percent, relativeTime, speed, syncLabel } from "../format";
   import { attempt, store } from "../store.svelte";
@@ -45,8 +45,18 @@
         return "Saving…";
     }
   });
+  const finishing = $derived.by(() => {
+    const p = d.phase;
+    if (!p || done) return null;
+    const pc = p.total ? ` ${Math.floor((100 * p.done) / p.total)}%` : "";
+    return p.name === "verifying" ? `Checking the checksum${pc}` : `Unpacking${pc}`;
+  });
+  const verified = $derived(d.verify && d.verify.expected ? d.verify.expected.toLowerCase() === d.verify.actual.toLowerCase() : null);
+  const usedMirrors = $derived(d.sources.filter((s, i) => i > 0 && !s.disabled).length);
+  const commandFailed = $derived(!!d.command && !d.command.running && (d.command.error != null || d.command.exit_code !== 0));
   const sizeText = $derived.by(() => {
     if (done) return bytes(d.total_size);
+    if (finishing) return finishing;
     if (phaseText) return phaseText;
     if (d.media) return d.downloaded ? `${bytes(d.downloaded)} so far` : "Not started";
     if (d.total_size) return `${bytes(d.downloaded)} of ${bytes(d.total_size)}`;
@@ -68,6 +78,22 @@
       <span class="name truncate" title={name}>{name}</span>
       {#if d.file_missing}
         <span class="pill" style:--c="var(--warn)" title="The file was moved or deleted">File missing</span>
+      {/if}
+      {#if verified === true}
+        <span class="pill" style:--c="var(--ok)" title="Its {ALGO_LABEL[d.verify!.algo]} matches the expected checksum"><ShieldCheck size={11} />Verified</span>
+      {:else if d.checksum_failed}
+        <span class="pill" style:--c="var(--err)" title="Its {d.verify ? ALGO_LABEL[d.verify.algo] : 'checksum'} doesn't match"><ShieldX size={11} />Damaged</span>
+      {/if}
+      {#if d.sources.length > 1 && !done}
+        <span class="pill quiet" title="{usedMirrors} of {d.sources.length - 1} mirrors in use"><Waypoints size={11} />{usedMirrors + 1} sources</span>
+      {/if}
+      {#if d.zip_path}
+        <span class="pill quiet" title="From inside the archive: {d.zip_path}"><FileArchive size={11} />ZIP</span>
+      {/if}
+      {#if d.command?.running}
+        <span class="pill" style:--c="var(--accent)" title="Running the command after the download"><SquareTerminal size={11} />Running command</span>
+      {:else if commandFailed}
+        <span class="pill" style:--c="var(--warn)" title={d.command?.error ?? `The command exited with ${d.command?.exit_code}`}><SquareTerminal size={11} />Command failed</span>
       {/if}
       {#if d.media}
         <span class="pill quiet" title={d.media.reason}><Film size={11} />{d.media.manifest === "hls" ? "HLS" : "DASH"}</span>

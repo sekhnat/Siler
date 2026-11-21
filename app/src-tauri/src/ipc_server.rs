@@ -140,6 +140,10 @@ pub enum Origin {
     Browser,
     CommandLine,
     Clipboard,
+    /// An imported list or a metalink.
+    List,
+    /// The site grabber.
+    Grabber,
 }
 
 /// How downloads from the browser or the command line are added.

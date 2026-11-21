@@ -1,9 +1,9 @@
 <script lang="ts">
-  import { ChevronDown, CircleCheck, FolderOpen, RotateCcw, Link, LoaderCircle, TriangleAlert } from "@lucide/svelte";
+  import { ChevronDown, CircleCheck, FileArchive, FolderOpen, RotateCcw, Link, LoaderCircle, ShieldCheck, TriangleAlert } from "@lucide/svelte";
   import { open } from "@tauri-apps/plugin-dialog";
   import { onMount } from "svelte";
   import { slide } from "svelte/transition";
-  import { api, errorText, MAIN_QUEUE, type Category, type ContainerChoice, type LoginRequest, type MediaProbe, type Pending, type ProbeError, type ProbeResult, type Selection, type Settings, type SubtitleMode } from "../api";
+  import { ALGO_LABEL, api, errorText, MAIN_QUEUE, type Category, type Checksum, type ContainerChoice, type LoginRequest, type MediaProbe, type Pending, type ProbeError, type ProbeResult, type Selection, type Settings, type SubtitleMode } from "../api";
   import { CATEGORIES, categoryMeta } from "../categories";
   import { bytes, host, looksLikeUrl, nameFromUrl, parseUrls, percent } from "../format";
   import { toasts } from "../store.svelte";
@@ -11,6 +11,7 @@
   import LoginForm from "./LoginForm.svelte";
   import MediaPicker from "./MediaPicker.svelte";
   import QueuePicker from "./QueuePicker.svelte";
+  import ZipPreview from "./ZipPreview.svelte";
 
   let {
     initialUrl = "",
@@ -58,7 +59,13 @@
   let subtitleMode = $state<SubtitleMode>("embed");
   let settings = $state<Settings | null>(null);
   let connections = $state<number | null>(null);
-  let advanced = $state(false);
+  // svelte-ignore state_referenced_locally
+  let advanced = $state(!!pending?.checksum || !!pending?.mirrors);
+  let checksumText = $state("");
+  let checksumParsed = $state<Checksum | null>(null);
+  let checksumError = $state("");
+  let mirrorsText = $state("");
+  let zipOpen = $state(false);
   let busy = $state(false);
   let urlInput: HTMLInputElement | undefined = $state();
   // An existing file with the chosen name, and what to do about it.
@@ -71,6 +78,33 @@
   const isStream = $derived(mediaProbe?.kind === "hls" || mediaProbe?.kind === "dash");
   const mediaReady = $derived(isStream && (selection.video !== null || selection.audio.length > 0));
   const resumable = $derived(pending?.resumable ?? null);
+  const mirrorLines = $derived(
+    mirrorsText
+      .split(/\s+/)
+      .map((l) => l.trim())
+      .filter(Boolean),
+  );
+  const mirrorsBad = $derived(mirrorLines.filter((l) => !looksLikeUrl(l)));
+  /** A ZIP archive on a server that sends parts of files: its contents can be listed. */
+  const zipPreviewable = $derived(
+    !!probe && probe.resumable && probe.total_size != null && (/\.zip$/i.test(probe.filename) || /zip/i.test(probe.content_type ?? "")),
+  );
+
+  // What the typed checksum is.
+  $effect(() => {
+    const t = checksumText.trim();
+    checksumError = "";
+    checksumParsed = null;
+    if (!t) return;
+    let stale = false;
+    api
+      .parseChecksum(t)
+      .then((c) => !stale && (checksumParsed = c))
+      .catch((e) => !stale && (checksumError = errorText(e)));
+    return () => {
+      stale = true;
+    };
+  });
 
   onMount(async () => {
     settings = await api.getSettings().catch(() => null);
@@ -259,7 +293,7 @@
       }
       return;
     }
-    if (!valid || busy) return;
+    if (!valid || busy || checksumError || mirrorsBad.length) return;
     busy = true;
     try {
       const name = filename.trim();
@@ -273,6 +307,8 @@
         onConflict: clash ? choice : null,
         pendingId: pending?.id ?? null,
         queueId,
+        checksum: checksumText.trim() || null,
+        mirrors: mirrorLines.length ? mirrorLines : null,
       });
       ondone();
     } catch (e) {
@@ -307,13 +343,24 @@
   }
 </script>
 
+{#if zipOpen && probe}
+  <ZipPreview
+    url={probe.final_url}
+    pendingId={pending?.id ?? null}
+    archiveName={filename.trim() || probe.filename}
+    baseDir={dir}
+    bind:queueId
+    onback={() => (zipOpen = false)}
+    {ondone}
+  />
+{:else}
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="add" {onkeydown}>
   <div class="head">
     <div>
       <h2>New download</h2>
       <div class="hint">
-        {#if pending && pending.origin === "command_line"}From the command line{:else if pending && pending.origin === "clipboard"}Copied to the clipboard{:else if pending}From {pending.site ? siteName(pending.site) : "Firefox"}{pending.page_url ? ` · ${host(pending.page_url)}` : ""}{pending.method === "POST" ? " · form submission" : ""}{:else}Paste one or more links{/if}
+        {#if pending && pending.origin === "command_line"}From the command line{:else if pending && pending.origin === "clipboard"}Copied to the clipboard{:else if pending && pending.origin === "list"}From a list or metalink{:else if pending && pending.origin === "grabber"}Found by the site grabber{:else if pending}From {pending.site ? siteName(pending.site) : "Firefox"}{pending.page_url ? ` · ${host(pending.page_url)}` : ""}{pending.method === "POST" ? " · form submission" : ""}{:else}Paste one or more links{/if}
         {#if position}<span class="pos">{position}</span>{/if}
       </div>
     </div>
@@ -368,11 +415,14 @@
             <span class="pill" style:--c="var(--warn)">Can't resume</span>
           {/if}
         </div>
-        <div class="hint truncate">{host(probe.final_url)}</div>
+        <div class="hint truncate">{host(probe.final_url)}{probe.digest ? ` · the server gives its ${ALGO_LABEL[probe.digest.algo]}, which is checked` : ""}</div>
       {:else}
         <div class="hint">File details appear here once the link is checked.</div>
       {/if}
     </div>
+    {#if zipPreviewable}
+      <button class="btn btn-sm" onclick={() => (zipOpen = true)} title="See what's inside and pick files"><FileArchive size={14} /> Preview contents</button>
+    {/if}
   </div>
 
   {/if}
@@ -435,6 +485,20 @@
         <span class="label">Connections <span class="hint">({connections ?? "default"})</span></span>
         <input type="range" min="1" max="32" value={connections ?? 8} oninput={(e) => (connections = +e.currentTarget.value)} />
       </label>
+      <label class="field">
+        <span class="label">Checksum <span class="hint">(MD5, SHA-1, SHA-256 or SHA-512; checked when the file is done)</span></span>
+        <input class="input mono" bind:value={checksumText} placeholder={pending?.checksum ? `${pending.checksum} (from the list)` : "Paste the checksum the site gives"} spellcheck="false" />
+        {#if checksumError}
+          <span class="note err"><TriangleAlert size={12} /> {checksumError}</span>
+        {:else if checksumParsed}
+          <span class="note ok"><ShieldCheck size={12} /> {ALGO_LABEL[checksumParsed.algo]}</span>
+        {/if}
+      </label>
+      <label class="field">
+        <span class="label">Mirrors <span class="hint">(other addresses of the same file, one per line; fetched from at the same time)</span></span>
+        <textarea class="input mono" rows="2" bind:value={mirrorsText} placeholder={pending?.mirrors ? `${pending.mirrors} from the list` : "https://mirror.example/file.iso"} spellcheck="false"></textarea>
+        {#if mirrorsBad.length}<span class="note err"><TriangleAlert size={12} /> “{mirrorsBad[0]}” isn't a link</span>{/if}
+      </label>
     </div>
   {/if}
 
@@ -448,6 +512,7 @@
     <button class="btn" class:btn-primary={!later} disabled={(mediaProbe ? !mediaReady : !valid || streamFailed) || busy} onclick={() => submit(false)}>Start download</button>
   </div>
 </div>
+{/if}
 
 <style>
   .add {
@@ -624,6 +689,34 @@
     font-weight: 600;
     color: var(--text-2);
     margin-top: -4px;
+  }
+  .adv {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .adv textarea {
+    resize: vertical;
+    min-height: 54px;
+    padding-top: 8px;
+    font-size: 12px;
+  }
+  .adv .mono {
+    font-size: 12px;
+  }
+  .note {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin-top: 5px;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .note.err {
+    color: var(--err);
+  }
+  .note.ok {
+    color: var(--ok);
   }
   .adv input[type="range"] {
     width: 100%;

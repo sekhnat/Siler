@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { Copy, ExternalLink, FolderOpen, Gauge, Info, Minus, Pause, Play, Plus, RotateCw, SlidersHorizontal, Trash2, TriangleAlert, X } from "@lucide/svelte";
+  import { Copy, ExternalLink, FolderOpen, Gauge, Info, Minus, Pause, Play, Plus, RotateCw, ShieldCheck, ShieldX, SlidersHorizontal, SquareTerminal, Trash2, TriangleAlert, X } from "@lucide/svelte";
   import { fly } from "svelte/transition";
-  import { api, type Download } from "../api";
+  import { ALGO_LABEL, api, type Download } from "../api";
   import { STATUS_LABEL, categoryMeta } from "../categories";
   import { bytes, dateTime, eta, knownSize, limitLabel, nameFromUrl, percent, relativeTime, speed, syncLabel } from "../format";
   import { attempt, store, toasts } from "../store.svelte";
@@ -49,6 +49,13 @@
     }
   }
 
+  const verified = $derived(d.verify?.expected ? d.verify.expected.toLowerCase() === d.verify.actual.toLowerCase() : null);
+  const ORIGIN: Record<string, string> = { user: "added by you", metalink: "from a list", server: "named by the server" };
+
+  async function keepAnyway() {
+    await attempt(api.acceptUnverified(d.id));
+  }
+
   async function copyLink() {
     try {
       await navigator.clipboard.writeText(d.url);
@@ -79,6 +86,17 @@
 
   {#if d.file_missing}
     <div class="note err"><TriangleAlert size={15} /><span>The file was moved or deleted. Download it again, or remove it from the list.</span></div>
+  {:else if d.checksum_failed}
+    <div class="note err col">
+      <div class="row-note"><ShieldX size={15} /><span>{d.error}</span></div>
+      {#if d.verify}
+        <div class="mono small selectable">Expected {d.verify.expected}<br />Got&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{d.verify.actual}</div>
+      {/if}
+      <div class="note-actions">
+        <button class="btn btn-sm" onclick={() => attempt(api.restart(d.id))}>Download again</button>
+        <button class="btn btn-sm btn-ghost" onclick={keepAnyway}>Keep it anyway</button>
+      </div>
+    </div>
   {:else if d.status === "failed" && d.error}
     <div class="note err"><TriangleAlert size={15} /><span class="selectable">{d.error}</span></div>
   {:else if d.notice}
@@ -99,6 +117,22 @@
     </div>
     <SegmentMap segments={d.segments} total={d.total_size} status={d.status} downloaded={d.downloaded} />
   </div>
+
+  {#if d.sources.length > 1}
+    <div class="block">
+      <div class="block-head"><span>Sources</span><span class="muted">{d.sources.filter((s) => !s.disabled).length} of {d.sources.length} in use</span></div>
+      <div class="sources">
+        {#each d.sources as s, i (s.url)}
+          <div class="source" class:off={!!s.disabled} title={s.disabled ?? s.url}>
+            <span class="dot-src" class:live={s.active > 0}></span>
+            <span class="truncate src-host">{(() => { try { return new URL(s.url).host; } catch { return s.url; } })()}</span>
+            <span class="muted src-meta">{i === 0 ? "main" : ORIGIN[s.origin]}{s.disabled ? " · not used" : ""}</span>
+            <span class="num">{bytes(s.bytes)}</span>
+          </div>
+        {/each}
+      </div>
+    </div>
+  {/if}
 
   {#if running || history.some((v) => v > 0)}
     <div class="block">
@@ -155,6 +189,37 @@
         <dd>{mediaPhase(d.media_progress)}</dd>
       {/if}
     {/if}
+    {#if d.zip_path}
+      <dt>From archive</dt>
+      <dd class="selectable mono truncate" title={d.zip_path}>{d.zip_path}</dd>
+    {/if}
+    {#if d.phase && d.status !== "completed"}
+      <dt>Progress</dt>
+      <dd>{d.phase.name === "verifying" ? "Checking the checksum" : "Unpacking"} {d.phase.total ? `${Math.floor((100 * d.phase.done) / d.phase.total)}%` : ""}</dd>
+    {/if}
+    {#if d.checksum || d.verify}
+      <dt>Checksum</dt>
+      <dd>
+        {#if verified === true}
+          <span class="pill" style:--c="var(--ok)"><ShieldCheck size={11} /> {ALGO_LABEL[d.verify!.algo]} matches</span>
+        {:else if verified === false}
+          <span class="pill" style:--c="var(--err)"><ShieldX size={11} /> {ALGO_LABEL[d.verify!.algo]} doesn't match</span>
+        {:else if d.checksum}
+          <span class="muted">{ALGO_LABEL[d.checksum.algo]}{d.checksum.source === "server" ? " from the server" : d.checksum.source === "metalink" ? " from the list" : ""}, checked when done</span>
+        {:else if d.verify}
+          <span class="mono small selectable">{ALGO_LABEL[d.verify.algo]} {d.verify.actual}</span>
+        {/if}
+      </dd>
+    {/if}
+    {#if d.command}
+      <dt>Command</dt>
+      <dd>
+        {#if d.command.running}<span class="muted"><SquareTerminal size={12} /> Running…</span>
+        {:else if d.command.error}<span class="err-text">{d.command.error}</span>
+        {:else}<span class:err-text={d.command.exit_code !== 0}>Exited with {d.command.exit_code}</span>{/if}
+        {#if d.command.output}<pre class="output selectable">{d.command.output}</pre>{/if}
+      </dd>
+    {/if}
     <dt>Added</dt>
     <dd>{dateTime(d.created_at)}</dd>
     {#if d.completed_at}
@@ -185,6 +250,72 @@
 </section>
 
 <style>
+  .note.col {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .row-note {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+  }
+  .note-actions {
+    display: flex;
+    gap: 6px;
+  }
+  .small {
+    font-size: 11px;
+    word-break: break-all;
+  }
+  .sources {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .source {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 12px;
+    min-width: 0;
+  }
+  .source.off {
+    opacity: 0.55;
+  }
+  .src-host {
+    font-weight: 600;
+    min-width: 0;
+  }
+  .src-meta {
+    flex: 1;
+    white-space: nowrap;
+    font-size: 11px;
+  }
+  .dot-src {
+    width: 7px;
+    height: 7px;
+    border-radius: 99px;
+    background: var(--border-strong);
+    flex: none;
+  }
+  .dot-src.live {
+    background: var(--ok);
+  }
+  .err-text {
+    color: var(--err);
+  }
+  .output {
+    margin: 6px 0 0;
+    max-height: 120px;
+    overflow: auto;
+    padding: 8px;
+    border-radius: var(--r-sm);
+    background: var(--surface-2);
+    font-size: 11px;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
   section {
     width: 340px;
     flex: none;

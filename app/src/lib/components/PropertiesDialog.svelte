@@ -16,11 +16,21 @@
   let filename = $state(d.filename ?? "");
   // svelte-ignore state_referenced_locally
   let dir = $state(d.dir ?? "");
+  // svelte-ignore state_referenced_locally
+  let checksum = $state(d.checksum?.hex ?? "");
+  // svelte-ignore state_referenced_locally
+  let mirrors = $state(d.sources.slice(1).map((s) => s.url).join("\n"));
   let limitMenu = $state(false);
   let saving = $state(false);
 
   const done = $derived(d.status === "completed");
-  const changed = $derived((filename.trim() && filename.trim() !== d.filename) || (dir.trim() && dir.trim() !== d.dir));
+  const fileChanged = $derived((filename.trim() && filename.trim() !== d.filename) || (dir.trim() && dir.trim() !== d.dir));
+  const checksumChanged = $derived(checksum.trim().toLowerCase() !== (d.checksum?.hex ?? ""));
+  const mirrorList = $derived(mirrors.split(/\s+/).filter(Boolean));
+  const mirrorsChanged = $derived(mirrorList.join("\n") !== d.sources.slice(1).map((s) => s.url).join("\n"));
+  /** Checksums and mirrors apply to ordinary files only. */
+  const plainFile = $derived(!d.media && !d.zip_path);
+  const changed = $derived(fileChanged || (plainFile && (checksumChanged || (!done && mirrorsChanged))));
 
   async function browse() {
     const picked = await open({ directory: true, defaultPath: dir || undefined, title: "Move to folder" });
@@ -35,9 +45,13 @@
     if (!changed) return onclose();
     saving = true;
     try {
-      const name = filename.trim() && filename.trim() !== d.filename ? filename.trim() : null;
-      const folder = dir.trim() && dir.trim() !== d.dir ? dir.trim() : null;
-      await api.edit(d.id, name, folder);
+      if (plainFile && checksumChanged) await api.setChecksum(d.id, checksum.trim() || null);
+      if (plainFile && !done && mirrorsChanged) await api.setMirrors(d.id, mirrorList);
+      if (fileChanged) {
+        const name = filename.trim() && filename.trim() !== d.filename ? filename.trim() : null;
+        const folder = dir.trim() && dir.trim() !== d.dir ? dir.trim() : null;
+        await api.edit(d.id, name, folder);
+      }
       toasts.show(done ? "File moved" : "Download updated", "success");
       onclose();
     } catch (e) {
@@ -104,6 +118,19 @@
       </div>
     {/if}
 
+    {#if plainFile}
+      <label class="field">
+        <span class="label">Checksum <span class="hint">({done ? "use Verify checksum to check the file now" : "checked when the download finishes"})</span></span>
+        <input class="input mono" bind:value={checksum} placeholder="MD5, SHA-1, SHA-256 or SHA-512" spellcheck="false" />
+      </label>
+      {#if !done}
+        <label class="field">
+          <span class="label">Mirrors <span class="hint">(other addresses of the same file, one per line)</span></span>
+          <textarea class="input mono mirrors" rows="2" bind:value={mirrors} spellcheck="false" placeholder="https://mirror.example/file.iso"></textarea>
+        </label>
+      {/if}
+    {/if}
+
     <dl>
       {#if d.referrer}<dt>Referrer</dt><dd class="mono selectable truncate" title={d.referrer}>{d.referrer}</dd>{/if}
       {#if d.method && d.method !== "GET"}<dt>Request</dt><dd>{d.method} form submission</dd>{/if}
@@ -119,6 +146,12 @@
 </Modal>
 
 <style>
+  .mirrors {
+    resize: vertical;
+    min-height: 54px;
+    padding-top: 8px;
+    font-size: 12px;
+  }
   .head {
     display: flex;
     align-items: center;

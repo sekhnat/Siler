@@ -42,7 +42,7 @@ pub fn meta_of(item: &BrowserItem) -> RequestMeta {
     }
 }
 
-fn pending_meta(state: &AppState, pending_id: Option<u64>) -> Option<RequestMeta> {
+pub(crate) fn pending_meta(state: &AppState, pending_id: Option<u64>) -> Option<RequestMeta> {
     let id = pending_id?;
     let p = state.pending.lock().unwrap();
     p.iter().find(|p| p.id == id).map(|p| meta_of(&p.item))
@@ -204,11 +204,21 @@ pub struct AddArgs {
     on_conflict: Option<OnConflict>,
     pending_id: Option<u64>,
     queue_id: Option<i64>,
+    /// A checksum as typed or pasted; empty clears one that came with the item.
+    checksum: Option<String>,
+    /// Mirrors, one address each; absent keeps the ones that came with the item.
+    mirrors: Option<Vec<String>>,
 }
 
 #[tauri::command]
 pub fn add_download(state: State<'_, AppState>, args: AddArgs) -> Res<i64> {
     let meta = pending_meta(&state, args.pending_id).unwrap_or_default();
+    let extra = args.pending_id.and_then(|id| {
+        let p = state.pending.lock().unwrap();
+        p.iter().find(|p| p.id == id).and_then(|p| p.extra.clone())
+    });
+    let checksum = crate::tools::checksum_arg(args.checksum.as_deref(), extra.as_ref())?;
+    let mirrors = crate::tools::mirrors_arg(args.mirrors.as_deref(), extra.as_ref());
     let id = state
         .engine
         .add(NewDownload {
@@ -221,6 +231,10 @@ pub fn add_download(state: State<'_, AppState>, args: AddArgs) -> Res<i64> {
             connections: args.connections,
             on_conflict: args.on_conflict,
             queue_id: args.queue_id,
+            checksum,
+            mirrors,
+            pieces: extra.and_then(|e| e.pieces),
+            zip_entry: None,
         })
         .map_err(err)?;
     forget_pending(&state, args.pending_id);
@@ -330,6 +344,8 @@ pub fn pending_adds(state: State<'_, AppState>) -> Vec<PendingView> {
                 site: p.item.media.as_ref().and_then(|m| m.site.clone()),
                 title: p.item.media.as_ref().and_then(|m| m.title.clone()),
                 stream: p.item.media.as_ref().is_some_and(|m| m.manifest.is_some()),
+                checksum: p.extra.as_ref().and_then(|e| e.label()),
+                mirrors: p.extra.as_ref().map_or(0, |e| e.mirrors.len()),
                 resumable: if single {
                     name.and_then(|n| state.engine.find_resumable(&n, p.item.size))
                 } else {

@@ -15,20 +15,27 @@
     RefreshCw,
     RefreshCcwDot,
     RotateCcw,
+    ShieldCheck,
     SlidersHorizontal,
+    FileOutput,
     Trash2,
     Zap,
   } from "@lucide/svelte";
+  import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
   import { listen } from "@tauri-apps/api/event";
   import { onMount } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
-  import { api, MAIN_QUEUE, type AfterDone, type Download, type Queue, type QueueMove, type Settings } from "./lib/api";
+  import { api, MAIN_QUEUE, type AfterDone, type Download, type ListFormat, type Queue, type QueueMove, type Settings } from "./lib/api";
   import { draggable, startFileDrag } from "./lib/drag";
   import { CATEGORIES, canPause, canResume, isActive } from "./lib/categories";
   import { describeSchedule, nameFromUrl, parseUrls, percent, relativeTime, speed, syncLabel } from "./lib/format";
   import { attempt, store, toasts } from "./lib/store.svelte";
   import AddDialog from "./lib/components/AddDialog.svelte";
   import BatchDialog, { type BatchItem } from "./lib/components/BatchDialog.svelte";
+  import BatchPatternDialog from "./lib/components/BatchPatternDialog.svelte";
+  import GrabberDialog from "./lib/components/GrabberDialog.svelte";
+  import QuotaBanner from "./lib/components/QuotaBanner.svelte";
+  import VerifyDialog from "./lib/components/VerifyDialog.svelte";
   import ConfirmDialog from "./lib/components/ConfirmDialog.svelte";
   import ConfirmRemove from "./lib/components/ConfirmRemove.svelte";
   import ContextMenu, { type MenuEntry } from "./lib/components/ContextMenu.svelte";
@@ -85,6 +92,13 @@
   let moveItems = $state<Download[] | null>(null);
   let syncItems = $state<Download[] | null>(null);
   let whenDone = $state<AfterDone>("nothing");
+  let patternOpen = $state(false);
+  let grabberOpen = $state(false);
+  /** Downloads to export; empty = all of them. */
+  let exportItems = $state<Download[] | null>(null);
+  let exportFormat = $state<ListFormat>("text");
+  let exportCookies = $state(false);
+  let verifyFor = $state<number | null>(null);
 
   $effect(() => {
     try {
@@ -343,6 +357,16 @@
         ? [{ label: "Move to queue…", icon: ListOrdered, disabled: !unfinished.length, run: () => (moveItems = unfinished) } satisfies MenuEntry]
         : []),
       {
+        label: "Verify checksum…",
+        icon: ShieldCheck,
+        disabled: !(one && one.status === "completed" && !one.file_missing),
+        run: () => one && (verifyFor = one.id),
+      },
+      ...(one?.checksum_failed
+        ? [{ label: "Keep it anyway", icon: ShieldCheck, run: () => attempt(api.acceptUnverified(one.id)) } satisfies MenuEntry]
+        : []),
+      { label: sel.length > 1 ? `Export ${sel.length} downloads…` : "Export…", icon: FileOutput, run: () => (exportItems = sel) },
+      {
         label: "Keep up to date…",
         icon: RefreshCcwDot,
         disabled: !sel.some((x) => x.status === "completed"),
@@ -372,6 +396,45 @@
     if (n) toasts.show(`Cleared ${n} completed ${n === 1 ? "download" : "downloads"}; the files are kept`, "success");
   }
 
+  // ------------------------------------------------------------ tools
+
+  function tool(t: "batch" | "grabber" | "import" | "export") {
+    if (t === "batch") patternOpen = true;
+    else if (t === "grabber") grabberOpen = true;
+    else if (t === "export") exportItems = [];
+    else importList();
+  }
+
+  async function importList() {
+    const path = await openDialog({
+      title: "Import a download list",
+      filters: [
+        { name: "Download lists", extensions: ["txt", "json", "meta4", "metalink", "ef2", "csv", "html", "htm"] },
+        { name: "All files", extensions: ["*"] },
+      ],
+    });
+    if (typeof path !== "string") return;
+    const n = await attempt(api.importList(path));
+    if (n) toasts.show(`${n} ${n === 1 ? "download" : "downloads"} to review`, "success");
+  }
+
+  async function exportList() {
+    const items = exportItems ?? [];
+    const json = exportFormat === "json";
+    const path = await saveDialog({
+      title: "Export downloads",
+      defaultPath: json ? "kstar-downloads.json" : "kstar-downloads.txt",
+      filters: [json ? { name: "K-Star list", extensions: ["json"] } : { name: "Text", extensions: ["txt"] }],
+    });
+    if (!path) return;
+    const ok = await attempt(api.exportList(path, items.map((d) => d.id), exportFormat, json && exportCookies));
+    if (ok !== undefined) {
+      toasts.show(`Exported ${items.length || store.list.length} downloads`, "success");
+      exportItems = null;
+      exportCookies = false;
+    }
+  }
+
   // ------------------------------------------------------------ adding
 
   function openUrls(urls: string[]) {
@@ -396,6 +459,10 @@
       queueEdit !== undefined ||
       !!moveItems ||
       !!syncItems ||
+      patternOpen ||
+      grabberOpen ||
+      !!exportItems ||
+      verifyFor != null ||
       quitCount != null,
   );
 
@@ -414,6 +481,9 @@
     if (mod && e.key.toLowerCase() === "n") {
       e.preventDefault();
       addOpen = { url: "" };
+    } else if (mod && e.key.toLowerCase() === "b") {
+      e.preventDefault();
+      patternOpen = true;
     } else if (typing) {
       return;
     } else if (mod && e.key.toLowerCase() === "a") {
@@ -520,7 +590,9 @@
       {whenDone}
       onwhendone={(a) => attempt(api.setWhenDone(a))}
       oncleanup={cleanup}
+      ontool={tool}
     />
+    <QuotaBanner />
     <div class="content">
       <div class="list">
         {#if !store.loaded}
@@ -565,6 +637,51 @@
     <div class="batch-wrap">
       <BatchDialog items={batchOpen} ondone={() => (batchOpen = null)} oncancel={() => (batchOpen = null)} />
     </div>
+  </Modal>
+{/if}
+
+{#if patternOpen}
+  <BatchPatternDialog
+    onclose={() => (patternOpen = false)}
+    oncontinue={(urls) => {
+      patternOpen = false;
+      openUrls(urls);
+    }}
+  />
+{/if}
+
+{#if grabberOpen}
+  <GrabberDialog onclose={() => (grabberOpen = false)} />
+{/if}
+
+{#if verifyFor != null && store.items[verifyFor]}
+  <VerifyDialog d={store.items[verifyFor]} onclose={() => (verifyFor = null)} />
+{/if}
+
+{#if exportItems}
+  {@const n = exportItems.length || store.list.length}
+  <Modal title={exportItems.length ? `Export ${n} ${n === 1 ? "download" : "downloads"}` : "Export all downloads"} width={460} onclose={() => (exportItems = null)}>
+    <div class="pick">
+      <button class="pick-row" class:on={exportFormat === "text"} onclick={() => (exportFormat = "text")}>
+        <FileOutput size={15} />
+        <span class="grow"><span class="pick-name">A list of links</span><span class="hint">One address per line; any download manager reads it</span></span>
+      </button>
+      <button class="pick-row" class:on={exportFormat === "json"} onclick={() => (exportFormat = "json")}>
+        <FileOutput size={15} />
+        <span class="grow"><span class="pick-name">K-Star list</span><span class="hint">Also names, folders, queues, checksums and mirrors</span></span>
+      </button>
+    </div>
+    {#if exportFormat === "json"}
+      <button class="toggle export-cookies" onclick={() => (exportCookies = !exportCookies)}>
+        <span class="switch" class:on={exportCookies}></span>
+        Include cookies <span class="hint">— they can log someone else in to your accounts; keep the file private</span>
+      </button>
+    {/if}
+    {#snippet footer()}
+      <span class="grow"></span>
+      <button class="btn btn-ghost" onclick={() => (exportItems = null)}>Cancel</button>
+      <button class="btn btn-primary" onclick={exportList}>Export…</button>
+    {/snippet}
   </Modal>
 {/if}
 
@@ -744,6 +861,11 @@
 <Toasts />
 
 <style>
+  .export-cookies {
+    margin-top: 12px;
+    text-align: left;
+    font-size: 12.5px;
+  }
   .shell {
     position: relative;
     display: flex;

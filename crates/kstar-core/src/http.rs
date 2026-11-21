@@ -167,7 +167,7 @@ fn related_hosts(a: &str, b: &str) -> bool {
 /// The site a host belongs to: the host without its first label, unless that would leave a
 /// public suffix (`example.com` stays; `www.example.com` gives `example.com`;
 /// `example.co.uk` stays, since `co.uk` is shared by unrelated sites).
-fn site_of(host: &str) -> &str {
+pub(crate) fn site_of(host: &str) -> &str {
     let labels: Vec<&str> = host.split('.').collect();
     if labels.len() <= 2 {
         return host;

@@ -3,6 +3,7 @@
 use rusqlite::{Connection, OptionalExtension, Row, ToSql, params};
 use std::path::{Path, PathBuf};
 
+use crate::extras::Extras;
 use crate::media::{JobKind, MediaRecord};
 use crate::queue::Queue;
 use crate::{Category, OnConflict, RequestMeta, Result, Segment, Settings, Status};
@@ -43,6 +44,7 @@ pub(crate) struct Record {
     pub kind: JobKind,
     /// The media details of a media download.
     pub media: Option<MediaRecord>,
+    pub extras: Extras,
 }
 
 const SCHEMA_V1: &str = "
@@ -98,6 +100,25 @@ ALTER TABLE downloads ADD COLUMN sync_every INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE downloads ADD COLUMN sync_checked_at INTEGER;
 ";
 
+const SCHEMA_V5: &str = "
+ALTER TABLE downloads ADD COLUMN extras TEXT NOT NULL DEFAULT '{}';
+CREATE TABLE grab_projects (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL,
+    config     TEXT NOT NULL,
+    last_run   INTEGER,
+    created_at INTEGER NOT NULL
+);
+CREATE TABLE grab_seen (
+    project_id INTEGER NOT NULL,
+    url        TEXT NOT NULL,
+    PRIMARY KEY (project_id, url)
+);
+";
+
+/// A saved site-grabber project: id, name, config JSON, last run.
+pub(crate) type GrabRow = (i64, String, String, Option<i64>);
+
 pub(crate) struct Store {
     conn: Connection,
 }
@@ -147,6 +168,12 @@ impl Store {
             tx.pragma_update(None, "user_version", 4)?;
             tx.commit()?;
         }
+        if version < 5 {
+            let tx = self.conn.unchecked_transaction()?;
+            tx.execute_batch(SCHEMA_V5)?;
+            tx.pragma_update(None, "user_version", 5)?;
+            tx.commit()?;
+        }
         Ok(())
     }
 
@@ -181,6 +208,7 @@ impl Store {
             (":sync_checked_at", Box::new(r.sync_checked_at)),
             (":kind", Box::new(r.kind.as_str())),
             (":media", Box::new(r.media.as_ref().map(to_json))),
+            (":extras", Box::new(to_json(&r.extras))),
         ]
     }
 
@@ -194,11 +222,11 @@ impl Store {
             "INSERT INTO downloads (url, final_url, filename, dir, category, total_size, downloaded, status,
                 resumable, error, notice, etag, last_modified, meta, connections, speed_limit, created_at,
                 completed_at, segments, position, on_conflict, queue_id, sync_every, sync_checked_at,
-                kind, media)
+                kind, media, extras)
              VALUES (:url, :final_url, :filename, :dir, :category, :total_size, :downloaded, :status,
                 :resumable, :error, :notice, :etag, :last_modified, :meta, :connections, :speed_limit,
                 :created_at, :completed_at, :segments, :position, :on_conflict, :queue_id,
-                :sync_every, :sync_checked_at, :kind, :media)",
+                :sync_every, :sync_checked_at, :kind, :media, :extras)",
             &Self::values(r),
         )?;
         Ok(self.conn.last_insert_rowid())
@@ -215,7 +243,7 @@ impl Store {
                 speed_limit=:speed_limit, created_at=:created_at, completed_at=:completed_at,
                 segments=:segments, position=:position, on_conflict=:on_conflict,
                 queue_id=:queue_id, sync_every=:sync_every, sync_checked_at=:sync_checked_at,
-                kind=:kind, media=:media
+                kind=:kind, media=:media, extras=:extras
              WHERE id=:id",
             &values,
         )?;
@@ -300,6 +328,70 @@ impl Store {
         Ok(())
     }
 
+    /// Saved site-grabber projects: (id, name, config JSON, last run).
+    pub fn load_grab_projects(&self) -> Result<Vec<GrabRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, config, last_run FROM grab_projects ORDER BY name COLLATE NOCASE, id",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Inserts the project, or updates it when its id exists. Returns the id.
+    pub fn save_grab_project(&self, id: i64, name: &str, config: &str) -> Result<i64> {
+        if id > 0 {
+            self.conn.execute(
+                "UPDATE grab_projects SET name=?1, config=?2 WHERE id=?3",
+                params![name, config, id],
+            )?;
+            return Ok(id);
+        }
+        self.conn.execute(
+            "INSERT INTO grab_projects (name, config, created_at) VALUES (?1, ?2, ?3)",
+            params![name, config, crate::manager::now_ms()],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn delete_grab_project(&self, id: i64) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM grab_seen WHERE project_id=?1", [id])?;
+        tx.execute("DELETE FROM grab_projects WHERE id=?1", [id])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn set_grab_last_run(&self, id: i64, at: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE grab_projects SET last_run=?1 WHERE id=?2",
+            params![at, id],
+        )?;
+        Ok(())
+    }
+
+    /// Files a project already found.
+    pub fn grab_seen(&self, id: i64) -> Result<std::collections::HashSet<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT url FROM grab_seen WHERE project_id=?1")?;
+        let rows = stmt.query_map([id], |r| r.get(0))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    pub fn add_grab_seen(&self, id: i64, urls: &[String]) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT OR IGNORE INTO grab_seen (project_id, url) VALUES (?1, ?2)",
+            )?;
+            for u in urls {
+                stmt.execute(params![id, u])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn load_settings(&self) -> Result<Option<Settings>> {
         let raw: Option<String> = self
             .conn
@@ -308,6 +400,25 @@ impl Store {
             })
             .optional()?;
         Ok(raw.and_then(|s| serde_json::from_str(&s).ok()))
+    }
+
+    /// A small value kept beside the settings (e.g. the quota's current period).
+    pub fn load_value(&self, key: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row("SELECT value FROM settings WHERE key=?1", [key], |r| {
+                r.get(0)
+            })
+            .optional()?)
+    }
+
+    pub fn save_value(&self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [key, value],
+        )?;
+        Ok(())
     }
 
     pub fn save_settings(&self, s: &Settings) -> Result<()> {
@@ -357,6 +468,7 @@ fn row_to_record(row: &Row) -> rusqlite::Result<Record> {
         media: row
             .get::<_, Option<String>>("media")?
             .and_then(|m| serde_json::from_str(&m).ok()),
+        extras: serde_json::from_str(&row.get::<_, String>("extras")?).unwrap_or_default(),
     })
 }
 
@@ -409,6 +521,15 @@ mod tests {
         assert_eq!(queues.len(), 1);
         assert_eq!(queues[0].name, "Main queue");
         assert_eq!(queues[0].max_concurrent, 0);
+        assert!(recs[0].extras.is_empty());
+        let mut r = recs[0].clone();
+        r.extras.checksum =
+            crate::checksum::Checksum::parse("900150983cd24fb0d6963f7d28e17f72").ok();
+        store.update(&r).unwrap();
+        assert_eq!(store.load_all().unwrap()[0].extras, r.extras);
+        store.save_value("quota", "{}").unwrap();
+        assert_eq!(store.load_value("quota").unwrap().as_deref(), Some("{}"));
+        assert!(store.load_settings().unwrap().is_none());
         // Opening again is a no-op.
         drop(store);
         assert_eq!(Store::open(&path).unwrap().load_all().unwrap().len(), 2);

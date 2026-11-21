@@ -25,6 +25,8 @@ use crate::{Error, RequestMeta, Result};
 pub(crate) const STOP_PAUSE: u8 = 1;
 pub(crate) const STOP_REMOVE: u8 = 2;
 pub(crate) const STOP_SHUTDOWN: u8 = 3;
+/// The data quota for this period is used up: back to the queue until the next one.
+pub(crate) const STOP_QUOTA: u8 = 4;
 
 /// Live state of a running download, shared between its task, its workers and the
 /// engine's progress ticker.
@@ -35,11 +37,19 @@ pub(crate) struct Running {
     pub stop_reason: AtomicU8,
     /// Connections the user wants; changes take effect while the transfer runs.
     pub target: AtomicUsize,
-    /// The download's share of its server's connection limit (`usize::MAX` = no limit).
-    pub host_cap: AtomicUsize,
-    /// The server (`host_key` of the final URL), once known.
-    pub host: Mutex<Option<String>>,
-    /// Wakes the transfer loop when `target` or `host_cap` changes.
+    /// The download's share of each of its servers' connection limits (absent = no limit).
+    pub caps: Mutex<HashMap<String, usize>>,
+    /// The servers it uses (`host_key` of each source's final URL), once known. The first is
+    /// the download's own server.
+    pub hosts: Mutex<Vec<String>>,
+    /// The sources of the transfer in progress, for the UI.
+    pub sources: Mutex<Vec<Arc<Source>>>,
+    /// What a finished transfer is doing before the file is ready (`verifying`, `unpacking`),
+    /// with bytes done and total.
+    pub phase: Mutex<Option<&'static str>>,
+    pub phase_done: AtomicU64,
+    pub phase_total: AtomicU64,
+    /// Wakes the transfer loop when `target` or a server's share changes.
     pub changed: Notify,
     /// The part file, once created. The task deletes it when the download is removed.
     pub part: Mutex<Option<PathBuf>>,
@@ -61,8 +71,12 @@ impl Running {
             finished: CancellationToken::new(),
             stop_reason: AtomicU8::new(0),
             target: AtomicUsize::new(connections.max(1) as usize),
-            host_cap: AtomicUsize::new(usize::MAX),
-            host: Mutex::new(None),
+            caps: Mutex::new(HashMap::new()),
+            hosts: Mutex::new(Vec::new()),
+            sources: Mutex::new(Vec::new()),
+            phase: Mutex::new(None),
+            phase_done: AtomicU64::new(0),
+            phase_total: AtomicU64::new(0),
             changed: Notify::new(),
             part: Mutex::new(None),
             table: Mutex::new(Table::default()),
@@ -86,10 +100,36 @@ impl Running {
         self.changed.notify_one();
     }
 
-    pub fn set_host_cap(&self, cap: usize) {
-        if self.host_cap.swap(cap.max(1), Relaxed) != cap.max(1) {
+    pub fn set_host_cap(&self, host: &str, cap: usize) {
+        let cap = cap.max(1);
+        let old = self.caps.lock().unwrap().insert(host.to_string(), cap);
+        if old != Some(cap) {
             self.changed.notify_one();
         }
+    }
+
+    /// The download's share of `host`'s connection limit (`usize::MAX` = no limit).
+    pub fn host_cap(&self, host: &str) -> usize {
+        self.caps
+            .lock()
+            .unwrap()
+            .get(host)
+            .copied()
+            .unwrap_or(usize::MAX)
+    }
+
+    /// The share of the download's own server (the first one it joined).
+    pub fn primary_cap(&self) -> usize {
+        match self.hosts.lock().unwrap().first() {
+            Some(h) => self.host_cap(h),
+            None => usize::MAX,
+        }
+    }
+
+    pub fn set_phase(&self, phase: Option<&'static str>, total: u64) {
+        self.phase_done.store(0, Relaxed);
+        self.phase_total.store(total, Relaxed);
+        *self.phase.lock().unwrap() = phase;
     }
 
     /// Recomputes the smoothed speed; called by the ticker.
@@ -114,9 +154,61 @@ impl Running {
     }
 }
 
+/// One address the file can be fetched from: the download's own URL or a mirror.
+pub(crate) struct Source {
+    pub url: Url,
+    /// `host_key` of the URL, for the per-server connection limit.
+    pub host: String,
+    /// 0 = the download's own URL; `i` = mirror `i - 1`.
+    pub index: usize,
+    /// Connections this source tolerates, learned from 429/503 answers.
+    pub learned_cap: AtomicUsize,
+    /// Failures in a row.
+    pub fails: AtomicU32,
+    pub disabled: Mutex<Option<String>>,
+    /// Bytes it delivered in this run.
+    pub bytes: AtomicU64,
+    /// Connections currently fetching from it.
+    pub active: AtomicU32,
+}
+
+impl Source {
+    pub fn new(url: Url, index: usize) -> Source {
+        Source {
+            host: host_key(&url),
+            url,
+            index,
+            learned_cap: AtomicUsize::new(usize::MAX),
+            fails: AtomicU32::new(0),
+            disabled: Mutex::new(None),
+            bytes: AtomicU64::new(0),
+            active: AtomicU32::new(0),
+        }
+    }
+
+    pub fn is_disabled(&self) -> bool {
+        self.disabled.lock().unwrap().is_some()
+    }
+
+    fn disable(&self, why: String) {
+        let mut d = self.disabled.lock().unwrap();
+        if d.is_none() {
+            tracing::info!(url = %self.url, %why, "mirror disabled");
+            *d = Some(why);
+        }
+    }
+}
+
+/// Failures in a row after which a source is given up (when there are others).
+const SOURCE_MAX_FAILS: u32 = 3;
+
 pub(crate) struct Transfer {
     pub net: Arc<Net>,
-    pub url: Url,
+    /// Where the file can be fetched from; the first is the download's own URL. Only the
+    /// first is used unless ranges work.
+    pub sources: Vec<Arc<Source>>,
+    /// Where the file starts on the server (an entry inside an archive); 0 for a whole file.
+    pub base: u64,
     pub meta: RequestMeta,
     pub user_agent: String,
     pub file: std::fs::File,
@@ -126,6 +218,7 @@ pub(crate) struct Transfer {
     pub ranged: bool,
 }
 
+#[derive(Clone)]
 pub(crate) struct Limits {
     pub min_split: u64,
     pub max_retries: u32,
@@ -146,37 +239,41 @@ enum WorkerError {
     Released,
 }
 
-struct ActiveGuard<'a>(&'a AtomicU32);
+struct ActiveGuard<'a>(&'a AtomicU32, &'a AtomicU32);
 impl Drop for ActiveGuard<'_> {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Relaxed);
+        self.1.fetch_sub(1, Relaxed);
     }
 }
 
 async fn worker(
     t: Arc<Transfer>,
     idx: usize,
+    src: usize,
     delay: Duration,
     release: CancellationToken,
-) -> (usize, Result<(), WorkerError>) {
+) -> (usize, usize, Result<(), WorkerError>) {
     // Cancelling between awaits is safe: data is written and accounted under the table
     // lock without awaiting, so a released worker never leaves a half-recorded chunk.
     let run = async {
         if !delay.is_zero() {
             tokio::time::sleep(delay).await;
         }
+        let source = &t.sources[src];
         t.run.active.fetch_add(1, Relaxed);
-        let _guard = ActiveGuard(&t.run.active);
-        fetch(&t, idx).await
+        source.active.fetch_add(1, Relaxed);
+        let _guard = ActiveGuard(&t.run.active, &source.active);
+        fetch(&t, idx, source).await
     };
     let res = tokio::select! {
         r = run => r,
         _ = release.cancelled() => Err(WorkerError::Released),
     };
-    (idx, res)
+    (idx, src, res)
 }
 
-async fn fetch(t: &Transfer, idx: usize) -> Result<(), WorkerError> {
+async fn fetch(t: &Transfer, idx: usize, source: &Source) -> Result<(), WorkerError> {
     let (pos, end) = {
         let table = t.run.table.lock().unwrap();
         (table.segs[idx].pos, table.segs[idx].end)
@@ -185,17 +282,31 @@ async fn fetch(t: &Transfer, idx: usize) -> Result<(), WorkerError> {
         return Ok(());
     }
 
-    let auth = t.net.auth_for(&t.url);
+    let auth = t.net.auth_for(&source.url);
     let sent = auth.as_ref().is_some_and(|a| a.ready());
+    // Cookies, referrer and the browser's headers belong to the download's own server.
+    let other_meta;
+    let meta = if source.index == 0 {
+        &t.meta
+    } else {
+        other_meta = RequestMeta {
+            user_agent: t.meta.user_agent.clone(),
+            ..Default::default()
+        };
+        &other_meta
+    };
     let mut rb = build_request(
         &t.net.client(),
-        t.url.clone(),
-        &t.meta,
+        source.url.clone(),
+        meta,
         &t.user_agent,
         auth.as_deref(),
     );
     if t.ranged {
-        rb = rb.header(RANGE, format!("bytes={}-{}", pos, end - 1));
+        rb = rb.header(
+            RANGE,
+            format!("bytes={}-{}", t.base + pos, t.base + end - 1),
+        );
     }
     let resp = rb
         .send()
@@ -244,7 +355,7 @@ async fn fetch(t: &Transfer, idx: usize) -> Result<(), WorkerError> {
                 .and_then(|v| v.to_str().ok())
                 .and_then(parse_content_range)
                 .map(|r| r.0);
-            if start != Some(pos) {
+            if start != Some(t.base + pos) {
                 return Err(WorkerError::Fatal(Error::Protocol(
                     "The server returned an unexpected byte range".into(),
                 )));
@@ -264,6 +375,15 @@ async fn fetch(t: &Transfer, idx: usize) -> Result<(), WorkerError> {
         }
         t.global.acquire(chunk.len() as u64).await;
         t.run.limiter.acquire(chunk.len() as u64).await;
+        if t.global.over_budget() {
+            // The data quota ran out: stop now rather than at the engine's next check.
+            t.run.stop(STOP_QUOTA);
+        }
+        if t.run.cancel.is_cancelled() {
+            // A fast server never leaves the stream waiting, so the cancellation would only
+            // be seen at the end of the segment: stop here, before this chunk is written.
+            return Err(WorkerError::Released);
+        }
         let finished = {
             let mut table = t.run.table.lock().unwrap();
             let seg = &mut table.segs[idx];
@@ -275,6 +395,8 @@ async fn fetch(t: &Transfer, idx: usize) -> Result<(), WorkerError> {
                     .map_err(|e| WorkerError::Fatal(e.into()))?;
                 seg.pos += n as u64;
                 t.run.downloaded.fetch_add(n as u64, Relaxed);
+                source.bytes.fetch_add(n as u64, Relaxed);
+                source.fails.store(0, Relaxed);
             }
             seg.done()
         };
@@ -313,30 +435,68 @@ pub(crate) fn retry_delay(attempt: u32, retry_after: Option<Duration>) -> Durati
     }
 }
 
-type Workers = JoinSet<(usize, Result<(), WorkerError>)>;
+type Workers = JoinSet<(usize, usize, Result<(), WorkerError>)>;
 
 /// The coordinator's view of its workers.
 struct Crew {
     set: Workers,
-    /// Live workers in start order, with the token that releases each one.
-    live: Vec<(usize, CancellationToken)>,
+    /// Live workers in start order: segment, source, and the token that releases it.
+    live: Vec<(usize, usize, CancellationToken)>,
 }
 
 impl Crew {
-    fn spawn(&mut self, t: &Arc<Transfer>, idx: usize, delay: Duration) {
+    fn spawn(&mut self, t: &Arc<Transfer>, idx: usize, src: usize, delay: Duration) {
         let token = t.run.cancel.child_token();
-        self.live.push((idx, token.clone()));
-        self.set.spawn(worker(t.clone(), idx, delay, token));
+        self.live.push((idx, src, token.clone()));
+        self.set.spawn(worker(t.clone(), idx, src, delay, token));
     }
 
     fn forget(&mut self, idx: usize) {
-        self.live.retain(|(i, _)| *i != idx);
+        self.live.retain(|(i, _, _)| *i != idx);
     }
 
-    /// Releases the most recently started workers until at most `target` remain.
-    fn shrink(&mut self, target: usize) {
+    fn on_source(&self, src: usize) -> usize {
+        self.live.iter().filter(|l| l.1 == src).count()
+    }
+
+    /// How many connections a source may have: its server's share, and what it tolerates.
+    fn cap(t: &Transfer, src: usize) -> usize {
+        let s = &t.sources[src];
+        t.run
+            .host_cap(&s.host)
+            .min(s.learned_cap.load(Relaxed))
+            .max(1)
+    }
+
+    /// The usable source with the fewest connections for its share (the download's own URL
+    /// wins ties), or None when every usable source is at its limit.
+    fn pick(&self, t: &Transfer) -> Option<usize> {
+        let usable = if t.ranged { t.sources.len() } else { 1 };
+        (0..usable)
+            .filter(|&i| !t.sources[i].is_disabled())
+            .filter(|&i| self.on_source(i) < Self::cap(t, i))
+            .min_by_key(|&i| (self.on_source(i), i))
+    }
+
+    /// Sources still in use.
+    fn usable(t: &Transfer) -> usize {
+        let n = if t.ranged { t.sources.len() } else { 1 };
+        t.sources[..n].iter().filter(|s| !s.is_disabled()).count()
+    }
+
+    /// Releases the most recently started workers until no source is over its limit and at
+    /// most `target` remain.
+    fn shrink(&mut self, t: &Transfer, target: usize) {
+        for src in 0..t.sources.len() {
+            while self.on_source(src) > Self::cap(t, src) {
+                let Some(pos) = self.live.iter().rposition(|l| l.1 == src) else {
+                    break;
+                };
+                self.live.remove(pos).2.cancel();
+            }
+        }
         while self.live.len() > target {
-            if let Some((_, token)) = self.live.pop() {
+            if let Some((_, _, token)) = self.live.pop() {
                 token.cancel();
             }
         }
@@ -344,19 +504,21 @@ impl Crew {
 
     /// Keeps up to `target` workers busy, first on unclaimed segments, then by splitting.
     fn fill(&mut self, t: &Arc<Transfer>, target: usize, min_split: u64) {
-        let mut table = t.run.table.lock().unwrap();
+        let target = if t.ranged { target.max(1) } else { 1 };
         while self.live.len() < target {
-            let idx = match table.take_free() {
-                Some(i) => i,
-                None if t.ranged => match table.split_largest(min_split) {
+            let Some(src) = self.pick(t) else { break };
+            let idx = {
+                let mut table = t.run.table.lock().unwrap();
+                match table.take_free() {
                     Some(i) => i,
+                    None if t.ranged => match table.split_largest(min_split) {
+                        Some(i) => i,
+                        None => break,
+                    },
                     None => break,
-                },
-                None => break,
+                }
             };
-            drop(table);
-            self.spawn(t, idx, Duration::ZERO);
-            table = t.run.table.lock().unwrap();
+            self.spawn(t, idx, src, Duration::ZERO);
         }
     }
 }
@@ -372,30 +534,18 @@ pub(crate) async fn transfer(
         set: JoinSet::new(),
         live: Vec::new(),
     };
-    // The connection count the server tolerates, learned from 429/503 answers.
-    let mut cap: Option<usize> = None;
     let mut wanted = t.run.target.load(Relaxed);
-    let target = |cap: Option<usize>, wanted: usize| {
-        if t.ranged {
-            wanted
-                .min(cap.unwrap_or(usize::MAX))
-                .min(t.run.host_cap.load(Relaxed))
-                .max(1)
-        } else {
-            1
-        }
-    };
     let mut retries: HashMap<usize, (u32, u64)> = HashMap::new();
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    crew.fill(&t, target(cap, wanted), limits.min_split);
+    crew.fill(&t, wanted, limits.min_split);
     loop {
         if crew.set.is_empty() {
             if t.run.table.lock().unwrap().all_done() {
                 return Ok(Outcome::Done);
             }
-            crew.fill(&t, target(cap, wanted), limits.min_split);
+            crew.fill(&t, wanted, limits.min_split);
             if crew.set.is_empty() {
                 return Err(Error::Protocol("No work left to schedule".into()));
             }
@@ -410,15 +560,17 @@ pub(crate) async fn transfer(
             _ = t.run.changed.notified() => {
                 let now = t.run.target.load(Relaxed);
                 if now != wanted {
-                    // The user asked for a different count: try it, even past an earlier cap.
+                    // The user asked for a different count: try it, even past earlier caps.
                     wanted = now;
-                    cap = None;
+                    for s in &t.sources {
+                        s.learned_cap.store(usize::MAX, Relaxed);
+                    }
                 }
-                crew.shrink(target(cap, wanted));
-                crew.fill(&t, target(cap, wanted), limits.min_split);
+                crew.shrink(&t, wanted);
+                crew.fill(&t, wanted, limits.min_split);
             }
             Some(joined) = crew.set.join_next() => {
-                let (idx, res) = match joined {
+                let (idx, src, res) = match joined {
                     Ok(v) => v,
                     Err(e) if e.is_cancelled() => continue,
                     Err(e) => {
@@ -428,6 +580,8 @@ pub(crate) async fn transfer(
                 };
                 t.run.table.lock().unwrap().busy[idx] = false;
                 crew.forget(idx);
+                let source = &t.sources[src];
+                let others = Crew::usable(&t) > 1;
 
                 let failure = match res {
                     Ok(()) => {
@@ -435,14 +589,26 @@ pub(crate) async fn transfer(
                         None
                     }
                     Err(WorkerError::Released) => None,
+                    Err(WorkerError::Fatal(e)) if others && !source.is_disabled() => {
+                        // A mirror (or the download's own URL) that can't serve the file:
+                        // carry on with the others.
+                        source.disable(e.to_string());
+                        retries.remove(&idx);
+                        None
+                    }
+                    Err(WorkerError::Fatal(e)) if others => {
+                        tracing::debug!(%e, "already disabled source failed");
+                        None
+                    }
                     Err(WorkerError::Fatal(e)) => {
                         crew.set.shutdown().await;
                         return Err(e);
                     }
-                    Err(WorkerError::Throttled(code, _)) if !crew.live.is_empty() => {
+                    Err(WorkerError::Throttled(code, _)) if crew.on_source(src) > 0 => {
                         // The server caps connections: keep the ones we have, free this segment.
-                        cap = Some(crew.live.len());
-                        tracing::debug!(code, cap = crew.live.len(), "server limits connections");
+                        let n = crew.on_source(src);
+                        source.learned_cap.store(n, Relaxed);
+                        tracing::debug!(code, cap = n, "server limits connections");
                         None
                     }
                     Err(WorkerError::Throttled(code, after)) => Some((format!("HTTP {code}"), after)),
@@ -450,6 +616,14 @@ pub(crate) async fn transfer(
                 };
 
                 if let Some((msg, after)) = failure {
+                    let fails = source.fails.fetch_add(1, Relaxed) + 1;
+                    if others && fails >= SOURCE_MAX_FAILS {
+                        // Give up this source; the segment moves to another one at once.
+                        source.disable(msg);
+                        retries.remove(&idx);
+                        crew.fill(&t, wanted, limits.min_split);
+                        continue;
+                    }
                     let attempt = {
                         let mut table = t.run.table.lock().unwrap();
                         let pos = table.segs[idx].pos;
@@ -475,9 +649,17 @@ pub(crate) async fn transfer(
                         return Err(Error::Network(msg));
                     }
                     tracing::debug!(idx, attempt, %msg, "retrying segment");
-                    crew.spawn(&t, idx, retry_delay(attempt, after));
+                    let retry_src = if source.is_disabled() {
+                        crew.pick(&t)
+                    } else {
+                        Some(src)
+                    };
+                    match retry_src {
+                        Some(s) => crew.spawn(&t, idx, s, retry_delay(attempt, after)),
+                        None => t.run.table.lock().unwrap().busy[idx] = false,
+                    }
                 }
-                crew.fill(&t, target(cap, wanted), limits.min_split);
+                crew.fill(&t, wanted, limits.min_split);
             }
         }
     }

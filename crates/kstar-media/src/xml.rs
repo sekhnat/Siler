@@ -9,7 +9,7 @@ use crate::error::ParseError;
 use crate::limits::ParseLimits;
 
 #[derive(Debug, Default, Clone)]
-pub(crate) struct Node {
+pub struct Node {
     pub name: String,
     pub attrs: Vec<(String, String)>,
     pub text: String,
@@ -38,7 +38,7 @@ impl Node {
 }
 
 /// Parses a document and returns its root element.
-pub(crate) fn parse(bytes: &[u8], lim: &ParseLimits) -> Result<Node, ParseError> {
+pub fn parse(bytes: &[u8], lim: &ParseLimits) -> Result<Node, ParseError> {
     let mut reader = Reader::from_reader(bytes);
     let mut buf = Vec::new();
     // Element 0 is a synthetic document node; the real root is its only child.

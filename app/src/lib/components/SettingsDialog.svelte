@@ -2,8 +2,9 @@
   import { CircleCheck, CircleX, FileText, FolderOpen, KeyRound, Monitor, Moon, Play, Plus, Puzzle, Sun, TriangleAlert, X } from "@lucide/svelte";
   import { open } from "@tauri-apps/plugin-dialog";
   import { onMount } from "svelte";
-  import { api, type IntegrationStatus, type ProxyMode, type ProxyRoute, type SavedLogin, type Settings, type SoundEvent, type FfmpegStatus } from "../api";
+  import { api, type Category, type CommandResult, type IntegrationStatus, type ProxyMode, type ProxyRoute, type SavedLogin, type Settings, type SoundEvent, type FfmpegStatus } from "../api";
   import { SPEED_PRESETS, limitLabel, relativeTime } from "../format";
+  import { CATEGORIES } from "../categories";
   import { toasts } from "../store.svelte";
   import { theme, type ThemePref } from "../theme.svelte";
   import CategoryEditor from "./CategoryEditor.svelte";
@@ -141,6 +142,26 @@
   }
 
   const baseName = (p: string) => p.split("/").pop() ?? p;
+
+  let testing = $state(false);
+  let testResult = $state<CommandResult | null>(null);
+  async function testCommand() {
+    const path = await open({ title: "Try the command on a file" });
+    if (typeof path !== "string") return;
+    testing = true;
+    testResult = null;
+    try {
+      testResult = await api.testCommand(s.after_download.command, path);
+    } catch (e) {
+      toasts.error(e);
+    } finally {
+      testing = false;
+    }
+  }
+  function toggleCommandCategory(c: Category) {
+    const cats = s.after_download.categories;
+    s.after_download.categories = cats.includes(c) ? cats.filter((x) => x !== c) : [...cats, c];
+  }
   const customLimit = $derived(!SPEED_PRESETS.includes(s.global_speed_limit));
   const proxyModes: { key: ProxyMode; label: string }[] = [
     { key: "none", label: "No proxy" },
@@ -311,6 +332,47 @@
         <input class="input mono" bind:value={s.user_agent} spellcheck="false" />
         <div class="hint">Used for links added by hand. Browser downloads use the browser's own user agent.</div>
       </div>
+      {@render toggle("Data quota", "Download at most so much in each period; downloads wait for the next one. Useful on metered connections.", s.quota.enabled, (v) => (s.quota.enabled = v))}
+      {#if s.quota.enabled}
+        <div class="quota">
+          <span class="hint">At most</span>
+          <input class="input num" type="number" min="1" bind:value={s.quota.megabytes} />
+          <span class="hint">MB every</span>
+          <input class="input num" type="number" min="1" max="744" bind:value={s.quota.hours} />
+          <span class="hint">{s.quota.hours === 1 ? "hour" : "hours"}</span>
+        </div>
+      {/if}
+      {@render toggle("Run a command after each download", "For example to unpack, scan or move files. It runs without a shell, one download at a time.", s.after_download.enabled, (v) => (s.after_download.enabled = v))}
+      {#if s.after_download.enabled}
+        <div class="command">
+          <input class="input mono" bind:value={s.after_download.command} placeholder={"my-tool --file {path}"} spellcheck="false" />
+          <div class="hint">
+            <code>{"{path}"}</code> the file · <code>{"{dir}"}</code> its folder · <code>{"{name}"}</code> its name · <code>{"{url}"}</code> its address ·
+            <code>{"{size}"}</code> bytes. Quote words with spaces; use <code>sh -c '…' _ {"{path}"}</code> for a shell.
+          </div>
+          <div class="chips">
+            <span class="hint">Only for</span>
+            {#each CATEGORIES as c (c.key)}
+              <button class="chip" class:on={s.after_download.categories.includes(c.key)} style:--c={c.color} onclick={() => toggleCommandCategory(c.key)}>{c.label}</button>
+            {/each}
+            {#if !s.after_download.categories.length}<span class="hint">(every download)</span>{/if}
+          </div>
+          <div class="cmd-row">
+            <button class="toggle small-toggle" onclick={() => (s.after_download.notify_on_failure = !s.after_download.notify_on_failure)}>
+              <span class="switch" class:on={s.after_download.notify_on_failure}></span> Notify when it fails
+            </button>
+            <span class="grow"></span>
+            <button class="btn btn-sm" onclick={testCommand} disabled={!s.after_download.command.trim() || testing}><Play size={13} /> {testing ? "Running…" : "Try it on a file…"}</button>
+          </div>
+          {#if testResult}
+            <div class="test" class:bad={testResult.error != null || testResult.exit_code !== 0}>
+              {testResult.error ?? `Exited with ${testResult.exit_code}`}
+              {#if testResult.output}<pre>{testResult.output}</pre>{/if}
+            </div>
+          {/if}
+        </div>
+      {/if}
+      {@render toggle("Open metalinks", "A downloaded .meta4 or .metalink file is replaced by the files it lists, with their mirrors and checksums.", s.open_metalinks, (v) => (s.open_metalinks = v))}
     {:else if tab === "network"}
       <div class="field">
         <span class="label">Proxy</span>
@@ -518,6 +580,81 @@
   .folder {
     display: flex;
     gap: 6px;
+  }
+  .quota {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: -6px 0 6px;
+  }
+  .quota .num {
+    width: 90px;
+  }
+  .command {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: -6px 0 6px;
+  }
+  .command code {
+    font-size: 11px;
+    padding: 0 3px;
+    border-radius: 4px;
+    background: var(--surface-3);
+  }
+  .command .chips {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 5px;
+  }
+  .command .chip {
+    height: 24px;
+    padding: 0 9px;
+    border-radius: 99px;
+    border: 1px solid var(--border);
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--text-2);
+  }
+  .command .chip.on {
+    border-color: color-mix(in srgb, var(--c) 50%, transparent);
+    background: color-mix(in srgb, var(--c) 14%, transparent);
+    color: var(--text);
+  }
+  .cmd-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .small-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12.5px;
+  }
+  .grow {
+    flex: 1;
+  }
+  .test {
+    padding: 10px 12px;
+    border-radius: var(--r);
+    background: color-mix(in srgb, var(--ok) 10%, transparent);
+    font-size: 12.5px;
+    font-weight: 600;
+  }
+  .test.bad {
+    background: color-mix(in srgb, var(--err) 10%, transparent);
+    color: var(--err);
+  }
+  .test pre {
+    margin: 6px 0 0;
+    max-height: 120px;
+    overflow: auto;
+    font-size: 11px;
+    white-space: pre-wrap;
+    color: var(--text);
+    font-weight: 400;
   }
   .row2 {
     display: grid;

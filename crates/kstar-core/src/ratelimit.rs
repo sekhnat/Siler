@@ -8,6 +8,10 @@ use std::time::{Duration, Instant};
 /// fairly and the long-run rate converges on the configured value.
 pub(crate) struct RateLimiter {
     rate: AtomicU64,
+    /// Every byte that passed, for the data quota.
+    total: AtomicU64,
+    /// `total` at which the data quota runs out (`u64::MAX` = no quota).
+    budget_end: AtomicU64,
     bucket: Mutex<Bucket>,
 }
 
@@ -20,6 +24,8 @@ impl RateLimiter {
     pub fn new(bytes_per_sec: u64) -> Self {
         RateLimiter {
             rate: AtomicU64::new(bytes_per_sec),
+            total: AtomicU64::new(0),
+            budget_end: AtomicU64::new(u64::MAX),
             bucket: Mutex::new(Bucket {
                 tokens: 0.0,
                 last: Instant::now(),
@@ -34,7 +40,23 @@ impl RateLimiter {
         self.rate.store(bytes_per_sec, Ordering::Relaxed);
     }
 
+    /// Bytes that passed through this limiter so far.
+    pub fn total(&self) -> u64 {
+        self.total.load(Ordering::Relaxed)
+    }
+
+    /// Where the data quota runs out, in terms of `total` (`u64::MAX` = it doesn't).
+    pub fn set_budget_end(&self, end: u64) {
+        self.budget_end.store(end, Ordering::Relaxed);
+    }
+
+    /// The data quota ran out.
+    pub fn over_budget(&self) -> bool {
+        self.total.load(Ordering::Relaxed) >= self.budget_end.load(Ordering::Relaxed)
+    }
+
     pub async fn acquire(&self, n: u64) {
+        self.total.fetch_add(n, Ordering::Relaxed);
         let rate = self.rate.load(Ordering::Relaxed);
         if rate == 0 {
             return;

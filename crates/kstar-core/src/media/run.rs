@@ -360,7 +360,7 @@ async fn fetch_all(
     loop {
         let cap = concurrency
             .min(c.run.target.load(Relaxed))
-            .min(c.run.host_cap.load(Relaxed))
+            .min(c.run.primary_cap())
             .max(1);
         while set.len() < cap {
             let Some(job) = pending.pop_front() else {

@@ -124,6 +124,37 @@ pub struct Settings {
     pub default_subtitle_mode: SubtitleMode,
     /// Let media downloads use private and loopback addresses (for example a home media server).
     pub allow_private_media_addresses: bool,
+    /// At most so many megabytes every so many hours.
+    pub quota: crate::quota::QuotaSettings,
+    /// A command run after each download finishes.
+    pub after_download: AfterDownload,
+    /// A download that turns out to be a metalink is replaced by the files it lists.
+    pub open_metalinks: bool,
+}
+
+/// A command run after a download finishes, for example to scan, unpack or move the file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AfterDownload {
+    pub enabled: bool,
+    /// The program and its arguments, split like a shell would (quotes and backslashes) but
+    /// never run by one. `{path}`, `{dir}`, `{name}`, `{url}` and `{size}` are filled in.
+    pub command: String,
+    /// Only for these categories; empty = every download.
+    pub categories: Vec<Category>,
+    /// Notify when the command fails (exits with something other than 0).
+    pub notify_on_failure: bool,
+}
+
+impl Default for AfterDownload {
+    fn default() -> Self {
+        AfterDownload {
+            enabled: false,
+            command: String::new(),
+            categories: Vec::new(),
+            notify_on_failure: true,
+        }
+    }
 }
 
 impl Default for Settings {
@@ -160,6 +191,9 @@ impl Default for Settings {
             default_media_container: ContainerChoice::Auto,
             default_subtitle_mode: SubtitleMode::Embed,
             allow_private_media_addresses: false,
+            quota: crate::quota::QuotaSettings::default(),
+            after_download: AfterDownload::default(),
+            open_metalinks: true,
         }
     }
 }
@@ -221,6 +255,8 @@ impl Settings {
         self.preferred_audio_language = self.preferred_audio_language.trim().to_string();
         self.preferred_subtitle_language = self.preferred_subtitle_language.trim().to_string();
         self.max_concurrent = self.max_concurrent.clamp(1, 20);
+        self.quota = self.quota.normalized();
+        self.after_download.command = self.after_download.command.trim().to_string();
         self.connections = self.connections.clamp(1, 32);
         self.min_split_size = self.min_split_size.max(16 * 1024);
         self.max_connections_per_server = self.max_connections_per_server.min(128);

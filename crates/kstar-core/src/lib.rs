@@ -5,17 +5,25 @@
 //! HTTP connections, and whenever a connection finishes, it takes over the tail half of
 //! the largest remaining range so that no connection sits idle near the end.
 
+pub mod batch;
 mod category;
+pub mod checksum;
 mod error;
+pub mod extras;
 pub mod filename;
+pub mod grabber;
 pub mod host;
 mod http;
+pub mod lists;
 mod manager;
 pub mod media;
+pub mod metalink;
 mod net;
+pub mod postrun;
 mod probe;
 pub mod proxy;
 mod queue;
+pub mod quota;
 mod ratelimit;
 mod resolve;
 pub mod scheduler;
@@ -24,6 +32,7 @@ mod settings;
 mod store;
 mod task;
 mod types;
+pub mod zip;
 
 pub use category::Category;
 pub use error::{Error, MediaError};
@@ -39,7 +48,9 @@ pub use probe::ProbeResult;
 pub use queue::{AfterDone, MAIN_QUEUE, Queue};
 pub use scheduler::Schedule;
 pub use segment::Segment;
-pub use settings::{CategoryRule, ServerLimit, Settings, SoundSettings, default_categories};
+pub use settings::{
+    AfterDownload, CategoryRule, ServerLimit, Settings, SoundSettings, default_categories,
+};
 pub use types::*;
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;

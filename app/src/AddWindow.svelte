@@ -43,6 +43,10 @@
       pendingId: p.id,
       queueId: p.queue_id,
       stream: p.stream,
+      dir: p.dir,
+      checksum: p.checksum,
+      mirrors: p.mirrors,
+      origin: p.origin,
     })),
   );
 

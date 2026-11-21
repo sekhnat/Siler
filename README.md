@@ -14,7 +14,15 @@ A Linux-first download manager with a Firefox extension. The long-term target is
 - Expired links can be replaced without losing progress ("Refresh link"). There are also Restart and Download again actions.
 - Categories with editable file types and folders.
 - A rule for when a file already exists: ask, keep both, replace, or skip.
-- Global and per-download speed limits, including custom values.
+- Global and per-download speed limits, including custom values, and an optional data quota (at most so many MB every so many hours; downloads wait for the next period).
+- Checksums: paste an MD5, SHA-1, SHA-256 or SHA-512 (bare, `sha256:…`, a `SHA256SUMS` line or BSD style) and the file is checked before it gets its final name. A server's `Digest`/`Repr-Digest` header is used too. A file that doesn't match is kept until you choose "Download again" or "Keep it anyway"; "Verify checksum…" checks a finished file at any time.
+- Mirrors and multi-source downloads: other addresses of the same file share the work, each checked first for the same size and range support. A mirror that keeps failing is dropped and its work moves to the others. Servers' `Link: rel=duplicate` headers (RFC 6249) add mirrors automatically.
+- Metalinks (RFC 5854 `.meta4` and 3.0 `.metalink`): a metalink, downloaded or imported, becomes the files it lists, with their mirrors, checksums and piece hashes; with piece hashes only damaged pieces are fetched again.
+- Import and export of download lists: plain lists of links, K-Star JSON (names, folders, queues, checksums, mirrors), metalinks and IDM's `.ef2` export.
+- Numbered batch downloads: `img[001-120].jpg`, `[a-z]`, `[0-100:5]` and `{jpg,png}` (Ctrl+B).
+- ZIP preview: the files inside a ZIP archive on a server are listed with two small range requests, and single files can be fetched out of it (only their compressed bytes), unpacked and checked against their CRC-32.
+- A site grabber: follows a site's pages to a chosen depth (this server, the whole site or one folder; robots.txt respected unless turned off), finds the files that match a filter (types, extensions, sizes), and can save the pages themselves with their pictures, styles and scripts for offline browsing, links rewritten to the saved copies. Projects can be saved, find only new files, and run on a schedule.
+- A command after each download (optional): a program with `{path}`, `{dir}`, `{name}`, `{url}` and `{size}` filled in, run without a shell, one at a time; its exit code and output are shown with the download.
 - A connection limit per server, shared by all of that server's downloads, with exceptions for single servers.
 - Logins: when a server asks for a username and password (Basic or Digest), K-Star asks once and can save the login in the desktop keyring (KWallet, GNOME Keyring, KeePassXC… through the Secret Service API). `user:password@` in a link works too.
 - Proxy: none, the desktop's (environment variables, KDE or GNOME settings), or a manual HTTP/SOCKS5 proxy with an optional login.
@@ -95,8 +103,9 @@ Each GitHub release carries:
   - `--queue` adds the links as "Download later"; `--start-queue` starts everything waiting in the main queue.
   - `--queue=NAME` and `--start-queue=NAME` do the same for a named queue (only the `=` form takes a name, any case). An unknown name is refused.
   - Example: `kstar --queue=Night --silent --dir ~/ISOs https://example.com/a.iso`, and later `kstar --start-queue=Night`.
+  - `--import FILE` puts the downloads of a list (links, a metalink, K-Star JSON or IDM's `.ef2`) into the Add window; a `.meta4` or `.metalink` file can also be given on its own.
 - **Logs:** written to `~/.local/state/kstar/logs/`, as `kstar.<date>.log` (kept for a week), `nmhost.log`, and `kstar-stderr.log` when the browser started K-Star. Settings → General → **Open log folder** opens the folder.
-- **Data:** stored in `~/.local/share/app.kstar.KStar/kstar.db`. The schema migrates on start (v1 → v2 adds the queue position and conflict policy; v2 → v3 adds named queues and keeping files up to date; v3 → v4 adds media downloads).
+- **Data:** stored in `~/.local/share/app.kstar.KStar/kstar.db`. The schema migrates on start (v1 → v2 adds the queue position and conflict policy; v2 → v3 adds named queues and keeping files up to date; v3 → v4 adds media downloads; v4 → v5 adds checksums, mirrors, archive entries and site-grabber projects).
 - **Video and audio streams:** paste an HLS (`.m3u8`) or DASH (`.mpd`) address into the Add window (or on the command line, or copy one: the clipboard watcher offers it). K-Star lists the video qualities, audio languages and subtitles, and downloads the ones you pick into one file. Streams are muxed with **FFmpeg**: K-Star ships a static build made from a pinned release by `scripts/build-ffmpeg.sh` (only the codecs, containers and filters it needs; no re-encoding). `scripts/install-dev.sh` builds it the first time and puts `ffmpeg` and `ffprobe` next to the app. Without FFmpeg, single-track downloads still work; combining video and audio needs it. Settings → Media shows which FFmpeg is in use; `KSTAR_FFMPEG=/path/to/ffmpeg` overrides it. The bundled build enables nothing that needs `--enable-gpl`, so it is LGPL-2.1-or-later; it runs as a separate program. The build checks the release tarball against a pinned SHA-256 (its PGP signature can be checked by hand).
   - Output is MP4 when every codec fits it, and MKV otherwise (Opus audio, VP9, unknown codecs, or subtitles kept inside the file); the Add window says why. Subtitles go inside the file by default, or beside it as `<name>.<language>.vtt`. WebVTT and TTML subtitles are read from plain files and from inside MP4 (`wvtt`, `stpp`, which K-Star reads itself because FFmpeg can't), and timed to the video. No cue runs past the end of the picture and sound, so the subtitles never make the file longer.
   - AES-128 streams are decrypted as they download, including encrypted initialisation segments (`EXT-X-MAP` under an `EXT-X-KEY`). Each key is fetched once and kept only in memory.
@@ -146,5 +155,5 @@ How capture works:
 
 ## Roadmap
 - **M2:** done in 0.6: videos found by the Firefox extension, with YouTube, Vimeo, Facebook, Instagram and TikTok. HLS and DASH downloads with a quality, audio and subtitle picker and a bundled FFmpeg came in 0.5.
-- **M3:** checksum verification, mirrors and multi-source downloads, import/export, site grabber.
-- **M4:** FTP/SFTP, a Chromium extension, Flatpak/AUR packaging (Flatpak Firefox needs another native-host path), autostart.
+- **M3:** done in 0.7: checksums, mirrors and multi-source downloads, metalinks, import/export, numbered batches, ZIP preview, the site grabber, the data quota and a command after each download.
+- **M4:** FTP/SFTP, a Chromium extension, Flatpak/AUR packaging (Flatpak Firefox needs another native-host path), autostart, NTLM/Kerberos logins and proxy scripts (PAC).

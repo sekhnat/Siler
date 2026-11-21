@@ -10,6 +10,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 kstar-core = { path = "../../crates/kstar-core" }
+url = "2"
 kstar-ipc = { path = "../../crates/kstar-ipc", features = ["tokio"] }
 tauri = { version = "2", features = ["image-png"] }
 tauri-plugin-single-instance = "2"

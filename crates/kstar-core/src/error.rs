@@ -41,6 +41,13 @@ pub enum Error {
     /// A media download could not continue (see [`MediaError`]).
     #[error("{0}")]
     Media(MediaError),
+    /// The finished file isn't what the checksum says it should be.
+    #[error("The file is damaged: its {algo} doesn't match the expected checksum")]
+    ChecksumMismatch {
+        algo: &'static str,
+        expected: String,
+        actual: String,
+    },
 }
 
 /// Why a media download can't be made, in words for the user.

@@ -146,6 +146,14 @@ pub struct NewDownload {
     pub on_conflict: Option<OnConflict>,
     /// The queue to put it in; the main queue when absent.
     pub queue_id: Option<i64>,
+    /// The file's expected checksum, checked when it finishes.
+    pub checksum: Option<crate::checksum::Checksum>,
+    /// Other addresses of the same file, fetched from at the same time.
+    pub mirrors: Vec<crate::extras::Mirror>,
+    /// Hashes of the file's pieces (from a metalink), to repair only damaged parts.
+    pub pieces: Option<crate::checksum::Pieces>,
+    /// Fetch only this file out of the ZIP archive at `url`.
+    pub zip_entry: Option<crate::extras::ZipEntry>,
 }
 
 /// Changes to an existing download.
@@ -204,6 +212,29 @@ pub struct DownloadInfo {
     pub segments: Vec<Segment>,
     /// A media download (video or audio stream) rather than a plain file.
     pub media: Option<crate::media::MediaInfo>,
+    /// The expected checksum.
+    pub checksum: Option<crate::checksum::Checksum>,
+    /// The last check of the file against a checksum (or its computed digest).
+    pub verify: Option<crate::extras::VerifyResult>,
+    /// Failed because the checksum didn't match; the data is kept until the user decides.
+    pub checksum_failed: bool,
+    /// Every address the file is fetched from, the download's own URL first.
+    pub sources: Vec<SourceView>,
+    /// The path inside the archive, for a file fetched out of a ZIP.
+    pub zip_path: Option<String>,
+    /// The command run after it finished.
+    pub command: Option<crate::extras::CommandResult>,
+}
+
+/// One address of a download, with what it delivered.
+#[derive(Debug, Clone, Serialize)]
+pub struct SourceView {
+    pub url: String,
+    pub origin: crate::extras::MirrorOrigin,
+    /// Why it isn't used.
+    pub disabled: Option<String>,
+    pub bytes: u64,
+    pub active: u32,
 }
 
 /// A server wants a login for a download.
@@ -227,6 +258,20 @@ pub struct ProgressItem {
     /// Phase and piece counts of a media download.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub media: Option<crate::media::MediaProgress>,
+    /// What a finished transfer is doing before the file is ready.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase: Option<PhaseProgress>,
+    /// Bytes per source, in the order of `DownloadInfo::sources`, when there are mirrors.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub source_bytes: Vec<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PhaseProgress {
+    /// `verifying` or `unpacking`.
+    pub name: &'static str,
+    pub done: u64,
+    pub total: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -272,4 +317,21 @@ pub enum Event {
         filename: Option<String>,
         request: LoginRequest,
     },
+    /// A download turned out to be a metalink: it was removed, and these are its files, to
+    /// be added instead.
+    Metalink {
+        id: i64,
+        files: Vec<NewDownload>,
+    },
+    /// The command run after a download finished (or failed to start).
+    CommandDone {
+        id: i64,
+        filename: Option<String>,
+        result: crate::extras::CommandResult,
+    },
+    /// The data quota for the current period is used up (or, with `reached` false, the
+    /// period ended or the user lifted it).
+    Quota(crate::quota::QuotaStatus),
+    /// Progress of a site grab.
+    Grab(Box<crate::grabber::GrabProgress>),
 }

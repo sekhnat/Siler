@@ -31,6 +31,7 @@
     onstartqueue,
     onstopqueue,
     oncleanup,
+    ontool,
     title,
     subtitle,
     selectedCount,
@@ -51,6 +52,8 @@
     onstartqueue: () => void;
     onstopqueue: () => void;
     oncleanup: (what: "completed" | "failed") => void;
+    /** Batch pattern, site grabber, import or export. */
+    ontool: (tool: "batch" | "grabber" | "import" | "export") => void;
     title: string;
     subtitle: string;
     selectedCount: number;
@@ -121,10 +124,14 @@
           <Menu
             align="right"
             items={[
+              { label: "Batch download…", value: "batch" as const },
+              { label: "Site grabber…", value: "grabber" as const },
+              { label: "Import list…", value: "import" as const },
+              { label: "Export list…", value: "export" as const },
               { label: "Clear completed (keeps files)", value: "completed" as const },
               { label: "Remove failed downloads", value: "failed" as const },
             ]}
-            onselect={oncleanup}
+            onselect={(v) => (v === "completed" || v === "failed" ? oncleanup(v) : ontool(v))}
             onclose={() => (moreMenu = false)}
           />
         {/if}

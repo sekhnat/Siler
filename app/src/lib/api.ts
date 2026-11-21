@@ -134,6 +134,163 @@ export interface Download {
   media: MediaInfo | null;
   /** The phase and piece counts of a media download while it runs. */
   media_progress?: MediaProgress | null;
+  checksum: Checksum | null;
+  verify: VerifyResult | null;
+  /** Failed because the checksum didn't match; the data is kept. */
+  checksum_failed: boolean;
+  /** Every address it is fetched from (own URL first), when it has mirrors. */
+  sources: SourceView[];
+  /** The path inside the archive, for a file fetched out of a ZIP. */
+  zip_path: string | null;
+  command: CommandResult | null;
+  /** Checking or unpacking a finished transfer. */
+  phase?: PhaseProgress | null;
+}
+
+export type Algo = "md5" | "sha1" | "sha256" | "sha512";
+export const ALGO_LABEL: Record<Algo, string> = { md5: "MD5", sha1: "SHA-1", sha256: "SHA-256", sha512: "SHA-512" };
+
+export interface Checksum {
+  algo: Algo;
+  hex: string;
+  source: "user" | "server" | "metalink" | "import";
+}
+
+export interface VerifyResult {
+  algo: Algo;
+  expected: string | null;
+  actual: string;
+  at: number;
+}
+
+export interface SourceView {
+  url: string;
+  origin: "user" | "metalink" | "server";
+  disabled: string | null;
+  bytes: number;
+  active: number;
+}
+
+export interface CommandResult {
+  running: boolean;
+  exit_code: number | null;
+  output: string;
+  error: string | null;
+  started_at: number;
+  finished_at: number | null;
+}
+
+export interface PhaseProgress {
+  name: "verifying" | "unpacking";
+  done: number;
+  total: number;
+}
+
+export interface QuotaStatus {
+  enabled: boolean;
+  reached: boolean;
+  ignored: boolean;
+  used: number;
+  limit: number;
+  resumes_at: number | null;
+}
+
+export interface QuotaSettings {
+  enabled: boolean;
+  megabytes: number;
+  hours: number;
+}
+
+export interface AfterDownload {
+  enabled: boolean;
+  command: string;
+  categories: Category[];
+  notify_on_failure: boolean;
+}
+
+export interface ZipItem {
+  path: string;
+  size: number;
+  compressed: number;
+  method: number;
+  crc: number;
+  header_offset: number;
+  encrypted: boolean;
+  is_dir: boolean;
+  unsupported: string | null;
+}
+
+export interface ZipListing {
+  url: string;
+  archive_size: number;
+  entries: ZipItem[];
+}
+
+export type ListFormat = "text" | "json";
+
+export type GrabScope = "same_host" | "same_site" | "folder";
+
+export interface FileFilter {
+  categories: Category[];
+  extensions: string[];
+  min_size: number | null;
+  max_size: number | null;
+  any_host: boolean;
+}
+
+export interface GrabConfig {
+  start_url: string;
+  depth: number;
+  scope: GrabScope;
+  max_pages: number;
+  concurrency: number;
+  robots: boolean;
+  save_pages: boolean;
+  filter: FileFilter;
+  dir: string | null;
+  queue_id: number | null;
+  only_new: boolean;
+  schedule: Schedule;
+}
+
+export interface GrabProject {
+  id: number;
+  name: string;
+  config: GrabConfig;
+  last_run: number | null;
+}
+
+export interface GrabFile {
+  url: string;
+  referrer: string;
+  filename: string | null;
+  dir: string | null;
+  size: number | null;
+}
+
+export interface GrabResult {
+  files: GrabFile[];
+  pages: number;
+  saved: number;
+  errors: number;
+  blocked: number;
+  site_index: string | null;
+  queued: number;
+}
+
+export interface GrabProgress {
+  run_id: number;
+  project_id: number | null;
+  pages_done: number;
+  pages_queued: number;
+  files_found: number;
+  saved: number;
+  bytes: number;
+  current: string | null;
+  finished: boolean;
+  cancelled: boolean;
+  error: string | null;
+  result: GrabResult | null;
 }
 
 export interface ProgressItem {
@@ -144,6 +301,8 @@ export interface ProgressItem {
   active_connections: number;
   segments: Segment[];
   media?: MediaProgress | null;
+  phase?: PhaseProgress | null;
+  source_bytes?: number[];
 }
 
 export type ContainerChoice = "auto" | "mp4" | "mkv" | "original";
@@ -249,7 +408,11 @@ export type EngineEvent =
       after_done: AfterDone;
       completed: number;
       failed: number;
-    };
+    }
+  | { type: "command_done"; id: number; filename: string | null; result: CommandResult }
+  | ({ type: "quota" } & QuotaStatus)
+  | ({ type: "grab" } & GrabProgress)
+  | { type: "metalink"; id: number };
 
 export interface ProbeResult {
   final_url: string;
@@ -263,6 +426,8 @@ export interface ProbeResult {
   dir: string;
   exists: boolean;
   suggested: string;
+  duplicates: string[];
+  digest: Checksum | null;
 }
 
 export interface CategoryRule {
@@ -300,6 +465,9 @@ export interface Settings {
   default_media_container: ContainerChoice;
   default_subtitle_mode: SubtitleMode;
   allow_private_media_addresses: boolean;
+  quota: QuotaSettings;
+  after_download: AfterDownload;
+  open_metalinks: boolean;
 }
 
 export interface Pending {
@@ -318,7 +486,7 @@ export interface Pending {
   /** The name was given on the command line: don't replace it with the server's. */
   keep_name: boolean;
   /** Where the link came from. */
-  origin: "browser" | "command_line" | "clipboard";
+  origin: "browser" | "command_line" | "clipboard" | "list" | "grabber";
   /** The site the browser extension recognised the video on (`youtube`, …). */
   site: string | null;
   /** The video's title, from the page. */
@@ -326,6 +494,9 @@ export interface Pending {
   /** The extension gave the stream itself: a stream whatever the link looks like. */
   stream: boolean;
   resumable: Download | null;
+  /** The checksum it comes with, as `SHA-256 ab12…`. */
+  checksum: string | null;
+  mirrors: number;
 }
 
 export interface BrowserStatus {
@@ -361,6 +532,20 @@ export interface AddArgs {
   onConflict?: OnConflict | null;
   pendingId?: number | null;
   queueId?: number | null;
+  /** As typed; empty clears one that came with the item. */
+  checksum?: string | null;
+  /** Absent keeps the mirrors that came with the item. */
+  mirrors?: string[] | null;
+}
+
+export interface ZipPick {
+  url: string;
+  archiveSize: number;
+  dir: string;
+  entries: ZipItem[];
+  pendingId?: number | null;
+  queueId?: number | null;
+  startPaused?: boolean;
 }
 
 export const api = {
@@ -427,6 +612,28 @@ export const api = {
   proxyStatus: () => invoke<ProxyRoute>("proxy_status"),
   setProxyPassword: (password: string | null) => invoke<void>("set_proxy_password", { password }),
   proxyPasswordSaved: () => invoke<boolean>("proxy_password_saved"),
+  importList: (path: string) => invoke<number>("import_list", { path }),
+  exportList: (path: string, ids: number[], format: ListFormat, includeCookies: boolean) =>
+    invoke<void>("export_list", { path, ids, format, includeCookies }),
+  expandBatch: (pattern: string) => invoke<{ count: number; urls: string[] }>("expand_batch", { pattern }),
+  parseChecksum: (text: string) => invoke<Checksum>("parse_checksum", { text }),
+  acceptUnverified: (id: number) => invoke<void>("accept_unverified", { id }),
+  verifyFile: (id: number, checksum: string | null) => invoke<VerifyResult>("verify_file", { id, checksum }),
+  fileDigests: (id: number) => invoke<{ algo: string; hex: string }[]>("file_digests", { id }),
+  setChecksum: (id: number, checksum: string | null) => invoke<void>("set_checksum", { id, checksum }),
+  setMirrors: (id: number, urls: string[]) => invoke<void>("set_mirrors", { id, urls }),
+  zipList: (url: string, pendingId?: number | null) => invoke<ZipListing>("zip_list", { url, pendingId }),
+  addZipEntries: (pick: ZipPick) => invoke<number>("add_zip_entries", { pick }),
+  quotaStatus: () => invoke<QuotaStatus>("quota_status"),
+  ignoreQuota: () => invoke<QuotaStatus>("ignore_quota"),
+  testCommand: (command: string, path: string) => invoke<CommandResult>("test_command", { command, path }),
+  grabProjects: () => invoke<GrabProject[]>("grab_projects"),
+  saveGrabProject: (project: GrabProject) => invoke<number>("save_grab_project", { project }),
+  deleteGrabProject: (id: number) => invoke<void>("delete_grab_project", { id }),
+  grabStart: (config: GrabConfig, projectId: number | null) => invoke<number>("grab_start", { config, projectId }),
+  grabCancel: (runId: number) => invoke<void>("grab_cancel", { runId }),
+  reviewGrab: (files: GrabFile[], queueId: number | null) => invoke<number>("review_grab", { files, queueId }),
+  openSavedSite: (path: string) => invoke<void>("open_saved_site", { path }),
 };
 
 /** A readable message from a rejected command (a string, or a `ProbeError`). */
