@@ -3,7 +3,7 @@
 **Siler Integration** sends downloads and the videos web pages play from Firefox to Siler. It works in Firefox and the browsers built on it: LibreWolf, Waterfox, Floorp and Zen.
 
 <p align="center">
-  <img src="images/extension-popup.png" alt="The extension's toolbar popup: connected to Siler, with active downloads, speed and the capture switch" width="320">
+  <picture><source media="(prefers-color-scheme: dark)" srcset="images/extension-popup-dark.png"><source media="(prefers-color-scheme: light)" srcset="images/extension-popup-light.png"><img src="images/extension-popup-light.png" alt="The extension's toolbar popup: connected to Siler, with active downloads, speed and the capture switch" width="320"></picture>
 </p>
 
 ## Installing

@@ -7,16 +7,31 @@
 <div class="empty">
   <div class="art">
     <svg viewBox="0 0 120 120" width="120" height="120" aria-hidden="true">
+      <!-- The app icon's segmented S (app/assets/logo.svg), its top part filled like a download. -->
       <defs>
-        <linearGradient id="empty-g" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stop-color="#7c5cff" />
-          <stop offset="1" stop-color="#22d3ee" />
+        <linearGradient id="empty-g" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#5cc8e8" />
+          <stop offset="1" stop-color="#3a9fc4" />
         </linearGradient>
+        <path
+          id="empty-s"
+          d="M 342 188 C 342 150 304 128 256 128 C 204 128 172 152 172 188 C 172 232 226 244 256 256 C 292 270 342 282 342 326 C 342 366 306 386 256 386 C 208 386 170 366 170 326"
+          fill="none"
+          stroke-width="46"
+          stroke-dasharray="54 16.3"
+        />
+        <clipPath id="empty-done">
+          <rect x="0" y="0" width="512" height="292" />
+        </clipPath>
       </defs>
       <circle cx="60" cy="60" r="54" fill="url(#empty-g)" opacity="0.1" />
       <circle cx="60" cy="60" r="38" fill="url(#empty-g)" opacity="0.12" />
-      <path d="M60 24 C 63 47, 69 52, 92 55 C 69 58, 63 63, 60 86 C 57 63, 51 58, 28 55 C 51 52, 57 47, 60 24 Z" fill="url(#empty-g)" />
-      <rect x="40" y="94" width="40" height="7" rx="3.5" fill="url(#empty-g)" opacity="0.8" />
+      <g transform="translate(60 61) scale(0.19) translate(-256 -257)">
+        <use href="#empty-s" class="track" />
+        <g clip-path="url(#empty-done)">
+          <use href="#empty-s" stroke="url(#empty-g)" />
+        </g>
+      </g>
     </svg>
   </div>
   {#if filtered}
@@ -44,6 +59,10 @@
   }
   .art {
     margin-bottom: 14px;
+  }
+  .track {
+    stroke: var(--muted);
+    opacity: 0.3;
   }
   h3 {
     margin: 0 0 6px;

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Siler Integration",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "description": "Send downloads and videos on web pages to the Siler download manager for faster, resumable, multi-connection downloading.",
   "browser_specific_settings": {
     "gecko": {

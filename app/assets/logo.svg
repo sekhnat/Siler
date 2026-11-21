@@ -1,18 +1,62 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Siler icon">
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#7c5cff"/>
-      <stop offset="0.55" stop-color="#5b6cff"/>
-      <stop offset="1" stop-color="#22d3ee"/>
+    <!-- matte body: very soft vertical falloff, no gloss -->
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1f2227"/>
+      <stop offset="1" stop-color="#15171a"/>
     </linearGradient>
-    <radialGradient id="glow" cx="0.5" cy="0.42" r="0.5">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.35"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
-    </radialGradient>
+
+    <!-- faint grain for a matte, powder-coated feel -->
+    <filter id="grain" x="0" y="0" width="100%" height="100%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="7" result="n"/>
+      <feColorMatrix in="n" type="matrix"
+        values="0 0 0 0 1
+                0 0 0 0 1
+                0 0 0 0 1
+                0 0 0 0.045 0"/>
+    </filter>
+
+    <!-- accent: muted cyan, desaturated so it stays matte -->
+    <linearGradient id="accent" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5cc8e8"/>
+      <stop offset="1" stop-color="#3a9fc4"/>
+    </linearGradient>
+
+    <clipPath id="rounded">
+      <rect x="16" y="16" width="480" height="480" rx="112"/>
+    </clipPath>
+
+    <!-- "downloaded" portion of the S -->
+    <clipPath id="done">
+      <rect x="0" y="0" width="512" height="292"/>
+    </clipPath>
+
+    <path id="s"
+      d="M 342 188
+         C 342 150 304 128 256 128
+         C 204 128 172 152 172 188
+         C 172 232 226 244 256 256
+         C 292 270 342 282 342 326
+         C 342 366 306 386 256 386
+         C 208 386 170 366 170 326"
+      fill="none" stroke-width="46" stroke-dasharray="54 16.3"/>
   </defs>
-  <rect x="32" y="32" width="960" height="960" rx="224" fill="url(#bg)"/>
-  <rect x="32" y="32" width="960" height="960" rx="224" fill="url(#glow)"/>
-  <path d="M512 150 C 538 352, 586 398, 790 424 C 586 450, 538 496, 512 698 C 486 496, 438 450, 234 424 C 438 398, 486 352, 512 150 Z" fill="#ffffff"/>
-  <path d="M760 168 C 768 226, 782 240, 840 248 C 782 256, 768 270, 760 328 C 752 270, 738 256, 680 248 C 738 240, 752 226, 760 168 Z" fill="#ffffff" opacity="0.75"/>
-  <rect x="322" y="782" width="380" height="64" rx="32" fill="#ffffff" opacity="0.92"/>
+
+  <!-- body -->
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="url(#body)"/>
+  <g clip-path="url(#rounded)">
+    <rect x="16" y="16" width="480" height="480" filter="url(#grain)"/>
+  </g>
+  <!-- subtle matte edge, no highlight -->
+  <rect x="17" y="17" width="478" height="478" rx="111" fill="none" stroke="#2b2f36" stroke-width="2"/>
+
+  <!-- segmented S: dim track for what's left -->
+  <use href="#s" stroke="#2c3037"/>
+  <!-- bright segments for what's downloaded -->
+  <g clip-path="url(#done)">
+    <use href="#s" stroke="url(#accent)"/>
+  </g>
+
+  <!-- small accent dot, a nod to the "i" in siler -->
+  <circle cx="392" cy="120" r="14" fill="url(#accent)"/>
 </svg>

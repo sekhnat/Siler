@@ -3,7 +3,7 @@
 Siler downloads HLS (`.m3u8`) and DASH (`.mpd`) streams into one ordinary video file, with the quality, audio languages and subtitles you pick.
 
 <p align="center">
-  <img src="images/add-video.png" alt="The Add window listing a stream's video qualities, audio languages and subtitles" width="480">
+  <picture><source media="(prefers-color-scheme: dark)" srcset="images/add-video-dark.png"><source media="(prefers-color-scheme: light)" srcset="images/add-video-light.png"><img src="images/add-video-light.png" alt="The Add window listing a stream's video qualities, audio languages and subtitles" width="480"></picture>
 </p>
 
 ## Adding a stream

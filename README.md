@@ -55,8 +55,8 @@
 
 <table>
   <tr>
-    <td align="center" valign="top" width="50%"><img src="docs/images/add-video.png" alt="The Add window with a stream's qualities, audio languages and subtitles" width="400"><br><sub><b>Pick the quality, audio and subtitles of a stream</b></sub></td>
-    <td align="center" valign="top" width="50%"><img src="docs/images/settings.png" alt="Settings: connections per download, simultaneous downloads, connections per server, speed limit" width="400"><br><sub><b>Tune connections, limits and quotas</b></sub></td>
+    <td align="center" valign="top" width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/add-video-dark.png"><source media="(prefers-color-scheme: light)" srcset="docs/images/add-video-light.png"><img src="docs/images/add-video-light.png" alt="The Add window with a stream's qualities, audio languages and subtitles" width="400"></picture><br><sub><b>Pick the quality, audio and subtitles of a stream</b></sub></td>
+    <td align="center" valign="top" width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-dark.png"><source media="(prefers-color-scheme: light)" srcset="docs/images/settings-light.png"><img src="docs/images/settings-light.png" alt="Settings: connections per download, simultaneous downloads, connections per server, speed limit" width="400"></picture><br><sub><b>Tune connections, limits and quotas</b></sub></td>
   </tr>
 </table>
 
@@ -77,7 +77,7 @@ Keep the file where it is: the menu entry and the browser host point at it. To h
 
 ## Firefox extension
 
-<img src="docs/images/extension-popup.png" alt="The extension's toolbar popup: connected to Siler, with active downloads, speed and the capture switch" width="300" align="right">
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/extension-popup-dark.png"><source media="(prefers-color-scheme: light)" srcset="docs/images/extension-popup-light.png"><img src="docs/images/extension-popup-light.png" alt="The extension's toolbar popup: connected to Siler, with active downloads, speed and the capture switch" width="300" align="right"></picture>
 
 1. In Siler, open Settings → Browser and click **Add to Firefox**. The AppImage and the tarball include the extension, signed by Mozilla. You can also download `siler-integration-<version>.xpi` from the [latest release](https://github.com/sekhnat/Siler/releases/latest) and open it with Firefox.
 2. On the welcome page, grant access to all sites.

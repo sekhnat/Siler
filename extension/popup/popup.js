@@ -15,9 +15,19 @@ function fmtSpeed(n) {
 
 let siteHost = "";
 let tabId = null;
+// The tab the popup belongs to. Both the status panel and the video list wait for it: the list
+// is asked for as soon as the popup opens, before the panel has finished.
+const tabLookup = browser.tabs
+  .query({ active: true, currentWindow: true })
+  .then(([tab]) => {
+    tabId = tab?.id ?? null;
+    return tab ?? null;
+  })
+  .catch(() => null);
 
 /** The videos Siler found on the tab, to pick from. */
 async function renderVideos(fresh = false) {
+  await tabLookup;
   if (tabId == null) return;
   const list = await browser.runtime.sendMessage({ type: "media-list", tabId, fresh }).catch(() => []);
   // Keep what the user ticked when the list is refreshed.
@@ -85,8 +95,7 @@ async function render() {
   const cfg = await silerConfig();
   $("enabled").setAttribute("aria-checked", String(cfg.enabled));
 
-  const [tab] = await browser.tabs.query({ active: true, currentWindow: true }).catch(() => []);
-  tabId = tab?.id ?? null;
+  const tab = await tabLookup;
   siteHost = /^https?:/i.test(tab?.url ?? "") ? silerHostOf(tab.url) : "";
   $("site-row").hidden = !siteHost;
   if (siteHost) {

@@ -102,15 +102,23 @@ pub fn install() -> io::Result<()> {
     Ok(())
 }
 
+/// Whether the installed icons are this build's (an update can bring a new icon while the
+/// entry itself stays the same).
+fn icons_current() -> bool {
+    let svg = data_home().join(format!("icons/hicolor/scalable/apps/{APP_ID}.svg"));
+    std::fs::read(svg).is_ok_and(|bytes| bytes == SVG)
+}
+
 /// Installs the entry on start-up when it is missing, or when it is ours but points at
-/// another executable. Entries without our marker were written by someone else: leave them.
+/// another executable or carries an older icon. Entries without our marker were written by
+/// someone else: leave them.
 pub fn ensure() {
     let path = entry_path();
     let ours_or_missing = match std::fs::read_to_string(&path) {
         Ok(text) => text.contains(MARKER),
         Err(_) => true,
     };
-    if ours_or_missing && !is_current() {
+    if ours_or_missing && !(is_current() && icons_current()) {
         match install() {
             Ok(()) => tracing::info!("installed {}", path.display()),
             Err(e) => tracing::warn!("could not install {}: {e}", path.display()),
