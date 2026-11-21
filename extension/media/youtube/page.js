@@ -69,11 +69,18 @@ async function silerYouTubeInPage(args) {
     const loggedIn = !!get("LOGGED_IN");
     let sts = Number(get("STS")) || null;
 
-    // The page's own answer, for the title and captions (as yt-dlp's webpage client).
+    // The page's own answer, for the title and captions (as yt-dlp's webpage client): a
+    // player's (the watch page's, or the Shorts feed's, which moves between videos in place),
+    // else the one the page was loaded with.
     try {
-      const web = document.getElementById("movie_player")?.getPlayerResponse?.();
-      const initial = window.ytInitialPlayerResponse;
-      const pr = web?.videoDetails?.videoId === args.videoId ? web : initial?.videoDetails?.videoId === args.videoId ? initial : null;
+      const answers = [...document.querySelectorAll("#movie_player, #shorts-player, .html5-video-player")].map((p) => {
+        try {
+          return p.getPlayerResponse?.();
+        } catch {
+          return null;
+        }
+      });
+      const pr = [...answers, window.ytInitialPlayerResponse].find((a) => a?.videoDetails?.videoId === args.videoId);
       if (pr) out.web = trim(pr);
     } catch {
       /* not a watch page */

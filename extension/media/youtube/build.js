@@ -198,8 +198,12 @@ Siler.youtube = (() => {
     return Math.ceil(wait);
   }
 
-  /** The hand-over for a client's answer: the Siler item, or why there's none. */
-  function handOver(answer, client, pageUrl, web) {
+  /**
+   * The hand-over for a client's answer: the Siler item, or why there's none. The title is
+   * the answer's, else the page's own player answer's, else `fallbackTitle` (the tab's):
+   * TV clients answer without one.
+   */
+  function handOver(answer, client, pageUrl, web, fallbackTitle = null) {
     const pr = answer.pr;
     const details = pr.videoDetails || web?.videoDetails || {};
     if (details.isLive || details.isUpcoming) {
@@ -210,7 +214,7 @@ Siler.youtube = (() => {
       Math.max(0, ...usable(pr.streamingData?.adaptiveFormats).map((f) => Number(f.approxDurationMs || 0) / 1000));
     const mpd = buildMpd(pr.streamingData?.adaptiveFormats, duration);
     if (!mpd) return { error: "YouTube offered no formats Siler can download for this video." };
-    const title = details.title || web?.videoDetails?.title || null;
+    const title = details.title || web?.videoDetails?.title || fallbackTitle || null;
     const tracks = pr.captions?.playerCaptionsTracklistRenderer?.captionTracks || web?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
     const wait = adWait(pr);
     return {

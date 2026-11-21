@@ -459,7 +459,7 @@ browser.runtime.onMessage.addListener((msg, sender) => {
       if (!tab) return;
       // The frame's address as it is now: sender.url stays the one the frame opened with,
       // so after YouTube moves to another video in place it still names the first.
-      return Feed.forVideo(tab, sender.frameId ?? 0, msg.src, msg.pageUrl || sender.url, { links: msg.links, width: msg.width, height: msg.height })
+      return Feed.forVideo(tab, sender.frameId ?? 0, msg.src, msg.pageUrl || sender.url, { links: msg.links, width: msg.width, height: msg.height, duration: msg.duration })
         .then((item) => handOver([item]))
         .then(
           () => ({ ok: true }),

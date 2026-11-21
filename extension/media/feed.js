@@ -5,11 +5,11 @@
 "use strict";
 
 const Feed = (() => {
-  const MAX_PER_TAB = 50;
+  const MAX_PER_TAB = 100;
   const MANIFEST_PEEK = 256 * 1024;
   const BODY_MAX = 8 * 1024 * 1024;
   const { classify, keyOf, inspectManifest, label } = Siler.media;
-  const { siteOf, idFromUrl, pickVideo, fromBody, fromHtml, BODY_URLS, SITES } = Siler.sites;
+  const { siteOf, idFromUrl, pickVideo, keepsList, fromBody, fromHtml, BODY_URLS, SITES } = Siler.sites;
 
   // ------------------------------------------------------------ settings, kept in memory
   // (the request listeners must decide without waiting)
@@ -125,16 +125,27 @@ const Feed = (() => {
     }
   };
 
+  // Tabs that loaded a page since their address last changed. A feed changing its address
+  // in place (no load) keeps its list: the videos it fetched ahead are the ones it shows next.
+  const loading = new Set();
+  browser.webRequest.onBeforeRequest.addListener((d) => void (d.tabId >= 0 && loading.add(d.tabId)), { urls: ["<all_urls>"], types: ["main_frame"] });
+
   browser.tabs.onUpdated.addListener((tabId, info, tab) => {
     if (!info.url) return;
+    const loaded = loading.delete(tabId);
     load(tabId).then((v) => {
       if (v.pageUrl && pageKey(v.pageUrl) === pageKey(info.url)) return;
+      if (keepsList(v.pageUrl, info.url, loaded)) {
+        update(tabId, (w) => void (w.pageUrl = info.url));
+        return;
+      }
       clear(tabId, info.url).then(() => noticeYouTube(tabId, info.url, tab.title));
     });
   });
   browser.tabs.onRemoved.addListener((tabId) => {
     memory.delete(tabId);
     chains.delete(tabId);
+    loading.delete(tabId);
     browser.storage.session.remove(`feed:${tabId}`).catch(() => {});
   });
 
@@ -373,7 +384,9 @@ const Feed = (() => {
         waited = true;
         if (!(await linkWorks(fmts[0].url, ua))) continue;
       }
-      const out = Siler.youtube.handOver(answer, client, Siler.youtube.watchUrl(id), r.web);
+      // The tab's title names the video only while its address does.
+      const tabTitle = idFromUrl(tab.url || "") === id ? pageTitle(tab.title) : null;
+      const out = Siler.youtube.handOver(answer, client, Siler.youtube.watchUrl(id), r.web, tabTitle);
       if (out.error) throw new Error(out.error);
       if (waited) out.item.media.not_before_ms = null;
       console.info(`Siler: YouTube ${id} via the ${answer.name} client`);
@@ -462,8 +475,9 @@ const Feed = (() => {
     if (fresh) await scan(tab);
     else noticeYouTube(tab.id, tab.url, tab.title);
     const items = await list(tabId);
-    // Recognised videos first, then streams, then files.
-    const rank = (c) => (c.site ? 0 : c.kind === "file" ? 2 : 1);
+    // The video the address names, other recognised videos, then streams, then files.
+    const here = idFromUrl(tab.url);
+    const rank = (c) => (here && c.ids?.includes(here) ? -1 : c.site ? 0 : c.kind === "file" ? 2 : 1);
     return [...items].sort((a, b) => rank(a) - rank(b)).map(view);
   }
 
@@ -503,6 +517,7 @@ const Feed = (() => {
           links: Array.isArray(clues.links) ? clues.links.slice(0, 60) : [],
           width: Number(clues.width) || 0,
           height: Number(clues.height) || 0,
+          duration: Number(clues.duration) || 0,
         });
         if (hit) return itemFor(tab, hit);
         // Several videos and nothing says which one was clicked: never send another one.

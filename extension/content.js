@@ -15,7 +15,7 @@ document.addEventListener(
 
 /**
  * What surrounds a video, so a feed's videos can be told apart: the links in its post (a
- * permalink, the poster's profile) and the video's shape.
+ * permalink, the poster's profile), the video's shape and its length.
  */
 function silerVideoClues(v) {
   let box = v.closest("article, [role='article']");
@@ -27,7 +27,8 @@ function silerVideoClues(v) {
     }
   }
   const hrefs = box ? [...box.querySelectorAll("a[href]")].map((a) => a.href).filter((h) => /^https?:/i.test(h)) : [];
-  return { links: [...new Set(hrefs)].slice(0, 60), width: v.videoWidth || 0, height: v.videoHeight || 0 };
+  const duration = Number.isFinite(v.duration) ? v.duration : 0;
+  return { links: [...new Set(hrefs)].slice(0, 60), width: v.videoWidth || 0, height: v.videoHeight || 0, duration };
 }
 
 // The video under the last right-click, for the context menu's "Download this video".

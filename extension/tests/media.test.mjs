@@ -165,13 +165,39 @@ test("Instagram feed: the clicked post's video, never just the newest one", () =
   assert.ok(pick({ links: [ig("/ad_brand/")], width: 540, height: 540 })?.ids.includes("4000000000000000902"));
   assert.ok(pick({ links: [ig("/p/DfADPOST003/")], width: 720, height: 960 })?.ids.includes("4000000000000000901"));
 
+  // Slides of the same shape: the video's length tells them apart.
+  const third = { links: [ig("/ad_brand/")], width: 720, height: 960 };
+  assert.ok(pick({ ...third, duration: 21.02 })?.ids.includes("4000000000000000903"));
+  assert.ok(pick({ ...third, duration: 9.5 })?.ids.includes("4000000000000000901"));
+  assert.equal(pick({ ...third, duration: 0 })?.ids.includes("4000000000000000901"), true);
+
   // On a post's own page, its address is enough.
   assert.ok(pick({ pageUrl: ig("/p/DfNEWEST001/") })?.ids.includes("DfNEWEST001"));
+  // No links at all: a length that only one known video has names it.
+  assert.ok(pick({ duration: 33.42 })?.ids.includes("DfCLICKED02"));
   // Nothing to tell several videos apart: no guess.
   assert.equal(pick({}), null);
+  assert.equal(pick({ duration: 50 }), null);
+  assert.equal(pick({ duration: 33.8 }), null);
   assert.equal(pick({ links: [ig("/someone_else/"), ig("/explore/")] }), null);
   // A page with one video needs no clues.
   assert.ok(plain(K.sites.pickVideo(cands.slice(0, 1), { pageUrl: page, links: [] }))?.key);
+});
+
+test("a feed keeps its videos when it changes its address in place, not on a page load", () => {
+  const keeps = (a, b, loaded = false) => K.sites.keepsList(a, b, loaded);
+  const ig = (path) => `https://www.instagram.com${path}`;
+  // Scrolling Reels: the address names each reel, and the reels ahead were fetched already.
+  assert.equal(keeps(ig("/reels/DfFIRST0001/"), ig("/reels/DfNEXT00002/")), true);
+  assert.equal(keeps(ig("/reels/"), ig("/reels/DfFIRST0001/")), true);
+  assert.equal(keeps(ig("/"), ig("/p/DfCLICKED02/")), true);
+  assert.equal(keeps("https://www.tiktok.com/foryou", "https://www.tiktok.com/@a/video/7300000000000000001"), true);
+  // A real page load, a new tab, another site, or a site that isn't a feed: a new list.
+  assert.equal(keeps(ig("/reels/DfFIRST0001/"), ig("/reels/DfNEXT00002/"), true), false);
+  assert.equal(keeps(null, ig("/reels/DfNEXT00002/")), false);
+  assert.equal(keeps(ig("/reels/DfFIRST0001/"), "https://www.tiktok.com/foryou"), false);
+  assert.equal(keeps("https://www.youtube.com/watch?v=aaaaaaaaaaa", "https://www.youtube.com/watch?v=bbbbbbbbbbb"), false);
+  assert.equal(keeps("https://example.com/a", "https://example.com/b"), false);
 });
 
 test("YouTube: the formats become a DASH manifest the app reads", () => {
@@ -245,6 +271,19 @@ test("YouTube: the hand-over carries the manifest, ranges and the client's user 
   assert.ok(item.media.subtitles.length >= 1);
   const live = plain(K.youtube.handOver({ pr: { ...pr, videoDetails: { ...pr.videoDetails, isLive: true } } }, client, "u", null));
   assert.match(live.error, /live/);
+});
+
+test("YouTube: a Short scrolled to in the Shorts feed keeps its name", () => {
+  // TV clients answer without a title, and after the Shorts feed moves to a video in place
+  // the page holds no player answer of its own for it: the tab's title names it.
+  const pr = JSON.parse(fixture("youtube/visionos.json"));
+  const untitled = { ...pr, videoDetails: { ...pr.videoDetails, title: undefined } };
+  const client = K.youtube.CLIENTS.visionos;
+  const url = K.youtube.watchUrl("dQw4w9WgXcQ");
+  assert.equal(plain(K.youtube.handOver({ pr: untitled }, client, url, null, "A Short's own title")).item.media.title, "A Short's own title");
+  // The answers' own title comes first.
+  assert.match(plain(K.youtube.handOver({ pr }, client, url, null, "Tab title")).item.media.title, /Never Gonna Give You Up/);
+  assert.equal(plain(K.youtube.handOver({ pr: untitled }, client, url, { videoDetails: { title: "Page title" } }, "Tab title")).item.media.title, "Page title");
 });
 
 test("YouTube: the player API is asked with each client's own user agent", async () => {

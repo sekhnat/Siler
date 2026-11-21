@@ -11,9 +11,10 @@ Siler.sites = (() => {
   const SITES = [
     { id: "youtube", name: "YouTube", hosts: ["youtube.com", "youtube-nocookie.com", "youtu.be"] },
     { id: "vimeo", name: "Vimeo", hosts: ["vimeo.com"] },
-    { id: "facebook", name: "Facebook", hosts: ["facebook.com", "fb.watch"] },
-    { id: "instagram", name: "Instagram", hosts: ["instagram.com"] },
-    { id: "tiktok", name: "TikTok", hosts: ["tiktok.com"] },
+    // `feed`: one page shows many videos and changes its address in place as you scroll.
+    { id: "facebook", name: "Facebook", hosts: ["facebook.com", "fb.watch"], feed: true },
+    { id: "instagram", name: "Instagram", hosts: ["instagram.com"], feed: true },
+    { id: "tiktok", name: "TikTok", hosts: ["tiktok.com"], feed: true },
   ];
 
   /** Responses whose bodies a recogniser reads (Firefox's response filter). */
@@ -303,6 +304,7 @@ Siler.sites = (() => {
       owner: user ? user.toLowerCase() : null,
       width: o.original_width || null,
       height: o.original_height || null,
+      duration: Number(o.video_duration) || null,
       slide,
     };
     if (mpd) {
@@ -368,7 +370,7 @@ Siler.sites = (() => {
    * (a permalink, the poster's profile), the page or frame address, the frame, and the
    * video's shape. Returns null rather than guess when several videos fit equally badly.
    */
-  function pickVideo(cands, { pageUrl = "", frameUrl = "", frameId = 0, links = [], width = 0, height = 0 } = {}) {
+  function pickVideo(cands, { pageUrl = "", frameUrl = "", frameId = 0, links = [], width = 0, height = 0, duration = 0 } = {}) {
     if (!cands.length) return null;
     const withIds = (ids) => (ids.length ? cands.filter((c) => c.ids?.some((i) => ids.includes(i))) : []);
     const linkIds = [...new Set(links.map(idFromUrl).filter(Boolean))];
@@ -383,14 +385,38 @@ Siler.sites = (() => {
       if (inFrame.length === 1) pool = inFrame;
     }
     if (!pool.length && cands.length === 1) pool = cands;
+    // Nothing around the video names it: a length that only one known video has does.
+    if (!pool.length && duration > 0) {
+      const timed = timedLike(cands, duration, 0.1);
+      if (timed.length === 1) pool = timed;
+    }
     if (!pool.length) return null;
-    // Slides of one post: the one shaped like the clicked video, else the first slide.
+    // Slides of one post: the one shaped and timed like the clicked video, else the first.
     if (width > 0 && height > 0) {
       const ratio = width / height;
       const shaped = pool.filter((c) => c.width && c.height && Math.abs(c.width / c.height - ratio) <= ratio * 0.03);
       if (shaped.length) pool = shaped;
     }
+    if (duration > 0) {
+      const timed = timedLike(pool, duration, 1);
+      if (timed.length) pool = timed;
+    }
     return [...pool].sort((a, b) => (a.slide ?? 0) - (b.slide ?? 0))[0];
+  }
+
+  /** The candidates whose length is within `slack` seconds of the clicked video's. */
+  const timedLike = (cands, duration, slack) => cands.filter((c) => c.duration > 0 && Math.abs(c.duration - duration) <= slack);
+
+  /**
+   * Whether a tab's video list survives its address changing: on a feed site the page
+   * changes its address in place as you scroll (Instagram's Reels), and the videos it
+   * fetched ahead are still the ones it shows. A real page load, another site, or any other
+   * site starts a new list.
+   */
+  function keepsList(oldUrl, newUrl, loaded) {
+    if (loaded || !oldUrl) return false;
+    const a = siteOf(oldUrl);
+    return !!a?.feed && siteOf(newUrl)?.id === a.id;
   }
 
   // ------------------------------------------------------------ dispatch
@@ -416,5 +442,5 @@ Siler.sites = (() => {
     return reader ? reader.html(html, pageUrl) : [];
   }
 
-  return { SITES, BODY_URLS, siteOf, idFromUrl, ownerFromUrl, pickVideo, fromBody, fromHtml, vimeoConfig, tiktokData, facebookData, instagramData };
+  return { SITES, BODY_URLS, siteOf, idFromUrl, ownerFromUrl, pickVideo, keepsList, fromBody, fromHtml, vimeoConfig, tiktokData, facebookData, instagramData };
 })();
