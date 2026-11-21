@@ -41,6 +41,64 @@ struct Fetch {
     max_key: u64,
     /// What the browser said about the source (an inline manifest, ranged fetching).
     hint: Option<SourceHint>,
+    /// The size of every piece being fetched, as far as it is known.
+    sizes: Mutex<Sizes>,
+}
+
+/// What the pieces of a download add up to: `bytes_total` while it downloads.
+#[derive(Default)]
+struct Sizes {
+    /// Tracks joined in an earlier attempt (their pieces are gone).
+    joined: u64,
+    known: HashMap<PathBuf, u64>,
+    unknown: HashSet<PathBuf>,
+}
+
+impl Sizes {
+    fn total(&self) -> Option<u64> {
+        self.unknown
+            .is_empty()
+            .then(|| self.joined + self.known.values().sum::<u64>())
+    }
+}
+
+impl Fetch {
+    /// Notes the size of the pieces about to be fetched: a finished piece by its file, a
+    /// ranged one by its range; a whole file learns its own when its first answer comes.
+    fn plan_sizes(&self, work: &Path, jobs: &VecDeque<Job>) {
+        let mut s = Sizes {
+            joined: joined_bytes(work),
+            ..Sizes::default()
+        };
+        for j in jobs {
+            let size = std::fs::metadata(&j.dest)
+                .map(|m| m.len())
+                .ok()
+                .or(j.range.map(|(a, b)| b - a + 1));
+            match size {
+                Some(n) => {
+                    s.known.insert(j.dest.clone(), n);
+                }
+                None => {
+                    s.unknown.insert(j.dest.clone());
+                }
+            }
+        }
+        let total = s.total();
+        *self.sizes.lock().expect("sizes lock") = s;
+        set_media(&self.run, |m| m.bytes_total = total);
+    }
+
+    /// A whole file's size, from the server.
+    fn sized(&self, dest: &Path, n: u64) {
+        let total = {
+            let mut s = self.sizes.lock().expect("sizes lock");
+            s.unknown.remove(dest);
+            s.known.insert(dest.to_path_buf(), n);
+            s.total()
+        };
+        set_media(&self.run, |m| m.bytes_total = total);
+    }
 }
 
 impl Fetch {
@@ -156,7 +214,10 @@ async fn fetch_job(c: Arc<Fetch>, job: Job) -> Result<()> {
     if job.whole {
         let chunk = c.hint.as_ref().and_then(|h| h.chunk_bytes);
         let size = match chunk {
-            Some(n) => http::fetch_whole_chunked(&c.http, &job.url, &job.dest, n, &io).await?,
+            Some(n) => {
+                let sized = |size| c.sized(&job.dest, size);
+                http::fetch_whole_chunked(&c.http, &job.url, &job.dest, n, &io, &sized).await?
+            }
             None => http::fetch_object(&c.http, &job.url, &job.dest, None, true, &io).await?,
         };
         let head = read_head(&job.dest).await?;
@@ -289,6 +350,7 @@ async fn fetch_all(
     let mut retries: HashMap<PathBuf, u32> = HashMap::new();
     let mut refreshes = 0u32;
     let total = pending.iter().filter(|j| !j.init).count() as u64;
+    c.plan_sizes(work, &pending);
     let mut done = 0u64;
     set_media(&c.run, |m| {
         m.phase = "downloading";
@@ -567,6 +629,23 @@ fn bytes_on_disk(work: &Path) -> u64 {
     total
 }
 
+/// The bytes of tracks joined in an earlier attempt, which `bytes_on_disk` counts.
+fn joined_bytes(work: &Path) -> u64 {
+    let Ok(tracks) = std::fs::read_dir(work.join("t")) else {
+        return 0;
+    };
+    tracks
+        .flatten()
+        .flat_map(|t| std::fs::read_dir(t.path()).into_iter().flatten().flatten())
+        .filter(|f| {
+            let name = f.file_name();
+            let name = name.to_string_lossy();
+            name.starts_with("track.") && !name.ends_with(".part")
+        })
+        .map(|f| f.metadata().map(|m| m.len()).unwrap_or(0))
+        .sum()
+}
+
 /// Free space on the filesystem holding `dir`, against what the download still needs: the
 /// pieces not yet fetched, and the output written while the pieces are still there.
 fn check_space(dir: &Path, need: Option<u64>, have: u64) -> Result<()> {
@@ -628,6 +707,7 @@ pub(crate) async fn drive(inner: &Arc<Inner>, id: i64, run: &Arc<Running>) -> Re
         keys: Mutex::new(HashMap::new()),
         max_key: lim.max_key_bytes as u64,
         hint: mr.hint.clone(),
+        sizes: Mutex::new(Sizes::default()),
     });
 
     // Some sites only serve the video after a wait (YouTube, while its ad would play).

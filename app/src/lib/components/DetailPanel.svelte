@@ -3,7 +3,7 @@
   import { fly } from "svelte/transition";
   import { api, type Download } from "../api";
   import { STATUS_LABEL, categoryMeta } from "../categories";
-  import { bytes, dateTime, eta, limitLabel, nameFromUrl, percent, relativeTime, speed, syncLabel } from "../format";
+  import { bytes, dateTime, eta, knownSize, limitLabel, nameFromUrl, percent, relativeTime, speed, syncLabel } from "../format";
   import { attempt, store, toasts } from "../store.svelte";
   import FileIcon from "./FileIcon.svelte";
   import SpeedMenu from "./SpeedMenu.svelte";
@@ -27,7 +27,8 @@
   const setConnections = (n: number) => attempt(api.setConnections(d.id, Math.max(1, Math.min(32, n))));
 
   let limitMenu = $state(false);
-  const pct = $derived(d.status === "completed" ? 100 : percent(d.total_size, d.downloaded));
+  const size = $derived(knownSize(d));
+  const pct = $derived(d.status === "completed" ? 100 : percent(size, d.downloaded));
   const running = $derived(d.status === "downloading");
   const history = $derived(store.perHistory[d.id] ?? []);
   const path = $derived(d.dir && d.filename ? `${d.dir}/${d.filename}` : d.dir);
@@ -40,7 +41,7 @@
       case "resolving":
         return "Reading the stream";
       case "downloading":
-        return `Pieces ${m.segments_done} of ${m.segments_total}`;
+        return m.bytes_total ? "Downloading" : `Pieces ${m.segments_done} of ${m.segments_total}`;
       case "rebuilding":
         return `Rebuilding ${(m.permille / 10).toFixed(0)}%`;
       default:
@@ -71,8 +72,8 @@
   <div class="big">
     <div class="big-pct">{pct.toFixed(pct < 10 && pct > 0 ? 1 : 0)}<span>%</span></div>
     <div class="big-side">
-      <div>{bytes(d.downloaded)} <span class="of">of {bytes(d.total_size)}</span></div>
-      {#if running}<div class="of">{speed(d.speed)} · {eta(d.total_size, d.downloaded, d.speed)} left</div>{/if}
+      <div>{bytes(d.downloaded)} <span class="of">of {bytes(size)}</span></div>
+      {#if running}<div class="of">{speed(d.speed)} · {eta(size, d.downloaded, d.speed)} left</div>{/if}
     </div>
   </div>
 

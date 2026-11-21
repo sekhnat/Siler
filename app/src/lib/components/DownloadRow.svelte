@@ -2,7 +2,7 @@
   import { Film, FolderOpen, KeyRound, ListOrdered, LoaderCircle, Pause, Play, RefreshCw, RotateCw } from "@lucide/svelte";
   import { api, MAIN_QUEUE, type Download } from "../api";
   import { STATUS_COLOR, STATUS_LABEL } from "../categories";
-  import { bytes, eta, host, nameFromUrl, percent, relativeTime, speed, syncLabel } from "../format";
+  import { bytes, eta, host, knownSize, nameFromUrl, percent, relativeTime, speed, syncLabel } from "../format";
   import { attempt, store } from "../store.svelte";
   import FileIcon from "./FileIcon.svelte";
   import ProgressBar from "./ProgressBar.svelte";
@@ -11,10 +11,13 @@
 
   const done = $derived(d.status === "completed");
   const mp = $derived(d.media_progress ?? null);
-  /** A media download has no known size: its progress is its phase. */
+  const size = $derived(knownSize(d));
+  /** A media download's progress is its phase; while it downloads, its bytes when the
+   * pieces' sizes are known, else its pieces. */
   function mediaPct(m: NonNullable<typeof mp>): number {
     switch (m.phase) {
       case "downloading":
+        if (m.bytes_total) return 88 * Math.min(1, d.downloaded / m.bytes_total);
         return m.segments_total ? (88 * m.segments_done) / m.segments_total : 0;
       case "rebuilding":
         return 88 + (m.permille / 1000) * 10;
@@ -34,6 +37,7 @@
       case "resolving":
         return "Reading the stream…";
       case "downloading":
+        if (mp.bytes_total) return `${bytes(d.downloaded)} of ${bytes(mp.bytes_total)}`;
         return `Pieces ${mp.segments_done} of ${mp.segments_total}${d.downloaded ? ` · ${bytes(d.downloaded)}` : ""}`;
       case "rebuilding":
         return `Rebuilding ${(mp.permille / 10).toFixed(0)}%`;
@@ -101,7 +105,7 @@
   <div class="rate">
     {#if d.status === "downloading"}
       <div class="speed num">{speed(d.speed)}</div>
-      {#if !d.media}<div class="eta num">{eta(d.total_size, d.downloaded, d.speed)} left</div>{/if}
+      {#if !d.media || mp?.bytes_total}<div class="eta num">{eta(size, d.downloaded, d.speed)} left</div>{/if}
     {/if}
   </div>
 

@@ -99,7 +99,10 @@ async fn serve(
             .body(Body::empty())
             .unwrap_or_default();
     }
-    if path.ends_with(".ts") || path.ends_with(".m4s") {
+    if path.ends_with(".ts")
+        || path.ends_with(".m4s")
+        || (path.starts_with("extra/") && range.is_some())
+    {
         let d = *shared.delay.lock().unwrap();
         if let Some(d) = d {
             tokio::time::sleep(d).await;
@@ -1381,6 +1384,70 @@ async fn a_stream_the_page_gave_as_text_is_downloaded_in_ranges() {
     assert!(ranges.len() >= 3, "{ranges:?}");
     assert_eq!(ranges[0], "bytes=0-16383");
     assert_eq!(ranges[1], "bytes=16384-32767");
+    e.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_video_from_the_page_reports_its_size_while_it_downloads() {
+    let (addr, s) = spawn_server().await;
+    let t = dir();
+    whole_files(t.path());
+    *s.extra.lock().unwrap() = Some(t.path().to_path_buf());
+    // Each range takes a while, so progress is reported in the middle.
+    *s.delay.lock().unwrap() = Some(Duration::from_millis(300));
+    let e = engine_plain(t.path()).await;
+    let mut rx = e.subscribe();
+    let page = url(addr, "watch?v=x");
+    let hint = page_hint(addr);
+    let p = e
+        .probe_media(&page, &RequestMeta::default(), Some(&hint))
+        .await
+        .expect("probe");
+    // The audio alone (no FFmpeg needed): one whole file, fetched in several ranges.
+    let sel = Selection {
+        video: None,
+        audio: p.default.audio.clone(),
+        subtitles: Vec::new(),
+    };
+    let id = e
+        .add_media(NewMediaDownload {
+            url: page,
+            hint: Some(hint),
+            selection: Some(sel),
+            container: Some(ContainerChoice::Original),
+            ..Default::default()
+        })
+        .await
+        .expect("add");
+    let audio_len = std::fs::metadata(t.path().join("audio.mp4"))
+        .expect("len")
+        .len();
+    // (downloaded, bytes_total) of each progress report in the downloading phase.
+    let mut seen = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        match tokio::time::timeout(Duration::from_secs(10), rx.recv()).await {
+            Ok(Ok(Event::Progress { items, .. })) => {
+                for it in items.into_iter().filter(|it| it.id == id) {
+                    if let Some(m) = it.media.filter(|m| m.phase == "downloading") {
+                        seen.push((it.downloaded, m.bytes_total));
+                    }
+                }
+            }
+            Ok(Ok(Event::Completed { id: done, .. })) if done == id => break,
+            Ok(Ok(_)) => {}
+            _ => assert!(Instant::now() < deadline, "no completion event"),
+        }
+    }
+    let midway: Vec<_> = seen
+        .iter()
+        .filter(|(got, _)| *got > 0 && *got < audio_len)
+        .collect();
+    assert!(!midway.is_empty(), "no report in the middle: {seen:?}");
+    assert!(
+        midway.iter().all(|(_, total)| *total == Some(audio_len)),
+        "the size ({audio_len}) isn't known while it downloads: {midway:?}"
+    );
     e.shutdown().await;
 }
 

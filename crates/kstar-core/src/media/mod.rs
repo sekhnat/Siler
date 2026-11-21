@@ -187,6 +187,9 @@ pub struct MediaProgress {
     pub phase: &'static str,
     pub segments_done: u64,
     pub segments_total: u64,
+    /// The bytes the pieces add up to, once every piece's size is known (whole files learn
+    /// theirs from the first answer; other pieces only when the manifest gives a range).
+    pub bytes_total: Option<u64>,
     /// Rebuilding progress, in tenths of a percent.
     pub permille: u32,
 }
@@ -197,6 +200,7 @@ impl Default for MediaProgress {
             phase: "resolving",
             segments_done: 0,
             segments_total: 0,
+            bytes_total: None,
             permille: 0,
         }
     }

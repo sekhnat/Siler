@@ -171,6 +171,8 @@ export interface MediaProgress {
   phase: "waiting" | "resolving" | "downloading" | "rebuilding" | "publishing";
   segments_done: number;
   segments_total: number;
+  /** What the pieces add up to, once every piece's size is known. */
+  bytes_total: number | null;
   permille: number;
 }
 

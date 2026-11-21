@@ -1,3 +1,5 @@
+import type { Download } from "./api";
+
 const UNITS = ["B", "KB", "MB", "GB", "TB"];
 
 export function bytes(n: number | null | undefined): string {
@@ -120,4 +122,12 @@ export function syncLabel(secs: number): string {
   if (secs % 86400 === 0) return secs === 86400 ? "every day" : `every ${secs / 86400} days`;
   if (secs % 3600 === 0) return secs === 3600 ? "every hour" : `every ${secs / 3600} hours`;
   return `every ${Math.round(secs / 60)} min`;
+}
+
+/** A download's size as far as it is known: a video's is what its pieces add up to while
+ * they download (its file's size is known once it is written). */
+export function knownSize(d: Download): number | null {
+  const m = d.media_progress;
+  if (d.status !== "completed" && m?.phase === "downloading" && m.bytes_total) return m.bytes_total;
+  return d.total_size;
 }

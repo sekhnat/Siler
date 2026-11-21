@@ -439,12 +439,14 @@ pub(crate) async fn fetch_object(
 /// Fetches a whole file in ranges of at most `chunk` bytes, appended to `dest.part`, which is
 /// renamed on success. Some servers (YouTube's) slow down or refuse long single requests. A
 /// partial file is resumed from its size; a server that ignores ranges sends the whole file.
+/// `sized` is told the file's size as soon as an answer gives it.
 pub(crate) async fn fetch_whole_chunked(
     http: &Http,
     url: &Url,
     dest: &Path,
     chunk: u64,
     lim: &Limiters<'_>,
+    sized: &(dyn Fn(u64) + Send + Sync),
 ) -> Result<u64> {
     let part = part_of(dest);
     let mut have = tokio::fs::metadata(&part).await.map_or(0, |m| m.len());
@@ -472,6 +474,11 @@ pub(crate) async fn fetch_whole_chunked(
                 .ok_or_else(|| {
                     Error::Protocol("The server returned an unexpected byte range".into())
                 })?;
+            if total.is_none()
+                && let Some(n) = size
+            {
+                sized(n);
+            }
             total = size.or(total);
             let file = tokio::fs::OpenOptions::new()
                 .create(true)
@@ -482,6 +489,9 @@ pub(crate) async fn fetch_whole_chunked(
         } else {
             // The whole file instead of a range: start over and take all of it.
             have = 0;
+            if let Some(n) = resp.content_length() {
+                sized(n);
+            }
             (tokio::fs::File::create(&part).await?, None)
         };
         let mut written = 0u64;
@@ -708,7 +718,7 @@ mod tests {
         let dest = t.path().join("whole.bin");
         // An earlier attempt got this far.
         std::fs::write(part_of(&dest), &body[..20_000]).expect("part");
-        let n = fetch_whole_chunked(&http, &url, &dest, 32_768, &lim)
+        let n = fetch_whole_chunked(&http, &url, &dest, 32_768, &lim, &|_| {})
             .await
             .expect("fetched");
         assert_eq!(n, 100_000);
@@ -726,7 +736,7 @@ mod tests {
         // A part that is already complete: the server says there's nothing more.
         asked.lock().unwrap().clear();
         std::fs::write(part_of(&dest), &body).expect("part");
-        fetch_whole_chunked(&http, &url, &dest, 32_768, &lim)
+        fetch_whole_chunked(&http, &url, &dest, 32_768, &lim, &|_| {})
             .await
             .expect("done");
         assert_eq!(std::fs::read(&dest).expect("read"), body);
@@ -747,7 +757,7 @@ mod tests {
         let t = tempfile::tempdir().expect("tempdir");
         let dest = t.path().join("whole.bin");
         std::fs::write(part_of(&dest), b"stale bytes").expect("part");
-        let n = fetch_whole_chunked(&http, &url, &dest, 32_768, &lim)
+        let n = fetch_whole_chunked(&http, &url, &dest, 32_768, &lim, &|_| {})
             .await
             .expect("fetched");
         assert_eq!(n, 100_000);
