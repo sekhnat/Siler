@@ -54,7 +54,7 @@
   <div class="brand">
     <Logo size={30} />
     <div>
-      <div class="name">K-Star</div>
+      <div class="name">Siler</div>
       <div class="tag">Download manager</div>
     </div>
   </div>

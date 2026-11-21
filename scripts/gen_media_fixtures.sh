@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Generates the tiny media fixtures the media tests and the manual-test server use
-# (crates/kstar-core/tests/media). Needs an FFmpeg with libx264 and aac, and openssl.
+# (crates/siler-core/tests/media). Needs an FFmpeg with libx264 and aac, and openssl.
 # The outputs are committed, so the tests themselves never need to run this.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-out="$root/crates/kstar-core/tests/media"
+out="$root/crates/siler-core/tests/media"
 ff="${FFMPEG:-ffmpeg}"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -295,7 +295,7 @@ assert mpd.count("\t</Period>") == 1
 (dash / "subs.mpd").write_text(mpd.replace("\t</Period>", text_sets + "\t</Period>"))
 PY
 
-# The same DASH stream, marked as CENC-encrypted in every adaptation set: K-Star must refuse it.
+# The same DASH stream, marked as CENC-encrypted in every adaptation set: Siler must refuse it.
 cp "$out/dash/"*.m4s "$out/drm/"
 python3 - "$out" <<'PY'
 import pathlib, re, sys

@@ -1,7 +1,7 @@
 //! Keeps the computer from going to sleep while downloads run, through a logind
 //! "sleep" inhibitor (shown by KDE and GNOME as an app blocking sleep).
 
-use kstar_core::Engine;
+use siler_core::Engine;
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
 use zbus::zvariant::OwnedFd;
@@ -29,7 +29,7 @@ async fn inhibit() -> zbus::Result<OwnedFd> {
             "/org/freedesktop/login1",
             Some("org.freedesktop.login1.Manager"),
             "Inhibit",
-            &("sleep", "K-Star", "Downloads in progress", "block"),
+            &("sleep", "Siler", "Downloads in progress", "block"),
         )
         .await?;
     reply.body().deserialize::<OwnedFd>()

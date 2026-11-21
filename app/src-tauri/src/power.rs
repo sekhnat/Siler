@@ -1,9 +1,9 @@
-//! What happens when a queue (or everything) has finished: quit K-Star, or put the
+//! What happens when a queue (or everything) has finished: quit Siler, or put the
 //! computer to sleep, hibernate it or shut it down through logind, after a countdown the
 //! user can cancel.
 
-use kstar_core::AfterDone;
 use serde::Serialize;
+use siler_core::AfterDone;
 use std::future::Future;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -169,7 +169,7 @@ fn open_countdown_window(app: &AppHandle) {
         "countdown",
         WebviewUrl::App("index.html#countdown".into()),
     )
-    .title("K-Star")
+    .title("Siler")
     .inner_size(420.0, 210.0)
     .resizable(false)
     .always_on_top(true)
@@ -212,8 +212,8 @@ pub fn schedule(app: &AppHandle, action: AfterDone, reason: String) {
     let _ = app
         .notification()
         .builder()
-        .title(format!("K-Star will {} in a minute", verb(action)))
-        .body(format!("{reason}. Open K-Star to cancel."))
+        .title(format!("Siler will {} in a minute", verb(action)))
+        .body(format!("{reason}. Open Siler to cancel."))
         .show();
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -243,7 +243,7 @@ pub async fn run_now(app: &AppHandle) {
         let _ = app
             .notification()
             .builder()
-            .title(format!("K-Star couldn't {}", verb(p.action)))
+            .title(format!("Siler couldn't {}", verb(p.action)))
             .body(e)
             .show();
     }
@@ -262,7 +262,7 @@ pub fn check_all_done(app: &AppHandle) {
         .engine
         .list()
         .iter()
-        .any(|d| d.status.is_running() || d.status == kstar_core::Status::Queued);
+        .any(|d| d.status.is_running() || d.status == siler_core::Status::Queued);
     if busy {
         return;
     }

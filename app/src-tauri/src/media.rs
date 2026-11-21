@@ -4,11 +4,11 @@
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 
-/// The FFmpeg to combine media with: `$KSTAR_FFMPEG` when set, the copy bundled with the
+/// The FFmpeg to combine media with: `$SILER_FFMPEG` when set, the copy bundled with the
 /// application, one next to the executable, (in a development build) the one in
 /// `resources/`, or the first on `PATH`.
 pub fn find_ffmpeg(app: &AppHandle) -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("KSTAR_FFMPEG").filter(|p| !p.is_empty()) {
+    if let Some(p) = std::env::var_os("SILER_FFMPEG").filter(|p| !p.is_empty()) {
         return Some(PathBuf::from(p));
     }
     let mut candidates: Vec<PathBuf> = Vec::new();

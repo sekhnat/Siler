@@ -4,13 +4,13 @@
 
 <svg width={size} height={size} viewBox="0 0 1024 1024" aria-hidden="true">
   <defs>
-    <linearGradient id="kstar-bg" x1="0" y1="0" x2="1" y2="1">
+    <linearGradient id="siler-bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#7c5cff" />
       <stop offset="0.55" stop-color="#5b6cff" />
       <stop offset="1" stop-color="#22d3ee" />
     </linearGradient>
   </defs>
-  <rect x="32" y="32" width="960" height="960" rx="224" fill="url(#kstar-bg)" />
+  <rect x="32" y="32" width="960" height="960" rx="224" fill="url(#siler-bg)" />
   <path
     d="M512 150 C 538 352, 586 398, 790 424 C 586 450, 538 496, 512 698 C 486 496, 438 450, 234 424 C 438 398, 486 352, 512 150 Z"
     fill="#fff"

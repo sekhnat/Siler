@@ -64,7 +64,7 @@
       api
         .mediaDiagnostics()
         .then((f) => (ffmpeg = f))
-        .catch(() => (ffmpeg = { path: null, version: null, ok: false, missing: ["K-Star couldn't check it"] }));
+        .catch(() => (ffmpeg = { path: null, version: null, ok: false, missing: ["Siler couldn't check it"] }));
   });
 
   async function browse() {
@@ -94,7 +94,7 @@
   const mismatch = $derived.by(() => {
     const i = integration;
     if (!i || i.extension_protocol == null || i.extension_protocol === i.protocol) return null;
-    return i.extension_protocol < i.protocol ? "Update the Firefox extension" : "Update K-Star";
+    return i.extension_protocol < i.protocol ? "Update the Firefox extension" : "Update Siler";
   });
 
   async function save() {
@@ -210,13 +210,13 @@
       </div>
       {@render toggle(
         "Keep running in the tray",
-        integration && !integration.tray_available ? "No system tray was found, so closing the window quits K-Star" : "Closing the window keeps downloads going",
+        integration && !integration.tray_available ? "No system tray was found, so closing the window quits Siler" : "Closing the window keeps downloads going",
         s.close_to_tray,
         (v) => (s.close_to_tray = v),
       )}
       {@render toggle("Ask before quitting", "Confirm when quitting would pause running downloads", s.confirm_quit, (v) => (s.confirm_quit = v))}
       {@render toggle("Notifications", "Notify when a download finishes or fails", s.notify_on_complete, (v) => (s.notify_on_complete = v))}
-      {@render toggle("Resume on startup", "Continue unfinished downloads when K-Star starts", s.resume_on_startup, (v) => (s.resume_on_startup = v))}
+      {@render toggle("Resume on startup", "Continue unfinished downloads when Siler starts", s.resume_on_startup, (v) => (s.resume_on_startup = v))}
       {@render toggle("Keep the computer awake", "Don't let it go to sleep while downloads are running", s.prevent_sleep, (v) => (s.prevent_sleep = v))}
       {@render toggle(
         "Watch the clipboard for links",
@@ -226,7 +226,7 @@
       )}
       <div class="logs">
         <FileText size={15} />
-        <span class="hint grow truncate" title={integration?.log_dir}>Logs: {integration?.log_dir ?? "~/.local/state/kstar/logs"}</span>
+        <span class="hint grow truncate" title={integration?.log_dir}>Logs: {integration?.log_dir ?? "~/.local/state/siler/logs"}</span>
         <button class="btn btn-sm" onclick={() => api.openLogFolder().catch(toasts.error.bind(toasts))}>Open log folder</button>
       </div>
     {:else if tab === "media"}
@@ -284,7 +284,7 @@
       </label>
       {@render toggle(
         "Allow streams from this computer or the local network",
-        "Off by default, so a playlist can't make K-Star contact other machines. Turn it on for a media server at home.",
+        "Off by default, so a playlist can't make Siler contact other machines. Turn it on for a media server at home.",
         s.allow_private_media_addresses,
         (v) => (s.allow_private_media_addresses = v),
       )}
@@ -434,7 +434,7 @@
       <div class="field">
         <span class="label">Saved logins</span>
         {#if !keyring}
-          <div class="hint">No keyring service (KWallet, GNOME Keyring…) is running, so logins last until K-Star quits.</div>
+          <div class="hint">No keyring service (KWallet, GNOME Keyring…) is running, so logins last until Siler quits.</div>
         {:else if logins.length === 0}
           <div class="hint">When a server asks for a username and password, you can save it here.</div>
         {:else}
@@ -458,7 +458,7 @@
           <div>
             <div class="t-label">{mismatch}</div>
             <div class="hint">
-              The extension ({integration?.extension_version}) and K-Star ({integration?.app_version}) are from different versions and may not work together.
+              The extension ({integration?.extension_version}) and Siler ({integration?.app_version}) are from different versions and may not work together.
             </div>
           </div>
         {:else if integration?.manifest_installed && integration.host_exists}
@@ -477,7 +477,7 @@
           <TriangleAlert size={20} />
           <div>
             <div class="t-label">Firefox integration is not set up</div>
-            <div class="hint">Install the native messaging host so the extension can talk to K-Star.</div>
+            <div class="hint">Install the native messaging host so the extension can talk to Siler.</div>
           </div>
         {/if}
         <button class="btn btn-sm" onclick={install}>{integration?.manifest_installed ? "Repair" : "Install"}</button>
@@ -506,7 +506,7 @@
           </div>
         {:else}
           <ol>
-            <li>Click <b>Install</b> above to register K-Star with Firefox.</li>
+            <li>Click <b>Install</b> above to register Siler with Firefox.</li>
             <li>For a permanent install, sign the extension with <span class="mono">scripts/sign-extension.sh</span>; it then appears here.</li>
             <li>For testing, load <span class="mono">extension/manifest.json</span> in <span class="mono">about:debugging</span> (removed when Firefox restarts).</li>
             <li>Grant the extension access to all websites when Firefox asks.</li>

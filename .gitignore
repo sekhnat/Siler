@@ -3,7 +3,7 @@ node_modules/
 /app/dist/
 /app/src-tauri/target/
 /app/src-tauri/gen/
-*.kstar.part
+*.siler.part
 /extension/web-ext-artifacts/
 /extension/.amo-upload-uuid
 /app/src-tauri/resources/

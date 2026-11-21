@@ -1,6 +1,6 @@
 // The video feed: videos found on each tab, from the requests its players make, from what
 // recognised sites' pages and APIs carry, and on demand for YouTube. They are listed in the
-// popup, counted on the toolbar button, and handed to K-Star from the popup, the context
+// popup, counted on the toolbar button, and handed to Siler from the popup, the context
 // menu or the button over a video. Loaded before background.js, whose helpers it uses.
 "use strict";
 
@@ -8,25 +8,25 @@ const Feed = (() => {
   const MAX_PER_TAB = 50;
   const MANIFEST_PEEK = 256 * 1024;
   const BODY_MAX = 8 * 1024 * 1024;
-  const { classify, keyOf, inspectManifest, label } = KStar.media;
-  const { siteOf, idFromUrl, fromBody, fromHtml, BODY_URLS, SITES } = KStar.sites;
+  const { classify, keyOf, inspectManifest, label } = Siler.media;
+  const { siteOf, idFromUrl, fromBody, fromHtml, BODY_URLS, SITES } = Siler.sites;
 
   // ------------------------------------------------------------ settings, kept in memory
   // (the request listeners must decide without waiting)
 
-  let cfg = { ...KSTAR_DEFAULTS };
-  kstarConfig().then((c) => (cfg = c));
+  let cfg = { ...SILER_DEFAULTS };
+  silerConfig().then((c) => (cfg = c));
   browser.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
-    for (const [k, v] of Object.entries(changes)) cfg[k] = v.newValue ?? KSTAR_DEFAULTS[k];
+    for (const [k, v] of Object.entries(changes)) cfg[k] = v.newValue ?? SILER_DEFAULTS[k];
     if ("findVideos" in changes || "blocklist" in changes) refreshAllBadges();
   });
 
   /** Whether videos are looked for on a page (the global switch and the site switch). */
   function watching(pageUrl) {
     if (!cfg.findVideos) return false;
-    const host = kstarHostOf(pageUrl || "");
-    return !host || !kstarSiteBlocked(cfg, host);
+    const host = silerHostOf(pageUrl || "");
+    return !host || !silerSiteBlocked(cfg, host);
   }
 
   const recogniserOn = (site) => !!site && cfg.findVideos && cfg[`site_${site}`] !== false;
@@ -152,7 +152,7 @@ const Feed = (() => {
         siteName: "YouTube",
         title: (title || "").replace(/\s*-\s*YouTube$/, "").trim() || null,
         ids: [id],
-        url: KStar.youtube.watchUrl(id),
+        url: Siler.youtube.watchUrl(id),
         frameId: 0,
       },
     ]);
@@ -346,8 +346,8 @@ const Feed = (() => {
     const [res] = await browser.scripting.executeScript({
       target: { tabId: tab.id, frameIds: [cand.frameId ?? 0] },
       world: "MAIN",
-      func: kstarYouTubeInPage,
-      args: [{ videoId: id, clients: KStar.youtube.clients(), libs, cached: ytPlayer }],
+      func: silerYouTubeInPage,
+      args: [{ videoId: id, clients: Siler.youtube.clients(), libs, cached: ytPlayer }],
     });
     const r = res?.result;
     if (!r?.ok) throw new Error(r?.error || "YouTube didn't answer");
@@ -359,13 +359,13 @@ const Feed = (() => {
         if (status?.reason) reasons.push(status.reason);
         continue;
       }
-      const fmts = KStar.youtube.usable(answer.pr.streamingData?.adaptiveFormats);
-      const client = KStar.youtube.CLIENTS[answer.name];
+      const fmts = Siler.youtube.usable(answer.pr.streamingData?.adaptiveFormats);
+      const client = Siler.youtube.CLIENTS[answer.name];
       if (!fmts.length) continue;
       const ua = client.context.client.userAgent;
       // Behind an ad the links answer only once its time has passed (yt-dlp sleeps for it
       // too); the wait is taken here, so the app needn't take it again.
-      const wait = KStar.youtube.adWait(answer.pr);
+      const wait = Siler.youtube.adWait(answer.pr);
       let waited = false;
       if (!(await linkWorks(fmts[0].url, ua))) {
         if (!wait) continue;
@@ -373,15 +373,15 @@ const Feed = (() => {
         waited = true;
         if (!(await linkWorks(fmts[0].url, ua))) continue;
       }
-      const out = KStar.youtube.handOver(answer, client, KStar.youtube.watchUrl(id), r.web);
+      const out = Siler.youtube.handOver(answer, client, Siler.youtube.watchUrl(id), r.web);
       if (out.error) throw new Error(out.error);
       if (waited) out.item.media.not_before_ms = null;
-      console.info(`K-Star: YouTube ${id} via the ${answer.name} client`);
+      console.info(`Siler: YouTube ${id} via the ${answer.name} client`);
       return out.item;
     }
     if (reasons.length) throw new Error(`YouTube says: ${reasons[0]}`);
     if (r.solverError) throw new Error(`YouTube's player code couldn't be run (${r.solverError})`);
-    throw new Error("YouTube offered no formats K-Star can download for this video");
+    throw new Error("YouTube offered no formats Siler can download for this video");
   }
 
   // ------------------------------------------------------------ hand-over
@@ -398,15 +398,15 @@ const Feed = (() => {
     return !!h.installed;
   }
 
-  /** The K-Star item for a candidate. */
+  /** The Siler item for a candidate. */
   async function itemFor(tab, c) {
     const hints = await appTakesHints();
     if (c.site === "youtube") {
-      if (!hints) throw new Error("Update K-Star to version 0.6.0 or later to download YouTube videos");
+      if (!hints) throw new Error("Update Siler to version 0.6.0 or later to download YouTube videos");
       return youtubeItem(tab, c);
     }
     if (c.hint?.manifest && !hints) {
-      throw new Error("Update K-Star to version 0.6.0 or later to download videos from this site");
+      throw new Error("Update Siler to version 0.6.0 or later to download videos from this site");
     }
     // A recognised video is named by its title, or else by the page's. Facebook's own
     // titles are often internal names, so its page's title comes first for its own video.
@@ -467,7 +467,7 @@ const Feed = (() => {
     return [...items].sort((a, b) => rank(a) - rank(b)).map(view);
   }
 
-  /** Hands the chosen videos of a tab to K-Star. */
+  /** Hands the chosen videos of a tab to Siler. */
   async function download(tabId, keys) {
     const tab = await browser.tabs.get(tabId);
     const items = await list(tabId);

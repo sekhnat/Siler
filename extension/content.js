@@ -1,6 +1,6 @@
 // Runs in every page and frame (the extension's own world, not the page's):
-//  - Alt + click on a link lets the browser handle that download itself (K-Star steps aside);
-//  - a Download button over videos hands the video to K-Star.
+//  - Alt + click on a link lets the browser handle that download itself (Siler steps aside);
+//  - a Download button over videos hands the video to Siler.
 "use strict";
 
 document.addEventListener(
@@ -39,7 +39,7 @@ document.addEventListener(
   browser.storage.onChanged.addListener((_, area) => area === "local" && readSettings());
 
   function make() {
-    host = document.createElement("kstar-video-button");
+    host = document.createElement("siler-video-button");
     host.style.cssText = "all:initial;position:fixed;z-index:2147483647;top:0;left:0;display:none;pointer-events:none;";
     const root = host.attachShadow({ mode: "closed" });
     root.innerHTML = `<style>
@@ -51,7 +51,7 @@ document.addEventListener(
       button:focus-visible{outline:2px solid #93c5fd;outline-offset:2px}
       button[data-busy]{opacity:.75;cursor:progress}
       svg{width:15px;height:15px;flex:none}
-    </style><button type="button" aria-label="Download this video with K-Star" title="Download with K-Star"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 20h14"/></svg><span>Download</span></button>`;
+    </style><button type="button" aria-label="Download this video with Siler" title="Download with Siler"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 20h14"/></svg><span>Download</span></button>`;
     button = root.querySelector("button");
     button.addEventListener("click", onClick);
     button.addEventListener("pointerenter", () => clearTimeout(hideTimer));
@@ -139,7 +139,7 @@ document.addEventListener(
     const src = target.currentSrc || target.src || target.querySelector("source[src]")?.src || "";
     try {
       const r = await browser.runtime.sendMessage({ type: "video-button", src, pageUrl: location.href });
-      button.querySelector("span").textContent = r?.ok ? "Sent to K-Star" : "Not sent";
+      button.querySelector("span").textContent = r?.ok ? "Sent to Siler" : "Not sent";
     } catch {
       button.querySelector("span").textContent = "Not sent";
     }

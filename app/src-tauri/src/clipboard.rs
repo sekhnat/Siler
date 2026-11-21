@@ -2,7 +2,7 @@
 //! window. On Wayland this reads the clipboard through the data-control protocol (KDE,
 //! wlroots), which works without focus; elsewhere through X11.
 
-use kstar_ipc::BrowserItem;
+use siler_ipc::BrowserItem;
 use std::collections::HashSet;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::time::Duration;
@@ -17,7 +17,7 @@ const MAX_TEXT: usize = 64 * 1024;
 const MAX_LINKS: usize = 100;
 
 /// Extensions that make a copied link worth offering (lower case, without the dot).
-pub fn extensions(s: &kstar_core::Settings) -> HashSet<String> {
+pub fn extensions(s: &siler_core::Settings) -> HashSet<String> {
     s.categories
         .iter()
         .flat_map(|c| c.extensions.iter().cloned())
@@ -78,7 +78,7 @@ fn hash(text: &str) -> u64 {
     h.finish()
 }
 
-/// One of K-Star's windows is on screen and focused (a copy is then K-Star's own, like
+/// One of Siler's windows is on screen and focused (a copy is then Siler's own, like
 /// "Copy link"). Hidden windows can report focus, so visibility is checked too.
 fn has_focus(app: &AppHandle) -> bool {
     app.webview_windows()
@@ -160,9 +160,9 @@ pub fn spawn(app: AppHandle) {
                 if last.replace(h) == Some(h) || first {
                     continue;
                 }
-                // Copied inside K-Star ("Copy link"): not a new download.
+                // Copied inside Siler ("Copy link"): not a new download.
                 if has_focus(&app) {
-                    tracing::debug!("clipboard changed while K-Star has the focus");
+                    tracing::debug!("clipboard changed while Siler has the focus");
                     continue;
                 }
                 let links = links_in(&text, &extensions(&settings));

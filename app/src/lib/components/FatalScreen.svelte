@@ -9,12 +9,12 @@
 
 <div class="screen">
   <div class="card">
-    <div class="brand"><Logo size={28} /> K-Star</div>
+    <div class="brand"><Logo size={28} /> Siler</div>
     <div class="icon"><OctagonX size={30} /></div>
-    <h1>K-Star couldn't start</h1>
+    <h1>Siler couldn't start</h1>
     <pre class="selectable">{message}</pre>
     <p class="hint">
-      Your downloads are safe on disk. The log file has more details; check that the folder above exists and that you can write to it, then start K-Star again.
+      Your downloads are safe on disk. The log file has more details; check that the folder above exists and that you can write to it, then start Siler again.
     </p>
     <div class="actions">
       <button class="btn" onclick={() => api.openLogFolder().catch(() => {})}><FolderOpen size={15} /> Open log folder</button>

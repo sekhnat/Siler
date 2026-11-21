@@ -60,7 +60,7 @@
     {#if probe.kind === "drm"}<Film size={18} />{:else}<Info size={18} />{/if}
     <div class="min">
       <div class="t">{KIND_LABEL[probe.kind] ?? "Not downloadable"}</div>
-      <div class="hint">{probe.message ?? "K-Star can't download this."}</div>
+      <div class="hint">{probe.message ?? "Siler can't download this."}</div>
       {#if probe.dropped_drm > 0}<div class="hint">{probe.dropped_drm} track{probe.dropped_drm === 1 ? "" : "s"} refused.</div>{/if}
     </div>
   </div>
@@ -141,7 +141,7 @@
     </div>
 
     {#if !ffmpeg && trackCount > 1}
-      <div class="warn"><TriangleAlert size={14} /> Combining video and audio needs FFmpeg, which K-Star couldn't find. See Settings → Media.</div>
+      <div class="warn"><TriangleAlert size={14} /> Combining video and audio needs FFmpeg, which Siler couldn't find. See Settings → Media.</div>
     {/if}
     {#each probe.warnings as w, i (i)}
       <div class="hint">{w}</div>

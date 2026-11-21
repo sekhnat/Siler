@@ -1,7 +1,7 @@
 # Builds the Linux AppImage when a release is published and attaches it to the release.
 # It can also be run by hand for an existing release (Actions → AppImage → Run workflow).
 #
-# The AppImage carries K-Star, its native messaging host (kstar-nmhost) and the bundled
+# The AppImage carries Siler, its native messaging host (siler-nmhost) and the bundled
 # FFmpeg (scripts/build-ffmpeg.sh). It is built on the oldest supported Ubuntu, so it runs
 # on distributions with that glibc or newer. It carries zsync update information, and its
 # .zsync file is attached beside it, so AppImage updaters fetch only what changed
@@ -85,17 +85,17 @@ jobs:
 
       - name: Tests
         env:
-          KSTAR_REQUIRE_FFMPEG: "1"
+          SILER_REQUIRE_FFMPEG: "1"
         run: |
-          export KSTAR_FFMPEG="$PWD/app/src-tauri/resources/ffmpeg"
+          export SILER_FFMPEG="$PWD/app/src-tauri/resources/ffmpeg"
           cargo test --workspace --locked
 
       - name: Native messaging host and FFmpeg beside the app
         run: |
-          cargo build --release --locked -p kstar-nmhost
+          cargo build --release --locked -p siler-nmhost
           triple=$(rustc -vV | sed -n 's/^host: //p')
           mkdir -p app/src-tauri/binaries
-          cp target/release/kstar-nmhost "app/src-tauri/binaries/kstar-nmhost-$triple"
+          cp target/release/siler-nmhost "app/src-tauri/binaries/siler-nmhost-$triple"
           cp app/src-tauri/resources/ffmpeg "app/src-tauri/binaries/ffmpeg-$triple"
           cp app/src-tauri/resources/ffprobe "app/src-tauri/binaries/ffprobe-$triple"
 
@@ -106,7 +106,7 @@ jobs:
       - name: Name, update information and checksum
         run: |
           src=$(ls target/release/bundle/appimage/*.AppImage | head -n 1)
-          name="K-Star-$VERSION-x86_64.AppImage"
+          name="Siler-$VERSION-x86_64.AppImage"
           mkdir -p out
           cp "$src" "out/$name"
           scripts/appimage-zsync.sh "out/$name"

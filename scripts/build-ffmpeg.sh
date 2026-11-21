@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Builds the FFmpeg that K-Star bundles: a pinned upstream release, static, with only what
-# K-Star uses (media-design §12). The result goes to app/src-tauri/resources/ (gitignored).
+# Builds the FFmpeg that Siler bundles: a pinned upstream release, static, with only what
+# Siler uses (media-design §12). The result goes to app/src-tauri/resources/ (gitignored).
 #
 # Needs: gcc, make, tar, xz, curl, sha256sum. The release is checked against the SHA-256
 # pinned below; its PGP signature (ffmpeg-<version>.tar.xz.asc, key ffmpeg-devel@ffmpeg.org)
@@ -32,7 +32,7 @@ if [ ! -d "$src" ]; then
     tar -C "$build/src" -xf "$tarball"
 fi
 
-# What K-Star needs (§12.3) and what its fixtures and reconstruction use: H.264, HEVC, AV1 and
+# What Siler needs (§12.3) and what its fixtures and reconstruction use: H.264, HEVC, AV1 and
 # VP9 video, AAC, AC-3, E-AC-3, MP3 and Opus audio, in MPEG-TS, MP4 and Matroska/WebM. Nothing
 # that needs a library: no network, no zlib, no hardware. Subtitle encoders are for MP4's
 # mov_text. Nothing here needs --enable-gpl, so the build is LGPL-2.1-or-later.

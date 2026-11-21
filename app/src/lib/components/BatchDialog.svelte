@@ -93,7 +93,7 @@
   <div>
     <h2>Download {items.length} files</h2>
     <div class="hint">
-      {#if items[0]?.origin === "grabber"}Found by the site grabber.{" "}{:else if items[0]?.origin === "list"}From a list or metalink.{" "}{/if}Choose which files K-Star should download.
+      {#if items[0]?.origin === "grabber"}Found by the site grabber.{" "}{:else if items[0]?.origin === "list"}From a list or metalink.{" "}{/if}Choose which files Siler should download.
     </div>
   </div>
 

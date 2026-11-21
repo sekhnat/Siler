@@ -5,7 +5,7 @@
   import { onMount } from "svelte";
   import { api, type AfterDone, type PendingPower } from "./lib/api";
 
-  /** Counts down before K-Star puts the computer to sleep or shuts it down. */
+  /** Counts down before Siler puts the computer to sleep or shuts it down. */
   let pending = $state<PendingPower | null>(null);
   let deadline = 0;
   let left = $state(0);

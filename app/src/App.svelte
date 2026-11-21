@@ -7,7 +7,7 @@
   import FatalScreen from "./lib/components/FatalScreen.svelte";
 
   const route = location.hash.replace(/^#/, "");
-  // K-Star may have failed to start; then the window explains why instead.
+  // Siler may have failed to start; then the window explains why instead.
   const startup = api.startupError().catch(() => null);
 </script>
 

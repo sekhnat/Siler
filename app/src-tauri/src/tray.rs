@@ -3,7 +3,7 @@
 
 use ksni::menu::{CheckmarkItem, RadioGroup, RadioItem, StandardItem, SubMenu};
 use ksni::{Handle, MenuItem, ToolTip, TrayMethods};
-use kstar_core::{AfterDone, MAIN_QUEUE};
+use siler_core::{AfterDone, MAIN_QUEUE};
 use std::sync::OnceLock;
 use tauri::{AppHandle, Manager};
 
@@ -13,7 +13,7 @@ static HANDLE: OnceLock<Handle<Tray>> = OnceLock::new();
 
 const WHEN_DONE: [(AfterDone, &str); 5] = [
     (AfterDone::Nothing, "Do nothing"),
-    (AfterDone::Quit, "Quit K-Star"),
+    (AfterDone::Quit, "Quit Siler"),
     (AfterDone::Sleep, "Sleep"),
     (AfterDone::Hibernate, "Hibernate"),
     (AfterDone::PowerOff, "Shut down"),
@@ -57,7 +57,7 @@ impl ksni::Tray for Tray {
     }
 
     fn title(&self) -> String {
-        "K-Star".into()
+        "Siler".into()
     }
 
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
@@ -66,7 +66,7 @@ impl ksni::Tray for Tray {
 
     fn tool_tip(&self) -> ToolTip {
         ToolTip {
-            title: "K-Star".into(),
+            title: "Siler".into(),
             description: self.status.clone(),
             ..Default::default()
         }
@@ -77,7 +77,7 @@ impl ksni::Tray for Tray {
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
-        let engine = |app: &AppHandle, f: fn(&kstar_core::Engine) -> kstar_core::Result<()>| {
+        let engine = |app: &AppHandle, f: fn(&siler_core::Engine) -> siler_core::Result<()>| {
             if let Some(state) = app.try_state::<AppState>()
                 && let Err(e) = f(&state.engine)
             {
@@ -93,7 +93,7 @@ impl ksni::Tray for Tray {
             .as_ref()
             .is_some_and(|s| s.engine.settings().clipboard_monitor);
         vec![
-            item("Show K-Star", crate::show_main),
+            item("Show Siler", crate::show_main),
             MenuItem::Separator,
             item("Pause all", move |app| engine(app, |e| e.pause_all())),
             item("Resume all", move |app| engine(app, |e| e.resume_all())),

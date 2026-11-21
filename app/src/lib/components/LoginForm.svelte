@@ -10,7 +10,7 @@
     oncancel,
   }: {
     request: LoginRequest;
-    /** Called after the login was handed to K-Star (and saved, when asked). */
+    /** Called after the login was handed to Siler (and saved, when asked). */
     onloggedin: () => void;
     oncancel?: () => void;
   } = $props();
@@ -66,7 +66,7 @@
       <input class="input" type="password" bind:value={password} autocomplete="current-password" />
     </label>
   </div>
-  <label class="check" title={keyring ? "" : "No keyring service (KWallet, GNOME Keyring…) is running; the login lasts until K-Star quits"}>
+  <label class="check" title={keyring ? "" : "No keyring service (KWallet, GNOME Keyring…) is running; the login lasts until Siler quits"}>
     <input type="checkbox" bind:checked={remember} disabled={!keyring} />
     Remember in the keyring
   </label>

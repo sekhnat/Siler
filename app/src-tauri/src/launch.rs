@@ -1,7 +1,7 @@
 //! Opening files, folders and web links with the user's default applications, and
 //! starting Firefox. In place of the opener plugin, whose launchers inherit an AppImage's
 //! environment and hand it to the player or browser they start (see
-//! [`kstar_core::host`]).
+//! [`siler_core::host`]).
 
 use std::ffi::OsStr;
 use std::io;
@@ -17,7 +17,7 @@ const SETTLE: Duration = Duration::from_millis(1500);
 pub fn open(target: impl AsRef<OsStr>) -> io::Result<()> {
     let mut last = io::Error::new(io::ErrorKind::NotFound, "no launcher found to open it with");
     for mut cmd in open::commands(target) {
-        kstar_core::host::prepare(&mut cmd);
+        siler_core::host::prepare(&mut cmd);
         let started = cmd
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -34,7 +34,7 @@ pub fn open(target: impl AsRef<OsStr>) -> io::Result<()> {
 
 /// Starts a program of the user's (e.g. Firefox) without waiting for it.
 pub fn start(program: &str, args: &[&OsStr]) -> io::Result<()> {
-    let child = kstar_core::host::command(program)
+    let child = siler_core::host::command(program)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())

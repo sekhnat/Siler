@@ -1,0 +1,9 @@
+[package]
+name = "siler-nmhost"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+siler-ipc = { path = "../siler-ipc" }
+serde_json.workspace = true

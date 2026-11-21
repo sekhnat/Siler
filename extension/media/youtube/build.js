@@ -1,12 +1,12 @@
 // YouTube, as yt-dlp does it (yt_dlp/extractor/youtube/_base.py and _video.py): the player
 // API is asked as clients whose formats come as plain or signed links (not SABR), the
 // site's own challenge code is run to finish the links (page.js), and the formats are
-// handed to K-Star as a DASH manifest. This part has no browser use, for the tests.
+// handed to Siler as a DASH manifest. This part has no browser use, for the tests.
 "use strict";
 
-var KStar = globalThis.KStar || (globalThis.KStar = {});
+var Siler = globalThis.Siler || (globalThis.Siler = {});
 
-KStar.youtube = (() => {
+Siler.youtube = (() => {
   // Copied from yt-dlp's INNERTUBE_CLIENTS. `cookies`: SUPPORTS_COOKIES; `js`: REQUIRE_JS_PLAYER.
   const CLIENTS = {
     tv_samsung: {
@@ -67,7 +67,7 @@ KStar.youtube = (() => {
     return id ? id.split(".")[0] : null;
   }
 
-  /** Formats K-Star can fetch whole: with a link, an index, not a DRC or OTF stream. */
+  /** Formats Siler can fetch whole: with a link, an index, not a DRC or OTF stream. */
   function usable(formats) {
     return (formats || []).filter(
       (f) =>
@@ -198,18 +198,18 @@ KStar.youtube = (() => {
     return Math.ceil(wait);
   }
 
-  /** The hand-over for a client's answer: the K-Star item, or why there's none. */
+  /** The hand-over for a client's answer: the Siler item, or why there's none. */
   function handOver(answer, client, pageUrl, web) {
     const pr = answer.pr;
     const details = pr.videoDetails || web?.videoDetails || {};
     if (details.isLive || details.isUpcoming) {
-      return { error: "This is a live stream. K-Star can't record live streams yet." };
+      return { error: "This is a live stream. Siler can't record live streams yet." };
     }
     const duration =
       Number(details.lengthSeconds) ||
       Math.max(0, ...usable(pr.streamingData?.adaptiveFormats).map((f) => Number(f.approxDurationMs || 0) / 1000));
     const mpd = buildMpd(pr.streamingData?.adaptiveFormats, duration);
-    if (!mpd) return { error: "YouTube offered no formats K-Star can download for this video." };
+    if (!mpd) return { error: "YouTube offered no formats Siler can download for this video." };
     const title = details.title || web?.videoDetails?.title || null;
     const tracks = pr.captions?.playerCaptionsTracklistRenderer?.captionTracks || web?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
     const wait = adWait(pr);

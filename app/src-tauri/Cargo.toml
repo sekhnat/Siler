@@ -1,17 +1,17 @@
 [package]
-name = "kstar"
+name = "siler"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
-description = "K-Star download manager"
+description = "Siler download manager"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-kstar-core = { path = "../../crates/kstar-core" }
+siler-core = { path = "../../crates/siler-core" }
 url = "2"
-kstar-ipc = { path = "../../crates/kstar-ipc", features = ["tokio"] }
+siler-ipc = { path = "../../crates/siler-ipc", features = ["tokio"] }
 tauri = { version = "2", features = ["image-png"] }
 tauri-plugin-single-instance = "2"
 tauri-plugin-notification = "2"

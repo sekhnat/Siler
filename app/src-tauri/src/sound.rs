@@ -1,8 +1,8 @@
 //! Sounds for download events, from the desktop's sound theme (freedesktop sound naming)
-//! or a file the user picked. Played with whichever player the system has, so K-Star
+//! or a file the user picked. Played with whichever player the system has, so Siler
 //! doesn't link an audio stack.
 
-use kstar_core::SoundSettings;
+use siler_core::SoundSettings;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
@@ -107,7 +107,7 @@ fn play_file(path: &Path) {
         ("canberra-gtk-play", &["-f"]),
     ];
     for (player, args) in players {
-        let started = kstar_core::host::command(player)
+        let started = siler_core::host::command(player)
             .args(args)
             .arg(path)
             .stdin(Stdio::null())

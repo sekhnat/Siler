@@ -3,13 +3,13 @@
 # but doesn't publish it. Release builds of Firefox only keep signed extensions installed.
 #
 # Needs an AMO API key (https://addons.mozilla.org/developers/addon/api/key/), given as
-# AMO_JWT_ISSUER and AMO_JWT_SECRET in the environment or in ~/.config/kstar/amo.env.
+# AMO_JWT_ISSUER and AMO_JWT_SECRET in the environment or in ~/.config/siler/amo.env.
 # The extension is uploaded to Mozilla for automated review; every signing needs a new
 # "version" in extension/manifest.json.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-env_file="${XDG_CONFIG_HOME:-$HOME/.config}/kstar/amo.env"
+env_file="${XDG_CONFIG_HOME:-$HOME/.config}/siler/amo.env"
 
 if [[ -z "${AMO_JWT_ISSUER:-}" || -z "${AMO_JWT_SECRET:-}" ]] && [[ -f "$env_file" ]]; then
   if [[ "$(stat -c %a "$env_file")" != "600" ]]; then
@@ -38,17 +38,17 @@ fi
 
 version="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["version"])' "$root/extension/manifest.json")"
 artifacts="$root/extension/web-ext-artifacts"
-echo "==> Signing K-Star Integration $version (unlisted)"
+echo "==> Signing Siler Integration $version (unlisted)"
 # Credentials go through the environment, not the command line, so they don't show up in ps.
 WEB_EXT_API_KEY="$AMO_JWT_ISSUER" WEB_EXT_API_SECRET="$AMO_JWT_SECRET" \
   npx --yes web-ext@10 sign --channel=unlisted --source-dir "$root/extension" --artifacts-dir "$artifacts" \
     --ignore-files "tests/**"
 
 xpi="$(ls -t "$artifacts"/*.xpi | head -n 1)"
-dest="${XDG_DATA_HOME:-$HOME/.local/share}/kstar"
+dest="${XDG_DATA_HOME:-$HOME/.local/share}/siler"
 mkdir -p "$dest"
-cp "$xpi" "$dest/kstar-integration.xpi"
+cp "$xpi" "$dest/siler-integration.xpi"
 
 echo
-echo "Signed: $dest/kstar-integration.xpi"
-echo "Install it from K-Star → Settings → Browser → Add to Firefox, or open the file with Firefox."
+echo "Signed: $dest/siler-integration.xpi"
+echo "Install it from Siler → Settings → Browser → Add to Firefox, or open the file with Firefox."

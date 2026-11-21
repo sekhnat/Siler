@@ -2,9 +2,9 @@
 // API use, so the tests can load them in Node.
 "use strict";
 
-var KStar = globalThis.KStar || (globalThis.KStar = {});
+var Siler = globalThis.Siler || (globalThis.Siler = {});
 
-KStar.media = (() => {
+Siler.media = (() => {
   const HLS_TYPES = /^(application\/(vnd\.apple\.mpegurl|x-mpegurl)|audio\/(x-)?mpegurl)$/;
   const DASH_TYPES = /^application\/dash\+xml$/;
   // Files that are whole videos or songs (not pieces of a stream).

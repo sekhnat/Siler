@@ -37,7 +37,7 @@
 
   const ACTIONS = $derived<{ value: AfterDone; label: string; ok: boolean }[]>([
     { value: "nothing", label: "Do nothing", ok: true },
-    { value: "quit", label: "Quit K-Star", ok: true },
+    { value: "quit", label: "Quit Siler", ok: true },
     { value: "sleep", label: "Put the computer to sleep", ok: caps.sleep },
     { value: "hibernate", label: "Hibernate the computer", ok: caps.hibernate },
     { value: "power_off", label: "Shut down the computer", ok: caps.power_off },
@@ -98,7 +98,7 @@
     <button class="toggle-row" onclick={() => (q.schedule.enabled = !q.schedule.enabled)}>
       <div>
         <div class="t-label">Start on a schedule</div>
-        <div class="hint">K-Star must be running (in the tray is fine); it can't wake a sleeping computer.</div>
+        <div class="hint">Siler must be running (in the tray is fine); it can't wake a sleeping computer.</div>
       </div>
       <span class="switch" class:on={q.schedule.enabled}></span>
     </button>
@@ -159,7 +159,7 @@
         {/each}
       </select>
       {#if q.after_done === "sleep" || q.after_done === "hibernate" || q.after_done === "power_off"}
-        <span class="hint">K-Star counts down for a minute first, so you can cancel.</span>
+        <span class="hint">Siler counts down for a minute first, so you can cancel.</span>
       {/if}
     </label>
   </div>

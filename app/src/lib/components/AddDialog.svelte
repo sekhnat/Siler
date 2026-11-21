@@ -183,7 +183,7 @@
         if (given) {
           mediaProbe = null;
           probe = null;
-          probeError = m.message ?? "The page gave no video K-Star can download.";
+          probeError = m.message ?? "The page gave no video Siler can download.";
           return;
         }
       }
@@ -402,7 +402,7 @@
         {#if streamFailed}
           <div class="hint">This is a video stream, and it couldn't be read. Check the link, then try again.</div>
         {:else}
-          <div class="hint">You can still add it — K-Star will retry when it starts.</div>
+          <div class="hint">You can still add it — Siler will retry when it starts.</div>
         {/if}
       {:else if probe}
         <div class="facts">

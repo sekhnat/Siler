@@ -17,7 +17,7 @@
 
   const WHEN_DONE: { label: string; value: AfterDone }[] = [
     { label: "Do nothing", value: "nothing" },
-    { label: "Quit K-Star", value: "quit" },
+    { label: "Quit Siler", value: "quit" },
     { label: "Sleep", value: "sleep" },
     { label: "Hibernate", value: "hibernate" },
     { label: "Shut down", value: "power_off" },

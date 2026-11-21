@@ -16,7 +16,7 @@ function load() {
   for (const f of ["media/common.js", "media/sites.js", "media/youtube/build.js"]) {
     vm.runInContext(fs.readFileSync(path.join(ext, f), "utf8"), ctx, { filename: f });
   }
-  return ctx.KStar;
+  return ctx.Siler;
 }
 const K = load();
 // Objects made in the scripts' context compare by structure only after a JSON round trip.
@@ -148,7 +148,7 @@ test("YouTube: the formats become a DASH manifest the app reads", () => {
   const pr = JSON.parse(fixture("youtube/visionos.json"));
   const fmts = pr.streamingData.adaptiveFormats;
   const mpd = K.youtube.buildMpd(fmts, Number(pr.videoDetails.lengthSeconds));
-  // The app's DASH parser reads this same file (crates/kstar-media, dash tests).
+  // The app's DASH parser reads this same file (crates/siler-media, dash tests).
   const snapshot = path.join(here, "fixtures", "youtube", "visionos.mpd");
   if (process.env.UPDATE_SNAPSHOTS) fs.writeFileSync(snapshot, mpd);
   assert.equal(mpd, fs.readFileSync(snapshot, "utf8"));
@@ -237,7 +237,7 @@ test("YouTube: the player API is asked with each client's own user agent", async
   const ctx = vm.createContext(page);
   vm.runInContext(fs.readFileSync(path.join(ext, "media/youtube/page.js"), "utf8"), ctx, { filename: "page.js" });
   const clients = K.youtube.clients();
-  const out = await ctx.kstarYouTubeInPage({ videoId: "dQw4w9WgXcQ", clients: plain(clients), libs: {}, cached: null });
+  const out = await ctx.silerYouTubeInPage({ videoId: "dQw4w9WgXcQ", clients: plain(clients), libs: {}, cached: null });
   assert.equal(out.ok, true, out.error);
   const asks = sent.filter((s) => s.url.includes("/youtubei/v1/player"));
   assert.equal(asks.length, clients.length);

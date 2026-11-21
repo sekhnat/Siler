@@ -16,7 +16,7 @@ function fmtSpeed(n) {
 let siteHost = "";
 let tabId = null;
 
-/** The videos K-Star found on the tab, to pick from. */
+/** The videos Siler found on the tab, to pick from. */
 async function renderVideos(fresh = false) {
   if (tabId == null) return;
   const list = await browser.runtime.sendMessage({ type: "media-list", tabId, fresh }).catch(() => []);
@@ -58,7 +58,7 @@ async function renderVideos(fresh = false) {
 function syncButton() {
   const n = document.querySelectorAll("#video-list input:checked").length;
   $("video-download").disabled = n === 0;
-  $("video-download").textContent = n > 1 ? `Download ${n} with K-Star` : "Download with K-Star";
+  $("video-download").textContent = n > 1 ? `Download ${n} with Siler` : "Download with Siler";
 }
 
 $("video-download").addEventListener("click", async () => {
@@ -67,7 +67,7 @@ $("video-download").addEventListener("click", async () => {
   const btn = $("video-download");
   const msg = $("video-msg");
   btn.disabled = true;
-  btn.textContent = "Sending to K-Star…";
+  btn.textContent = "Sending to Siler…";
   msg.hidden = true;
   msg.classList.remove("err");
   const r = await browser.runtime.sendMessage({ type: "media-download", tabId, keys }).catch((e) => ({ ok: false, message: String(e?.message ?? e) }));
@@ -75,22 +75,22 @@ $("video-download").addEventListener("click", async () => {
     window.close();
     return;
   }
-  msg.textContent = r?.message || "K-Star couldn't take the video.";
+  msg.textContent = r?.message || "Siler couldn't take the video.";
   msg.classList.add("err");
   msg.hidden = false;
   syncButton();
 });
 
 async function render() {
-  const cfg = await kstarConfig();
+  const cfg = await silerConfig();
   $("enabled").setAttribute("aria-checked", String(cfg.enabled));
 
   const [tab] = await browser.tabs.query({ active: true, currentWindow: true }).catch(() => []);
   tabId = tab?.id ?? null;
-  siteHost = /^https?:/i.test(tab?.url ?? "") ? kstarHostOf(tab.url) : "";
+  siteHost = /^https?:/i.test(tab?.url ?? "") ? silerHostOf(tab.url) : "";
   $("site-row").hidden = !siteHost;
   if (siteHost) {
-    const blocked = kstarSiteBlocked(cfg, siteHost);
+    const blocked = silerSiteBlocked(cfg, siteHost);
     $("site").textContent = siteHost.replace(/^www\./, "");
     $("site-on").setAttribute("aria-checked", String(!blocked));
     $("site-hint").textContent = blocked
@@ -107,9 +107,9 @@ async function render() {
   $("outdated").hidden = !h.outdated;
   $("outdated").textContent =
     h.outdated === "app"
-      ? `K-Star ${h.version ?? ""} is older than this extension. Update K-Star.`
+      ? `Siler ${h.version ?? ""} is older than this extension. Update Siler.`
       : h.outdated === "extension"
-        ? `This extension is older than K-Star ${h.version ?? ""}. Update the extension.`
+        ? `This extension is older than Siler ${h.version ?? ""}. Update the extension.`
         : "";
   $("dot").className = "dot " + (h.running ? "ok" : h.installed ? "warn" : "err");
   $("status").textContent = h.running
@@ -130,15 +130,15 @@ async function render() {
 }
 
 $("enabled").addEventListener("click", async () => {
-  const cfg = await kstarConfig();
+  const cfg = await silerConfig();
   await browser.storage.local.set({ enabled: !cfg.enabled });
   render();
 });
 
 $("site-on").addEventListener("click", async () => {
   if (!siteHost) return;
-  const cfg = await kstarConfig();
-  await kstarSetSiteBlocked(siteHost, !kstarSiteBlocked(cfg, siteHost));
+  const cfg = await silerConfig();
+  await silerSetSiteBlocked(siteHost, !silerSiteBlocked(cfg, siteHost));
   render();
   renderVideos(true);
 });

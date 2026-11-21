@@ -3,10 +3,10 @@
 // page text and returns candidates; nothing here fetches or touches the browser.
 "use strict";
 
-var KStar = globalThis.KStar || (globalThis.KStar = {});
+var Siler = globalThis.Siler || (globalThis.Siler = {});
 
-KStar.sites = (() => {
-  const { walk, jsonAfter, parseJsonish } = KStar.media;
+Siler.sites = (() => {
+  const { walk, jsonAfter, parseJsonish } = Siler.media;
 
   const SITES = [
     { id: "youtube", name: "YouTube", hosts: ["youtube.com", "youtube-nocookie.com", "youtu.be"] },

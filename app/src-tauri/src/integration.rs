@@ -3,8 +3,8 @@
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
-pub const HOST_NAME: &str = "com.kstar.nmhost";
-pub const EXTENSION_ID: &str = "kstar@kstar.app";
+pub const HOST_NAME: &str = "com.siler.nmhost";
+pub const EXTENSION_ID: &str = "siler@siler.app";
 
 /// Browsers and the folder under `$HOME` they read native host manifests from.
 /// Firefox's folder is always written: Zen and Floorp read it too. The others get a copy
@@ -66,18 +66,18 @@ fn targets() -> Vec<(&'static str, PathBuf)> {
         .collect()
 }
 
-/// The `kstar-nmhost` binary shipped next to the app.
+/// The `siler-nmhost` binary shipped next to the app.
 fn bundled_host() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
-    let host = exe.parent()?.join("kstar-nmhost");
+    let host = exe.parent()?.join("siler-nmhost");
     host.exists().then_some(host)
 }
 
 /// Where `scripts/sign-extension.sh` puts the signed extension.
 pub fn signed_xpi() -> Option<PathBuf> {
     let p = dirs::data_dir()?
-        .join("kstar")
-        .join("kstar-integration.xpi");
+        .join("siler")
+        .join("siler-integration.xpi");
     p.exists().then_some(p)
 }
 
@@ -111,7 +111,7 @@ pub fn status(
         browsers,
         last_contact: (last_contact > 0).then_some(last_contact),
         app_version: env!("CARGO_PKG_VERSION"),
-        protocol: kstar_ipc::PROTOCOL,
+        protocol: siler_ipc::PROTOCOL,
         extension_version: extension.as_ref().map(|e| e.0.clone()),
         extension_protocol: extension.map(|e| e.1),
         desktop_entry: crate::desktop::is_current(),
@@ -121,7 +121,7 @@ pub fn status(
     }
 }
 
-/// The AppImage file K-Star runs from, if it runs from one (`$APPIMAGE`, set by the
+/// The AppImage file Siler runs from, if it runs from one (`$APPIMAGE`, set by the
 /// AppImage runtime).
 pub fn appimage() -> Option<PathBuf> {
     std::env::var_os("APPIMAGE")
@@ -129,32 +129,32 @@ pub fn appimage() -> Option<PathBuf> {
         .filter(|p| p.is_absolute() && p.is_file())
 }
 
-/// Where the host is copied when K-Star runs as an AppImage: its own copy lives in the
-/// AppImage's mount, which is gone when K-Star quits.
+/// Where the host is copied when Siler runs as an AppImage: its own copy lives in the
+/// AppImage's mount, which is gone when Siler quits.
 fn stable_host_dir() -> Option<PathBuf> {
-    Some(dirs::data_dir()?.join("kstar").join("bin"))
+    Some(dirs::data_dir()?.join("siler").join("bin"))
 }
 
 /// Copies the host out of the AppImage, with a note of the AppImage's path beside it
-/// (`kstar-app`), which the host starts when K-Star isn't running.
+/// (`siler-app`), which the host starts when Siler isn't running.
 fn stable_host(app: &Path) -> std::io::Result<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     let from = bundled_host().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::NotFound,
-            "kstar-nmhost was not found inside the AppImage",
+            "siler-nmhost was not found inside the AppImage",
         )
     })?;
     let dir = stable_host_dir()
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no data folder"))?;
     std::fs::create_dir_all(&dir)?;
-    let host = dir.join("kstar-nmhost");
+    let host = dir.join("siler-nmhost");
     // Through a temporary name: the browser may be running the old copy.
-    let tmp = dir.join(".kstar-nmhost.new");
+    let tmp = dir.join(".siler-nmhost.new");
     std::fs::copy(&from, &tmp)?;
     std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
     std::fs::rename(&tmp, &host)?;
-    std::fs::write(dir.join("kstar-app"), app.as_os_str().as_encoded_bytes())?;
+    std::fs::write(dir.join("siler-app"), app.as_os_str().as_encoded_bytes())?;
     Ok(host)
 }
 
@@ -165,14 +165,14 @@ pub fn refresh_appimage() {
         return;
     };
     let firefox = manifest_in(&home().join(".mozilla"));
-    if host_of(&firefox).as_deref() != Some(dir.join("kstar-nmhost").to_string_lossy().as_ref()) {
+    if host_of(&firefox).as_deref() != Some(dir.join("siler-nmhost").to_string_lossy().as_ref()) {
         return;
     }
-    let current = std::fs::read(dir.join("kstar-app")).ok();
+    let current = std::fs::read(dir.join("siler-app")).ok();
     let same_app = current.as_deref() == Some(app.as_os_str().as_encoded_bytes());
     let same_host = bundled_host()
         .and_then(|b| std::fs::read(b).ok())
-        .zip(std::fs::read(dir.join("kstar-nmhost")).ok())
+        .zip(std::fs::read(dir.join("siler-nmhost")).ok())
         .is_some_and(|(a, b)| a == b);
     if same_app && same_host {
         return;
@@ -190,13 +190,13 @@ pub fn install() -> std::io::Result<Vec<PathBuf>> {
         None => bundled_host().ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                "kstar-nmhost was not found next to the K-Star executable",
+                "siler-nmhost was not found next to the Siler executable",
             )
         })?,
     };
     let manifest = serde_json::json!({
         "name": HOST_NAME,
-        "description": "K-Star download manager",
+        "description": "Siler download manager",
         "path": host,
         "type": "stdio",
         "allowed_extensions": [EXTENSION_ID],

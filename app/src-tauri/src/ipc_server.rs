@@ -1,8 +1,8 @@
-//! Unix-socket server that receives requests relayed by `kstar-nmhost`.
+//! Unix-socket server that receives requests relayed by `siler-nmhost`.
 
-use kstar_core::{NewDownload, OnConflict, SourceHint, Status};
-use kstar_ipc::nonblocking::{read_frame, write_frame};
-use kstar_ipc::{BrowserItem, PROTOCOL, Request, Response, socket_path};
+use siler_core::{NewDownload, OnConflict, SourceHint, Status};
+use siler_ipc::nonblocking::{read_frame, write_frame};
+use siler_ipc::{BrowserItem, PROTOCOL, Request, Response, socket_path};
 use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
@@ -35,7 +35,7 @@ async fn serve(app: AppHandle) -> io::Result<()> {
         if UnixStream::connect(&path).await.is_ok() {
             return Err(io::Error::new(
                 io::ErrorKind::AddrInUse,
-                "another K-Star instance owns the socket",
+                "another Siler instance owns the socket",
             ));
         }
         std::fs::remove_file(&path)?; // stale, left by a crash
@@ -83,7 +83,7 @@ fn now_ms() -> i64 {
 fn dispatch(app: &AppHandle, req: Request) -> Response {
     let Some(state) = app.try_state::<AppState>() else {
         return Response::Error {
-            message: "K-Star couldn't start; open it to see why".into(),
+            message: "Siler couldn't start; open it to see why".into(),
         };
     };
     state
@@ -129,7 +129,7 @@ fn dispatch(app: &AppHandle, req: Request) -> Response {
 fn likely_name(item: &BrowserItem) -> Option<String> {
     item.filename
         .clone()
-        .or_else(|| kstar_core::filename::name_from_url(&item.url))
+        .or_else(|| siler_core::filename::name_from_url(&item.url))
 }
 
 /// Where links waiting in the Add window came from (shown under its title).
@@ -168,7 +168,7 @@ pub fn handle_add(app: &AppHandle, items: Vec<BrowserItem>, opts: &AddOptions) -
     let silent = opts.silent;
     let Some(state) = app.try_state::<AppState>() else {
         return Response::Error {
-            message: "K-Star couldn't start; open it to see why".into(),
+            message: "Siler couldn't start; open it to see why".into(),
         };
     };
     let items: Vec<_> = items
@@ -231,7 +231,7 @@ pub fn handle_add(app: &AppHandle, items: Vec<BrowserItem>, opts: &AddOptions) -
                 let on_conflict = settings.unattended_conflict();
                 tauri::async_runtime::spawn(async move {
                     let url = item.url.clone();
-                    let nd = kstar_core::NewMediaDownload {
+                    let nd = siler_core::NewMediaDownload {
                         url: url.clone(),
                         meta: meta_of(&item),
                         hint,
@@ -320,7 +320,7 @@ fn take_refresh_target(state: &AppState, item: &BrowserItem) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kstar_ipc::{InlineManifest, MediaHint};
+    use siler_ipc::{InlineManifest, MediaHint};
 
     fn item(url: &str, media: Option<MediaHint>) -> BrowserItem {
         BrowserItem {

@@ -66,7 +66,7 @@
 
   function askLogin(e: MouseEvent) {
     e.stopPropagation();
-    window.dispatchEvent(new CustomEvent("kstar-login", { detail: d.id }));
+    window.dispatchEvent(new CustomEvent("siler-login", { detail: d.id }));
   }
 </script>
 

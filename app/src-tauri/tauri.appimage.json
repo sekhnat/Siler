@@ -6,7 +6,7 @@
     "category": "Utility",
     "shortDescription": "Download manager",
     "longDescription": "A download manager with segmented downloads, queues and schedules, video downloads (HLS, DASH, YouTube and more) and a Firefox extension.",
-    "externalBin": ["binaries/kstar-nmhost", "binaries/ffmpeg", "binaries/ffprobe"],
+    "externalBin": ["binaries/siler-nmhost", "binaries/ffmpeg", "binaries/ffprobe"],
     "linux": {
       "appimage": {
         "bundleMediaFramework": false

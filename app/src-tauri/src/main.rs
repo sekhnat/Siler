@@ -13,9 +13,9 @@ mod sound;
 mod tools;
 mod tray;
 
-use kstar_core::{Engine, Event, MAIN_QUEUE};
-use kstar_ipc::BrowserItem;
 use serde::Serialize;
+use siler_core::{Engine, Event, MAIN_QUEUE};
+use siler_ipc::BrowserItem;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
@@ -67,14 +67,14 @@ pub struct PendingView {
     /// The extension gave the stream's manifest as text: it is a stream whatever the link is.
     pub stream: bool,
     /// A paused or failed download this one looks like, which its link could continue.
-    pub resumable: Option<kstar_core::DownloadInfo>,
+    pub resumable: Option<siler_core::DownloadInfo>,
     /// The checksum it comes with, as `SHA-256 ab12…`.
     pub checksum: Option<String>,
     /// How many mirrors it comes with.
     pub mirrors: usize,
 }
 
-/// Set instead of [`AppState`] when K-Star couldn't start; the window shows it.
+/// Set instead of [`AppState`] when Siler couldn't start; the window shows it.
 pub struct StartupError(pub String);
 
 pub struct AppState {
@@ -141,7 +141,7 @@ pub fn open_add_window(app: &AppHandle) {
         return;
     }
     let built = WebviewWindowBuilder::new(app, "add", WebviewUrl::App("index.html#add".into()))
-        .title("New download — K-Star")
+        .title("New download — Siler")
         .inner_size(640.0, 520.0)
         .min_inner_size(540.0, 440.0)
         .always_on_top(true)
@@ -250,7 +250,7 @@ async fn login_required(
     engine: Engine,
     id: i64,
     filename: Option<String>,
-    request: kstar_core::LoginRequest,
+    request: siler_core::LoginRequest,
 ) {
     if !request.rejected
         && let Some(login) = logins::find(&request.host).await
@@ -282,7 +282,7 @@ async fn login_required(
     }
 }
 
-fn tray_status(items: &[kstar_core::ProgressItem], total_speed: u64) -> String {
+fn tray_status(items: &[siler_core::ProgressItem], total_speed: u64) -> String {
     if items.is_empty() {
         return "No active downloads".into();
     }
@@ -347,7 +347,7 @@ fn forward_engine_events(app: AppHandle, engine: Engine, activity: watch::Sender
                             // The main queue "finishes" whenever the list empties; only a
                             // chosen action makes that worth a sound.
                             if *queue_id != MAIN_QUEUE
-                                || *after_done != kstar_core::AfterDone::Nothing
+                                || *after_done != siler_core::AfterDone::Nothing
                             {
                                 sound::event(&settings.sounds, sound::Sound::QueueDone);
                             }
@@ -448,7 +448,7 @@ fn exit_on_signals(app: AppHandle) {
 }
 
 const USAGE: &str = "\
-Usage: kstar [OPTIONS] [URL…]
+Usage: siler [OPTIONS] [URL…]
 
   --background       start without showing the window (tray only)
   --silent           add the URLs without asking
@@ -458,12 +458,12 @@ Usage: kstar [OPTIONS] [URL…]
   --dir PATH         save the URLs in this folder
   --filename NAME    save the URL under this name (one URL only)
   --import FILE      add the downloads listed in a file (a list of links, a
-                     metalink, K-Star's JSON or IDM's .ef2); a .meta4 or
+                     metalink, Siler's JSON or IDM's .ef2); a .meta4 or
                      .metalink file can also be given on its own
   -h, --help         show this help
   -V, --version      show the version
 
-When K-Star is already running, the options go to it.
+When Siler is already running, the options go to it.
 ";
 
 /// The command line, from the first instance or forwarded from a second one.
@@ -533,7 +533,7 @@ fn parse_args(argv: &[String], cwd: &Path) -> Result<Args, String> {
     Ok(a)
 }
 
-/// Acts on a command line forwarded from a second `kstar` process.
+/// Acts on a command line forwarded from a second `siler` process.
 fn forwarded_args(app: &AppHandle, argv: &[String], cwd: &str) {
     let args = match parse_args(argv, Path::new(cwd)) {
         Ok(a) => a,
@@ -544,7 +544,7 @@ fn forwarded_args(app: &AppHandle, argv: &[String], cwd: &str) {
     };
     if let Err(e) = add_from_args(app, &args) {
         tracing::warn!("{e}");
-        let _ = app.notification().builder().title("K-Star").body(e).show();
+        let _ = app.notification().builder().title("Siler").body(e).show();
         return;
     }
     if args.urls.is_empty() && args.imports.is_empty() && !args.background && !args.start_queue {
@@ -590,7 +590,7 @@ fn add_from_args(app: &AppHandle, args: &Args) -> Result<(), String> {
             keep_name: args.filename.is_some(),
         };
         let response = ipc_server::handle_add(app, items, &opts);
-        if let kstar_ipc::Response::Error { message } = response {
+        if let siler_ipc::Response::Error { message } = response {
             tracing::warn!("could not add the downloads from the command line: {message}");
             show_main(app);
         }
@@ -621,7 +621,7 @@ fn open_engine(app: &tauri::App) -> Result<Engine, String> {
     })
     .map_err(|e| {
         format!(
-            "K-Star couldn't open its database in {}:\n{e}",
+            "Siler couldn't open its database in {}:\n{e}",
             data_dir.display()
         )
     })
@@ -654,7 +654,7 @@ fn main() {
     let args = match parse_args(&argv, &cwd) {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("kstar: {e}\n\n{USAGE}");
+            eprintln!("siler: {e}\n\n{USAGE}");
             std::process::exit(2);
         }
     };
@@ -663,7 +663,7 @@ fn main() {
         return;
     }
     if args.version {
-        println!("K-Star {}", env!("CARGO_PKG_VERSION"));
+        println!("Siler {}", env!("CARGO_PKG_VERSION"));
         return;
     }
 
@@ -724,7 +724,7 @@ fn main() {
                         show_main(app.handle());
                     }
                     if let Err(e) = add_from_args(app.handle(), &args) {
-                        eprintln!("kstar: {e}");
+                        eprintln!("siler: {e}");
                         std::process::exit(2);
                     }
                 }
@@ -845,7 +845,7 @@ fn main() {
             commands::test_sound,
         ])
         .build(tauri::generate_context!())
-        .expect("failed to build the K-Star app");
+        .expect("failed to build the Siler app");
 
     app.run(|app, event| {
         if let RunEvent::Exit = event {
@@ -862,7 +862,7 @@ mod tests {
     use super::*;
 
     fn parse(args: &[&str]) -> Result<Args, String> {
-        let argv: Vec<String> = std::iter::once("kstar")
+        let argv: Vec<String> = std::iter::once("siler")
             .chain(args.iter().copied())
             .map(String::from)
             .collect();
@@ -924,7 +924,7 @@ mod tests {
     #[test]
     fn tray_text() {
         assert_eq!(tray_status(&[], 0), "No active downloads");
-        let item = |d, t| kstar_core::ProgressItem {
+        let item = |d, t| siler_core::ProgressItem {
             id: 1,
             downloaded: d,
             total_size: t,

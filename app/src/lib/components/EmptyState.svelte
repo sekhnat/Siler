@@ -24,7 +24,7 @@
     <p>No downloads match this view.</p>
   {:else}
     <h3>Ready when you are</h3>
-    <p>Add a link, paste one with <kbd>Ctrl</kbd>+<kbd>V</kbd>, or click a download in Firefox with the K-Star extension installed.</p>
+    <p>Add a link, paste one with <kbd>Ctrl</kbd>+<kbd>V</kbd>, or click a download in Firefox with the Siler extension installed.</p>
     <div class="cta">
       <button class="btn btn-primary" onclick={onadd}><Plus size={16} /> Add URL</button>
       <span class="hint"><ClipboardPaste size={13} /> Paste anywhere</span>

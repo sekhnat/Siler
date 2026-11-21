@@ -18,7 +18,7 @@ const FIELDS = ["extensions", "minSizeMB", "blocklist"];
 const ALL_SITES = { origins: ["<all_urls>"] };
 
 async function load() {
-  const cfg = await kstarConfig();
+  const cfg = await silerConfig();
   for (const k of SWITCHES) $(k).setAttribute("aria-checked", String(cfg[k]));
   for (const k of FIELDS) $(k).value = cfg[k];
 }
@@ -51,16 +51,16 @@ async function checkSetup() {
   $("grant").hidden = granted;
   $("perm-ok").hidden = !granted;
 
-  const h = await kstarHealth();
-  $("host-state").textContent = h.running ? "✓ Connected" : h.installed ? "✓ Installed (K-Star starts on demand)" : "✗ Not found";
+  const h = await silerHealth();
+  $("host-state").textContent = h.running ? "✓ Connected" : h.installed ? "✓ Installed (Siler starts on demand)" : "✗ Not found";
   $("host-state").className = h.installed ? "ok" : "muted";
   $("welcome").hidden = granted && h.installed;
   $("outdated").hidden = !h.outdated;
   $("outdated").textContent =
     h.outdated === "app"
-      ? `K-Star ${h.version ?? ""} is older than this extension (${browser.runtime.getManifest().version}). Update K-Star so they work together.`
+      ? `Siler ${h.version ?? ""} is older than this extension (${browser.runtime.getManifest().version}). Update Siler so they work together.`
       : h.outdated === "extension"
-        ? `This extension (${browser.runtime.getManifest().version}) is older than K-Star ${h.version ?? ""}. Update the extension.`
+        ? `This extension (${browser.runtime.getManifest().version}) is older than Siler ${h.version ?? ""}. Update the extension.`
         : "";
 }
 

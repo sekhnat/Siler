@@ -1,10 +1,10 @@
 //! Saved server logins and the proxy password, kept in the desktop keyring through the
 //! Secret Service API (KWallet, GNOME Keyring, KeePassXC…). Nothing is read until a server
-//! asks for a login, so starting K-Star never pops up an unlock prompt.
+//! asks for a login, so starting Siler never pops up an unlock prompt.
 
-use kstar_core::Login;
 use oo7::Keyring;
 use serde::Serialize;
+use siler_core::Login;
 use std::collections::HashMap;
 use tokio::sync::OnceCell;
 
@@ -39,7 +39,7 @@ const SITE: &str = "site";
 const PROXY: &str = "proxy";
 
 fn attrs<'a>(kind: &'a str, host: &'a str) -> HashMap<&'a str, &'a str> {
-    HashMap::from([("application", "kstar"), ("kind", kind), ("host", host)])
+    HashMap::from([("application", "siler"), ("kind", kind), ("host", host)])
 }
 
 async fn read_secret(item: &oo7::Item) -> oo7::Result<String> {
@@ -56,7 +56,7 @@ pub async fn save(host: &str, login: &Login) -> Result<(), String> {
     let mut a = attrs(SITE, host);
     a.insert("username", &login.username);
     k.create_item(
-        &format!("K-Star login for {host}"),
+        &format!("Siler login for {host}"),
         &a,
         login.password.as_str(),
         true,
@@ -89,7 +89,7 @@ pub async fn list() -> Vec<SavedLogin> {
     let Some(k) = keyring().await else {
         return Vec::new();
     };
-    let query = HashMap::from([("application", "kstar"), ("kind", SITE)]);
+    let query = HashMap::from([("application", "siler"), ("kind", SITE)]);
     let mut out = Vec::new();
     for item in k.search_items(&query).await.unwrap_or_default() {
         if let Ok(a) = item.attributes().await
@@ -138,7 +138,7 @@ pub async fn set_proxy_password(password: Option<&str>) -> Result<(), String> {
     let k = keyring().await.ok_or("No keyring is available")?;
     match password.filter(|p| !p.is_empty()) {
         Some(p) => k
-            .create_item("K-Star proxy password", &attrs(PROXY, PROXY), p, true)
+            .create_item("Siler proxy password", &attrs(PROXY, PROXY), p, true)
             .await
             .map_err(|e| format!("Couldn't save the proxy password in the keyring: {e}")),
         None => k

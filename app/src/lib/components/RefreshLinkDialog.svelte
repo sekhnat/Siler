@@ -65,7 +65,7 @@
 
 <Modal title="Refresh download link" width={540} onclose={close}>
   <p class="intro">
-    If the link to <b>{d.filename ?? nameFromUrl(d.url)}</b> expired, give K-Star a new one. The {bytes(d.downloaded)} already downloaded are kept.
+    If the link to <b>{d.filename ?? nameFromUrl(d.url)}</b> expired, give Siler a new one. The {bytes(d.downloaded)} already downloaded are kept.
   </p>
 
   <form onsubmit={submit} class="field">
@@ -86,7 +86,7 @@
         <MousePointerClick size={20} />
         <div class="min">
           <div class="t">Click the download link on the page again</div>
-          <div class="hint">K-Star will take the new link from Firefox and continue this download. Waiting for 2 minutes.</div>
+          <div class="hint">Siler will take the new link from Firefox and continue this download. Waiting for 2 minutes.</div>
         </div>
         <LoaderCircle size={16} class="spin" />
       {:else}

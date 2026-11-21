@@ -1,6 +1,6 @@
 export type ThemePref = "system" | "light" | "dark";
 
-const KEY = "kstar.theme";
+const KEY = "siler.theme";
 const media = window.matchMedia("(prefers-color-scheme: dark)");
 
 function read(): ThemePref {

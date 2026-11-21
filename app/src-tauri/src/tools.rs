@@ -1,15 +1,15 @@
 //! 0.7's power features in the app: checksums, mirrors, ZIP previews, lists, numbered
 //! batches, the site grabber, the data quota and the command after a download.
 
-use kstar_core::checksum::{Checksum, Pieces};
-use kstar_core::extras::{CommandResult, Mirror, MirrorOrigin, VerifyResult, ZipEntry};
-use kstar_core::grabber::{GrabConfig, GrabFile, GrabProject};
-use kstar_core::lists::{ImportItem, ListFormat};
-use kstar_core::quota::QuotaStatus;
-use kstar_core::zip::{ZipItem, ZipListing};
-use kstar_core::{Engine, Event, NewDownload};
-use kstar_ipc::BrowserItem;
 use serde::{Deserialize, Serialize};
+use siler_core::checksum::{Checksum, Pieces};
+use siler_core::extras::{CommandResult, Mirror, MirrorOrigin, VerifyResult, ZipEntry};
+use siler_core::grabber::{GrabConfig, GrabFile, GrabProject};
+use siler_core::lists::{ImportItem, ListFormat};
+use siler_core::quota::QuotaStatus;
+use siler_core::zip::{ZipItem, ZipListing};
+use siler_core::{Engine, Event, NewDownload};
+use siler_ipc::BrowserItem;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_notification::NotificationExt;
@@ -197,13 +197,13 @@ fn import_items(app: &AppHandle, engine: &Engine, items: Vec<ImportItem>) -> usi
 
 /// Reads a list file and puts its downloads into the Add window.
 pub fn import_file(app: &AppHandle, path: &Path) -> Res<usize> {
-    let state = app.try_state::<AppState>().ok_or("K-Star isn't ready")?;
+    let state = app.try_state::<AppState>().ok_or("Siler isn't ready")?;
     let meta = std::fs::metadata(path).map_err(err)?;
-    if meta.len() > kstar_core::lists::MAX_BYTES as u64 {
+    if meta.len() > siler_core::lists::MAX_BYTES as u64 {
         return Err("The file is too large to be a download list.".into());
     }
     let bytes = std::fs::read(path).map_err(err)?;
-    let (_, items) = kstar_core::lists::import(&bytes)?;
+    let (_, items) = siler_core::lists::import(&bytes)?;
     Ok(import_items(app, &state.engine, items))
 }
 
@@ -241,7 +241,7 @@ pub struct Expansion {
 /// The addresses of a numbered pattern (`file[001-100].jpg`).
 #[tauri::command]
 pub fn expand_batch(pattern: String) -> Res<Expansion> {
-    let urls = kstar_core::batch::expand(&pattern)?;
+    let urls = siler_core::batch::expand(&pattern)?;
     for u in [urls.first(), urls.last()].into_iter().flatten() {
         let ok = url::Url::parse(u)
             .is_ok_and(|p| matches!(p.scheme(), "http" | "https") && p.host_str().is_some());
@@ -386,7 +386,7 @@ pub fn add_zip_entries(state: State<'_, AppState>, pick: ZipPick) -> Res<usize> 
         if item.is_dir || item.unsupported.is_some() {
             continue;
         }
-        let Some((folders, name)) = kstar_core::zip::target(&item.path) else {
+        let Some((folders, name)) = siler_core::zip::target(&item.path) else {
             continue;
         };
         let entry: ZipEntry = item.entry(pick.archive_size);
@@ -502,7 +502,7 @@ pub fn open_saved_site(path: PathBuf) -> Res<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kstar_core::checksum::ChecksumSource;
+    use siler_core::checksum::ChecksumSource;
 
     #[test]
     fn checksum_and_mirror_arguments() {

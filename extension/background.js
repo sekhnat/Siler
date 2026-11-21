@@ -1,4 +1,4 @@
-// K-Star browser integration: captures downloads and hands them to the K-Star app.
+// Siler browser integration: captures downloads and hands them to the Siler app.
 "use strict";
 
 const HEALTH_TTL = 30_000;
@@ -9,7 +9,7 @@ const passThrough = new Set();
 
 async function refreshHealth(force = false) {
   if (!force && Date.now() - health.checkedAt < HEALTH_TTL) return health;
-  health = { ...(await kstarHealth()), checkedAt: Date.now() };
+  health = { ...(await silerHealth()), checkedAt: Date.now() };
   const problem = !health.installed || health.outdated;
   await browser.action.setBadgeText({ text: problem ? "!" : "" });
   await browser.action.setBadgeBackgroundColor({ color: health.outdated ? "#d97706" : "#dc2626" });
@@ -22,7 +22,7 @@ const UNREACHABLE_EVERY = 10 * 60_000;
 let unreachableShownAt = 0;
 
 async function notify(title, message) {
-  const cfg = await kstarConfig();
+  const cfg = await silerConfig();
   if (!cfg.notifyFailures) return;
   browser.notifications
     .create({ type: "basic", iconUrl: browser.runtime.getURL("icons/icon-96.png"), title, message })
@@ -31,18 +31,18 @@ async function notify(title, message) {
 
 /** Remembers the last problem for the popup, and shows it as a notification. */
 async function reportFailure(file, reason) {
-  const message = `K-Star couldn't take ${file ? `“${file}”` : "the download"}: ${reason}. Firefox is downloading it instead.`;
+  const message = `Siler couldn't take ${file ? `“${file}”` : "the download"}: ${reason}. Firefox is downloading it instead.`;
   await browser.storage.session.set({ lastError: { at: Date.now(), message } }).catch(() => {});
-  notify("Download not handed to K-Star", message);
+  notify("Download not handed to Siler", message);
 }
 
-/** A download would have gone to K-Star, but K-Star can't be reached. Said at most every 10 min. */
+/** A download would have gone to Siler, but Siler can't be reached. Said at most every 10 min. */
 function reportUnreachable() {
   if (Date.now() - unreachableShownAt < UNREACHABLE_EVERY) return;
   unreachableShownAt = Date.now();
-  const message = "Firefox handles downloads itself until K-Star is set up: open K-Star → Settings → Browser → Install.";
-  browser.storage.session.set({ lastError: { at: Date.now(), message: "K-Star isn't reachable. " + message } }).catch(() => {});
-  notify("K-Star isn't reachable", message);
+  const message = "Firefox handles downloads itself until Siler is set up: open Siler → Settings → Browser → Install.";
+  browser.storage.session.set({ lastError: { at: Date.now(), message: "Siler isn't reachable. " + message } }).catch(() => {});
+  notify("Siler isn't reachable", message);
 }
 
 const reasonOf = (e) => String(e?.message ?? e).replace(/^Error:\s*/, "");
@@ -57,7 +57,7 @@ function extensionOf(name) {
 
 function wanted(item, cfg) {
   if (!/^https?:/i.test(item.url)) return false; // blob:, data:, file: stay in Firefox
-  if (kstarSiteBlocked(cfg, kstarHostOf(item.finalUrl || item.url))) return false;
+  if (silerSiteBlocked(cfg, silerHostOf(item.finalUrl || item.url))) return false;
   if (cfg.minSizeMB > 0 && item.totalBytes > 0 && item.totalBytes < cfg.minSizeMB * 1024 * 1024) return false;
   if (cfg.captureAll) return true;
 
@@ -114,8 +114,8 @@ async function describe(url, { referrer = null, pageUrl = null, filename = null,
 }
 
 async function handOver(items, silent = false) {
-  const reply = await kstarSend({ type: "add_downloads", items, silent });
-  if (reply?.type !== "accepted") throw new Error(reply?.message || "K-Star rejected the download");
+  const reply = await silerSend({ type: "add_downloads", items, silent });
+  if (reply?.type !== "accepted") throw new Error(reply?.message || "Siler rejected the download");
   health = { ...health, installed: true, running: true, checkedAt: Date.now() };
   return reply;
 }
@@ -128,7 +128,7 @@ async function handOver(items, silent = false) {
 const DOC_REQUESTS = { urls: ["<all_urls>"], types: ["main_frame", "sub_frame"] };
 // Request headers (cookies, referer, user agent) exactly as Firefox sent them.
 const sentHeaders = new Map();
-// Bodies of form submissions (base64), so K-Star can send the same POST.
+// Bodies of form submissions (base64), so Siler can send the same POST.
 const postBodies = new Map();
 const MAX_BODY = 1024 * 1024;
 // Tabs opened recently that haven't shown a page yet: closed if they only carried a download.
@@ -232,7 +232,7 @@ browser.webRequest.onCompleted.addListener((d) => {
 }, DOC_REQUESTS);
 browser.webRequest.onErrorOccurred.addListener(forgetRequest, DOC_REQUESTS);
 
-/** Closes a tab that was opened only to start a download that K-Star took over. */
+/** Closes a tab that was opened only to start a download that Siler took over. */
 function closeIfBlank(tabId, type) {
   const created = freshTabs.get(tabId);
   if (type !== "main_frame" || created == null || Date.now() - created > 30_000) return;
@@ -256,7 +256,7 @@ browser.webRequest.onHeadersReceived.addListener(
     const mime = (h["content-type"] || "").split(";")[0].trim().toLowerCase();
     if (!attachment && displaysInline(mime, d.type)) return {};
 
-    const cfg = await kstarConfig();
+    const cfg = await silerConfig();
     if (!cfg.enabled) return {};
     const size = Number(h["content-length"]);
     const filename = filenameFromDisposition(disposition);
@@ -287,7 +287,7 @@ browser.webRequest.onHeadersReceived.addListener(
     handOver([item])
       .then(() => closeIfBlank(d.tabId, d.type))
       .catch((e) => {
-        console.warn("K-Star hand-over failed; downloading in Firefox instead", e);
+        console.warn("Siler hand-over failed; downloading in Firefox instead", e);
         health.checkedAt = 0;
         reportFailure(filename || basename(new URL(d.url).pathname), reasonOf(e));
         passThrough.add(d.url);
@@ -312,9 +312,9 @@ browser.downloads.onCreated.addListener(async (item) => {
   if (Date.now() < bypassUntil) return;
   if (item.state && item.state !== "in_progress") return;
 
-  const cfg = await kstarConfig();
+  const cfg = await silerConfig();
   if (!cfg.enabled || !wanted(item, cfg)) return;
-  // Never take a download away from Firefox unless K-Star can be reached.
+  // Never take a download away from Firefox unless Siler can be reached.
   if (!(await refreshHealth()).installed) {
     reportUnreachable();
     return;
@@ -338,7 +338,7 @@ browser.downloads.onCreated.addListener(async (item) => {
     });
     await handOver([desc]);
   } catch (e) {
-    console.warn("K-Star hand-over failed; downloading in Firefox instead", e);
+    console.warn("Siler hand-over failed; downloading in Firefox instead", e);
     health.checkedAt = 0;
     reportFailure(basename(item.filename), reasonOf(e));
     passThrough.add(item.url);
@@ -351,18 +351,18 @@ browser.downloads.onCreated.addListener(async (item) => {
 function createMenus() {
   browser.contextMenus.removeAll().then(() => {
     browser.contextMenus.create({
-      id: "kstar-link",
-      title: "Download with K-Star",
+      id: "siler-link",
+      title: "Download with Siler",
       contexts: ["link", "image"],
     });
     browser.contextMenus.create({
-      id: "kstar-video",
-      title: "Download this video with K-Star",
+      id: "siler-video",
+      title: "Download this video with Siler",
       contexts: ["video", "audio"],
     });
     browser.contextMenus.create({
-      id: "kstar-all",
-      title: "Download all links with K-Star",
+      id: "siler-all",
+      title: "Download all links with Siler",
       contexts: ["page", "selection"],
     });
   });
@@ -407,22 +407,22 @@ function nameFromText(text) {
 browser.contextMenus.onClicked.addListener(async (info, tab) => {
   const storeId = tab?.cookieStoreId;
   try {
-    if (info.menuItemId === "kstar-link") {
+    if (info.menuItemId === "siler-link") {
       const url = info.linkUrl || info.srcUrl;
       if (!url) return;
       await handOver([await describe(url, { referrer: info.pageUrl, pageUrl: info.pageUrl, storeId })]);
-    } else if (info.menuItemId === "kstar-video" && tab) {
+    } else if (info.menuItemId === "siler-video" && tab) {
       await handOver([await Feed.forVideo(tab, info.frameId ?? 0, info.srcUrl, info.frameUrl || info.pageUrl)]);
-    } else if (info.menuItemId === "kstar-all" && tab?.id != null) {
+    } else if (info.menuItemId === "siler-all" && tab?.id != null) {
       const [res] = await browser.scripting.executeScript({ target: { tabId: tab.id, frameIds: [info.frameId ?? 0] }, func: collectLinks });
       const { links = [], selection = false } = res?.result ?? {};
       if (!links.length) {
         notify("No links found", selection ? "The selection contains no links." : "This page has no links to download.");
         return;
       }
-      const cfg = await kstarConfig();
+      const cfg = await silerConfig();
       const exts = new Set(cfg.extensions.toLowerCase().split(/[\s,]+/).filter(Boolean));
-      // Everything goes to K-Star for review; links that look like files (or were selected)
+      // Everything goes to Siler for review; links that look like files (or were selected)
       // start out ticked.
       const items = await Promise.all(
         links.slice(0, 2000).map(async ({ url, text }) => {
@@ -435,9 +435,9 @@ browser.contextMenus.onClicked.addListener(async (info, tab) => {
       await handOver(items);
     }
   } catch (e) {
-    console.error("K-Star:", e);
+    console.error("Siler:", e);
     health.checkedAt = 0;
-    notify(info.menuItemId === "kstar-video" ? "K-Star couldn't take the video" : "K-Star couldn't take the links", reasonOf(e));
+    notify(info.menuItemId === "siler-video" ? "Siler couldn't take the video" : "Siler couldn't take the links", reasonOf(e));
   }
 });
 
@@ -463,7 +463,7 @@ browser.runtime.onMessage.addListener((msg, sender) => {
           () => ({ ok: true }),
           (e) => {
             health.checkedAt = 0;
-            notify("K-Star couldn't take the video", reasonOf(e));
+            notify("Siler couldn't take the video", reasonOf(e));
             return { ok: false, message: reasonOf(e) };
           },
         );
@@ -474,9 +474,9 @@ browser.runtime.onMessage.addListener((msg, sender) => {
     case "health":
       return refreshHealth(true);
     case "status":
-      return kstarSend({ type: "get_status" }).catch((e) => ({ type: "error", message: String(e) }));
+      return silerSend({ type: "get_status" }).catch((e) => ({ type: "error", message: String(e) }));
     case "show":
-      return kstarSend({ type: "show" }).catch((e) => ({ type: "error", message: String(e) }));
+      return silerSend({ type: "show" }).catch((e) => ({ type: "error", message: String(e) }));
     case "add-url":
       return describe(msg.url, { referrer: msg.referrer, pageUrl: msg.referrer }).then((d) => handOver([d]));
     case "last-error":

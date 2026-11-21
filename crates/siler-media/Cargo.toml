@@ -1,0 +1,21 @@
+[package]
+name = "siler-media"
+description = "Pure parsers and selection model for adaptive media manifests (HLS, DASH)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+url = "2"
+quick-xml = "0.42"
+aes = "0.9"
+cbc = "0.2"
+sha2 = "0.11"
+percent-encoding = "2"
+zeroize = "1"
+
+[dev-dependencies]
+proptest = "1"
+serde_json.workspace = true

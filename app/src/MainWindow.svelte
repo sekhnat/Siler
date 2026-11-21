@@ -52,7 +52,7 @@
   import Toasts from "./lib/components/Toasts.svelte";
   import Toolbar, { SORTS, type SortKey } from "./lib/components/Toolbar.svelte";
 
-  const SORT_KEY = "kstar.sort";
+  const SORT_KEY = "siler.sort";
   function loadSort(): SortKey {
     try {
       const v = localStorage.getItem(SORT_KEY);
@@ -122,7 +122,7 @@
     api.getWhenDone().then((a) => (whenDone = a));
     window.addEventListener("focus", reloadSoon);
     const askLogin = (e: Event) => (loginFor = (e as CustomEvent<number>).detail);
-    window.addEventListener("kstar-login", askLogin);
+    window.addEventListener("siler-login", askLogin);
     const unlisten = [
       listen<number>("select-download", (e) => {
         filter = "all";
@@ -146,7 +146,7 @@
     ];
     return () => {
       window.removeEventListener("focus", reloadSoon);
-      window.removeEventListener("kstar-login", askLogin);
+      window.removeEventListener("siler-login", askLogin);
       unlisten.forEach((u) => u.then((f) => f()));
     };
   });
@@ -423,8 +423,8 @@
     const json = exportFormat === "json";
     const path = await saveDialog({
       title: "Export downloads",
-      defaultPath: json ? "kstar-downloads.json" : "kstar-downloads.txt",
-      filters: [json ? { name: "K-Star list", extensions: ["json"] } : { name: "Text", extensions: ["txt"] }],
+      defaultPath: json ? "siler-downloads.json" : "siler-downloads.txt",
+      filters: [json ? { name: "Siler list", extensions: ["json"] } : { name: "Text", extensions: ["txt"] }],
     });
     if (!path) return;
     const ok = await attempt(api.exportList(path, items.map((d) => d.id), exportFormat, json && exportCookies));
@@ -668,7 +668,7 @@
       </button>
       <button class="pick-row" class:on={exportFormat === "json"} onclick={() => (exportFormat = "json")}>
         <FileOutput size={15} />
-        <span class="grow"><span class="pick-name">K-Star list</span><span class="hint">Also names, folders, queues, checksums and mirrors</span></span>
+        <span class="grow"><span class="pick-name">Siler list</span><span class="hint">Also names, folders, queues, checksums and mirrors</span></span>
       </button>
     </div>
     {#if exportFormat === "json"}
@@ -734,7 +734,7 @@
     onconfirm={() => attempt(api.redownload(d.id, replaceOld && !d.file_missing))}
   >
     {#if d.file_missing}
-      <p>The file was moved or deleted. K-Star downloads it again into {d.dir ?? "its folder"}.</p>
+      <p>The file was moved or deleted. Siler downloads it again into {d.dir ?? "its folder"}.</p>
     {:else}
       <p>The file is downloaded again from {d.url.length > 60 ? "its address" : d.url}.</p>
       <button class="toggle" onclick={() => (replaceOld = !replaceOld)}>
@@ -759,7 +759,7 @@
 
 {#if quitCount != null}
   <ConfirmDialog
-    title="Quit K-Star?"
+    title="Quit Siler?"
     confirm="Quit"
     onclose={() => {
       quitCount = null;
@@ -769,7 +769,7 @@
   >
     <p>
       {quitCount === 1 ? "A download is" : `${quitCount} downloads are`} still running. {quitCount === 1 ? "It pauses" : "They pause"} now and
-      {settings?.resume_on_startup === false ? "can be resumed" : "continue"} the next time K-Star starts.
+      {settings?.resume_on_startup === false ? "can be resumed" : "continue"} the next time Siler starts.
     </p>
     <button class="toggle" onclick={() => (dontAskQuit = !dontAskQuit)}>
       <span class="switch" class:on={dontAskQuit}></span>
@@ -811,8 +811,8 @@
   {@const current = items.every((d) => d.sync_every === items[0].sync_every) ? items[0].sync_every : -1}
   <Modal title="Keep up to date" width={440} onclose={() => (syncItems = null)}>
     <p class="sync-intro">
-      K-Star asks the server whether {items.length === 1 ? "the file has" : "these files have"} changed and downloads a newer version
-      over the old one. Checks run while K-Star is running.
+      Siler asks the server whether {items.length === 1 ? "the file has" : "these files have"} changed and downloads a newer version
+      over the old one. Checks run while Siler is running.
     </p>
     <div class="pick">
       {#each [{ secs: 0, label: "Don't check" }, { secs: 3600, label: "Check every hour" }, { secs: 86400, label: "Check every day" }, { secs: 604800, label: "Check every week" }] as o (o.secs)}

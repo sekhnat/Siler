@@ -2604,108 +2604,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kstar"
-version = "0.7.0"
-dependencies = [
- "arboard",
- "dirs",
- "ksni",
- "kstar-core",
- "kstar-ipc",
- "oo7",
- "open",
- "percent-encoding",
- "rustix",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-drag",
- "tauri-plugin-notification",
- "tauri-plugin-opener",
- "tauri-plugin-single-instance",
- "tauri-plugin-window-state",
- "tempfile",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "url",
- "zbus 5.19.0",
-]
-
-[[package]]
-name = "kstar-core"
-version = "0.7.0"
-dependencies = [
- "axum",
- "base64 0.22.1",
- "crc32fast",
- "digest_auth",
- "dirs",
- "encoding_rs",
- "fastrand",
- "flate2",
- "futures-util",
- "httpdate",
- "jiff 1.0.1",
- "kstar-media",
- "lol_html",
- "md-5 0.11.0",
- "mime_guess",
- "percent-encoding",
- "reqwest",
- "rusqlite",
- "rustix",
- "serde",
- "serde_json",
- "sha1",
- "sha2 0.11.1",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tokio-util",
- "tracing",
- "url",
-]
-
-[[package]]
-name = "kstar-ipc"
-version = "0.7.0"
-dependencies = [
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "kstar-media"
-version = "0.7.0"
-dependencies = [
- "aes",
- "cbc",
- "percent-encoding",
- "proptest",
- "quick-xml 0.42.0",
- "serde",
- "serde_json",
- "sha2 0.11.1",
- "thiserror 2.0.21",
- "url",
- "zeroize",
-]
-
-[[package]]
-name = "kstar-nmhost"
-version = "0.7.0"
-dependencies = [
- "kstar-ipc",
- "serde_json",
-]
-
-[[package]]
 name = "lazy_static"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4806,6 +4704,108 @@ checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
 dependencies = [
  "errno",
  "libc",
+]
+
+[[package]]
+name = "siler"
+version = "0.7.1"
+dependencies = [
+ "arboard",
+ "dirs",
+ "ksni",
+ "oo7",
+ "open",
+ "percent-encoding",
+ "rustix",
+ "serde",
+ "serde_json",
+ "siler-core",
+ "siler-ipc",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-drag",
+ "tauri-plugin-notification",
+ "tauri-plugin-opener",
+ "tauri-plugin-single-instance",
+ "tauri-plugin-window-state",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "url",
+ "zbus 5.19.0",
+]
+
+[[package]]
+name = "siler-core"
+version = "0.7.1"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "crc32fast",
+ "digest_auth",
+ "dirs",
+ "encoding_rs",
+ "fastrand",
+ "flate2",
+ "futures-util",
+ "httpdate",
+ "jiff 1.0.1",
+ "lol_html",
+ "md-5 0.11.0",
+ "mime_guess",
+ "percent-encoding",
+ "reqwest",
+ "rusqlite",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2 0.11.1",
+ "siler-media",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "siler-ipc"
+version = "0.7.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "siler-media"
+version = "0.7.1"
+dependencies = [
+ "aes",
+ "cbc",
+ "percent-encoding",
+ "proptest",
+ "quick-xml 0.42.0",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "thiserror 2.0.21",
+ "url",
+ "zeroize",
+]
+
+[[package]]
+name = "siler-nmhost"
+version = "0.7.1"
+dependencies = [
+ "serde_json",
+ "siler-ipc",
 ]
 
 [[package]]

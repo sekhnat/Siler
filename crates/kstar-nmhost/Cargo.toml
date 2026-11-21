@@ -1,9 +1,0 @@
-[package]
-name = "kstar-nmhost"
-version.workspace = true
-edition.workspace = true
-publish.workspace = true
-
-[dependencies]
-kstar-ipc = { path = "../kstar-ipc" }
-serde_json.workspace = true

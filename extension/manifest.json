@@ -1,11 +1,11 @@
 {
   "manifest_version": 3,
-  "name": "K-Star Integration",
-  "version": "0.3.2",
-  "description": "Send downloads and videos on web pages to the K-Star download manager for faster, resumable, multi-connection downloading.",
+  "name": "Siler Integration",
+  "version": "0.3.3",
+  "description": "Send downloads and videos on web pages to the Siler download manager for faster, resumable, multi-connection downloading.",
   "browser_specific_settings": {
     "gecko": {
-      "id": "kstar@kstar.app",
+      "id": "siler@siler.app",
       "strict_min_version": "140.0",
       "data_collection_permissions": {
         "required": [
@@ -60,7 +60,7 @@
     }
   ],
   "action": {
-    "default_title": "K-Star",
+    "default_title": "Siler",
     "default_popup": "popup/popup.html",
     "default_icon": {
       "16": "icons/icon-16.png",

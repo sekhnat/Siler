@@ -7,7 +7,7 @@
 "use strict";
 
 // eslint-disable-next-line no-unused-vars
-async function kstarYouTubeInPage(args) {
+async function silerYouTubeInPage(args) {
   const out = { ok: false, clients: [], web: null, preprocessed: null, error: null };
   const pick = (f) => ({
     itag: f.itag,

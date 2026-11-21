@@ -1,11 +1,11 @@
-use kstar_core::proxy::ProxyRoute;
-use kstar_core::{
+use serde::{Deserialize, Serialize};
+use siler_core::proxy::ProxyRoute;
+use siler_core::{
     AfterDone, Category, ContainerChoice, DownloadInfo, EditDownload, Login, LoginRequest,
     NewDownload, NewMediaDownload, OnConflict, ProbeResult, Queue, QueueMove, RequestMeta,
     Selection, Settings, SourceHint, Status, SubtitleMode,
 };
-use kstar_ipc::BrowserItem;
-use serde::{Deserialize, Serialize};
+use siler_ipc::BrowserItem;
 use std::fmt::Display;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
@@ -29,8 +29,8 @@ pub fn meta_of(item: &BrowserItem) -> RequestMeta {
     let body = item
         .body
         .as_deref()
-        .and_then(kstar_core::decode_base64)
-        .filter(|b| b.len() <= kstar_core::MAX_BODY);
+        .and_then(siler_core::decode_base64)
+        .filter(|b| b.len() <= siler_core::MAX_BODY);
     RequestMeta {
         referrer: item.referrer.clone().or_else(|| item.page_url.clone()),
         page_url: item.page_url.clone(),
@@ -61,7 +61,7 @@ fn pending_hint(state: &AppState, pending_id: Option<u64>, url: &str) -> Option<
 }
 
 /// The extension's hint as the engine takes it: the two have the same shape.
-pub fn hint_of(m: &kstar_ipc::MediaHint) -> Option<SourceHint> {
+pub fn hint_of(m: &siler_ipc::MediaHint) -> Option<SourceHint> {
     serde_json::to_value(m)
         .and_then(serde_json::from_value)
         .ok()
@@ -248,7 +248,7 @@ pub async fn probe_media(
     state: State<'_, AppState>,
     url: String,
     pending_id: Option<u64>,
-) -> Result<kstar_core::MediaProbe, ProbeError> {
+) -> Result<siler_core::MediaProbe, ProbeError> {
     let meta = pending_meta(&state, pending_id).unwrap_or_default();
     let hint = pending_hint(&state, pending_id, &url);
     let mut result = state.engine.probe_media(&url, &meta, hint.as_ref()).await;
@@ -310,7 +310,7 @@ pub async fn add_media(state: State<'_, AppState>, args: AddMediaArgs) -> Res<i6
 
 /// What the FFmpeg check found, for Settings → Media.
 #[tauri::command]
-pub fn media_diagnostics(state: State<'_, AppState>) -> kstar_core::FfmpegStatus {
+pub fn media_diagnostics(state: State<'_, AppState>) -> siler_core::FfmpegStatus {
     state.engine.ffmpeg_status()
 }
 
@@ -325,7 +325,7 @@ pub fn pending_adds(state: State<'_, AppState>) -> Vec<PendingView> {
                 .item
                 .filename
                 .clone()
-                .or_else(|| kstar_core::filename::name_from_url(&p.item.url));
+                .or_else(|| siler_core::filename::name_from_url(&p.item.url));
             PendingView {
                 id: p.id,
                 url: p.item.url.clone(),
@@ -501,7 +501,7 @@ pub fn set_when_done(app: AppHandle, action: AfterDone) {
 pub fn test_sound(
     state: State<'_, AppState>,
     sound: sound::Sound,
-    settings: Option<kstar_core::SoundSettings>,
+    settings: Option<siler_core::SoundSettings>,
 ) {
     let s = settings.unwrap_or_else(|| state.engine.settings().sounds);
     sound::play(&s, sound);
@@ -588,8 +588,8 @@ pub fn set_speed_limit(state: State<'_, AppState>, id: i64, bytes_per_sec: u64) 
 }
 
 #[tauri::command]
-pub fn default_categories() -> Vec<kstar_core::CategoryRule> {
-    kstar_core::default_categories()
+pub fn default_categories() -> Vec<siler_core::CategoryRule> {
+    siler_core::default_categories()
 }
 
 #[tauri::command]
@@ -604,14 +604,14 @@ pub fn set_settings(state: State<'_, AppState>, settings: Settings) -> Res<Setti
 
 fn download(app: &AppHandle, id: i64) -> Res<DownloadInfo> {
     app.try_state::<AppState>()
-        .ok_or("K-Star isn't running")?
+        .ok_or("Siler isn't running")?
         .engine
         .get(id)
         .ok_or_else(|| "Download not found".to_string())
 }
 
 fn path_of(app: &AppHandle, id: i64) -> Res<PathBuf> {
-    let state = app.try_state::<AppState>().ok_or("K-Star isn't running")?;
+    let state = app.try_state::<AppState>().ok_or("Siler isn't running")?;
     state
         .engine
         .file_path(id)
@@ -626,7 +626,7 @@ pub fn open_path(app: &AppHandle, id: i64) -> Res<()> {
     }
     let path = path_of(app, id)?;
     if !path.exists() {
-        return Err(kstar_core::Error::FileMissing.to_string());
+        return Err(siler_core::Error::FileMissing.to_string());
     }
     crate::launch::open(&path).map_err(err)
 }

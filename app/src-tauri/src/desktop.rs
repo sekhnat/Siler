@@ -1,11 +1,11 @@
-//! The `.desktop` entry and icons. Without them KDE and GNOME can't match K-Star's windows
-//! (Wayland app id `kstar`) to an application, and show a generic icon.
+//! The `.desktop` entry and icons. Without them KDE and GNOME can't match Siler's windows
+//! (Wayland app id `siler`) to an application, and show a generic icon.
 
 use std::io;
 use std::path::{Path, PathBuf};
 
-pub const APP_ID: &str = "kstar";
-const MARKER: &str = "X-KStar-Managed=true";
+pub const APP_ID: &str = "siler";
+const MARKER: &str = "X-Siler-Managed=true";
 
 const ICONS: &[(&str, &[u8])] = &[
     ("32x32", include_bytes!("../icons/32x32.png")),
@@ -31,7 +31,7 @@ pub fn entry_path() -> PathBuf {
         .join(format!("{APP_ID}.desktop"))
 }
 
-/// The program the menu entry starts: the AppImage file when K-Star runs from one (the
+/// The program the menu entry starts: the AppImage file when Siler runs from one (the
 /// executable itself sits in a mount that changes every run), else this executable.
 fn exe() -> io::Result<PathBuf> {
     match crate::integration::appimage() {
@@ -48,7 +48,7 @@ fn entry(exe: &Path) -> String {
     format!(
         "[Desktop Entry]
 Type=Application
-Name=K-Star
+Name=Siler
 GenericName=Download Manager
 Comment=Fast downloads with many connections
 Exec=\"{exec}\" %U
@@ -86,10 +86,10 @@ pub fn install() -> io::Result<()> {
     std::fs::create_dir_all(path.parent().expect("has parent"))?;
     std::fs::write(&path, entry(&exe()?))?;
     // Refresh the caches if the tools exist; desktops pick the files up anyway.
-    let _ = kstar_core::host::command("update-desktop-database")
+    let _ = siler_core::host::command("update-desktop-database")
         .arg(base.join("applications"))
         .output();
-    let _ = kstar_core::host::command("gtk-update-icon-cache")
+    let _ = siler_core::host::command("gtk-update-icon-cache")
         .args(["-q", "-t"])
         .arg(base.join("icons/hicolor"))
         .output();
