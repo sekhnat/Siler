@@ -128,6 +128,9 @@ async function kstarYouTubeInPage(args) {
         "Content-Type": "application/json",
         "X-YouTube-Client-Name": String(c.number),
         "X-YouTube-Client-Version": c.context.client.clientVersion,
+        // As yt-dlp sends it: the TV client is refused ("The page needs to be reloaded")
+        // when it arrives with a desktop browser's User-Agent.
+        "User-Agent": c.context.client.userAgent,
       };
       if (visitor) headers["X-Goog-Visitor-Id"] = visitor;
       if (c.cookies && loggedIn) Object.assign(headers, await authHeaders());

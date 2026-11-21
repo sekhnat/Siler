@@ -216,3 +216,33 @@ test("YouTube: the hand-over carries the manifest, ranges and the client's user 
   const live = plain(K.youtube.handOver({ pr: { ...pr, videoDetails: { ...pr.videoDetails, isLive: true } } }, client, "u", null));
   assert.match(live.error, /live/);
 });
+
+test("YouTube: the player API is asked with each client's own user agent", async () => {
+  // page.js, run against a stand-in watch page. YouTube refuses the TV client when it
+  // arrives with a desktop browser's user agent ("The page needs to be reloaded").
+  const sent = [];
+  const page = {
+    URL,
+    URLSearchParams,
+    TextEncoder,
+    crypto,
+    location: { origin: "https://www.youtube.com" },
+    window: { ytcfg: { get: (k) => ({ VISITOR_DATA: "visitor", STS: 20000 })[k] } },
+    document: { cookie: "", getElementById: () => null, querySelector: () => null },
+    fetch: async (url, init) => {
+      sent.push({ url, headers: init?.headers || {} });
+      return { ok: true, status: 200, json: async () => ({ playabilityStatus: { status: "OK" }, streamingData: { adaptiveFormats: [] } }) };
+    },
+  };
+  const ctx = vm.createContext(page);
+  vm.runInContext(fs.readFileSync(path.join(ext, "media/youtube/page.js"), "utf8"), ctx, { filename: "page.js" });
+  const clients = K.youtube.clients();
+  const out = await ctx.kstarYouTubeInPage({ videoId: "dQw4w9WgXcQ", clients: plain(clients), libs: {}, cached: null });
+  assert.equal(out.ok, true, out.error);
+  const asks = sent.filter((s) => s.url.includes("/youtubei/v1/player"));
+  assert.equal(asks.length, clients.length);
+  clients.forEach((c, i) => {
+    assert.equal(asks[i].headers["X-YouTube-Client-Name"], String(c.number));
+    assert.equal(asks[i].headers["User-Agent"], c.context.client.userAgent, c.name);
+  });
+});

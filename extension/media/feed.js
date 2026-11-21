@@ -361,9 +361,21 @@ const Feed = (() => {
       }
       const fmts = KStar.youtube.usable(answer.pr.streamingData?.adaptiveFormats);
       const client = KStar.youtube.CLIENTS[answer.name];
-      if (!fmts.length || !(await linkWorks(fmts[0].url, client.context.client.userAgent))) continue;
+      if (!fmts.length) continue;
+      const ua = client.context.client.userAgent;
+      // Behind an ad the links answer only once its time has passed (yt-dlp sleeps for it
+      // too); the wait is taken here, so the app needn't take it again.
+      const wait = KStar.youtube.adWait(answer.pr);
+      let waited = false;
+      if (!(await linkWorks(fmts[0].url, ua))) {
+        if (!wait) continue;
+        await new Promise((ok) => setTimeout(ok, wait * 1000));
+        waited = true;
+        if (!(await linkWorks(fmts[0].url, ua))) continue;
+      }
       const out = KStar.youtube.handOver(answer, client, KStar.youtube.watchUrl(id), r.web);
       if (out.error) throw new Error(out.error);
+      if (waited) out.item.media.not_before_ms = null;
       console.info(`K-Star: YouTube ${id} via the ${answer.name} client`);
       return out.item;
     }
