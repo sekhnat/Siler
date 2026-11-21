@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "K-Star Integration",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Send downloads and videos on web pages to the K-Star download manager for faster, resumable, multi-connection downloading.",
   "browser_specific_settings": {
     "gecko": {
