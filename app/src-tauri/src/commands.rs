@@ -688,11 +688,21 @@ pub fn install_integration(state: State<'_, AppState>) -> Res<IntegrationStatus>
     Ok(status_of(&state))
 }
 
+/// Siler starts (in the tray) when you log in.
+#[tauri::command]
+pub fn autostart_enabled() -> bool {
+    crate::autostart::enabled()
+}
+
+#[tauri::command]
+pub fn set_autostart(on: bool) -> Res<()> {
+    crate::autostart::set(on).map_err(err)
+}
+
 /// Opens the signed extension with Firefox, which offers to install it.
 #[tauri::command]
 pub fn install_extension() -> Res<()> {
-    let xpi = integration::signed_xpi()
-        .ok_or("No signed extension yet. Run scripts/sign-extension.sh first (see the README).")?;
+    let xpi = integration::xpi_for_firefox().map_err(err)?;
     crate::launch::start("firefox", &[xpi.as_os_str()])
         .map_err(|e| format!("Couldn't start Firefox: {e}"))
 }

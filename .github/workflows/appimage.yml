@@ -99,6 +99,15 @@ jobs:
           cp app/src-tauri/resources/ffmpeg "app/src-tauri/binaries/ffmpeg-$triple"
           cp app/src-tauri/resources/ffprobe "app/src-tauri/binaries/ffprobe-$triple"
 
+      - name: The signed extension from the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Bundled so Settings → Browser → Add to Firefox works without a download.
+          gh release download "$TAG" -p 'siler-integration-*.xpi' -O app/src-tauri/resources/siler-integration.xpi --clobber
+          unzip -l app/src-tauri/resources/siler-integration.xpi | grep -q 'META-INF/cose.sig' \
+            || { echo "::error::The release's siler-integration-*.xpi is not signed by Mozilla"; exit 1; }
+
       - name: Build the AppImage
         working-directory: app
         run: pnpm tauri build --bundles appimage --config src-tauri/tauri.appimage.json

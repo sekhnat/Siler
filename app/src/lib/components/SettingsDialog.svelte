@@ -25,9 +25,14 @@
   // Typed proxy password; saved to the keyring on Save. Empty = keep the saved one.
   let proxyPassword = $state("");
   let proxyPasswordSaved = $state(false);
+  // Starting at login is the autostart file itself, not a stored setting: read it on open,
+  // write it on Save.
+  let autostart = $state(false);
+  let autostartWas = false;
 
   onMount(async () => {
     integration = await api.integrationStatus().catch(() => null);
+    autostart = autostartWas = await api.autostartEnabled().catch(() => false);
     route = await api.proxyStatus().catch(() => null);
   });
 
@@ -90,6 +95,8 @@
     }
   }
 
+  const RELEASES = "https://github.com/sekhnat/Siler/releases/latest";
+
   // The extension and the app speak protocol versions; tell the user which one is behind.
   const mismatch = $derived.by(() => {
     const i = integration;
@@ -104,6 +111,7 @@
       if (proxyPassword && saved.proxy.mode === "manual" && saved.proxy.username.trim()) {
         await api.setProxyPassword(proxyPassword);
       }
+      if (autostart !== autostartWas) await api.setAutostart(autostart);
       onsaved(saved);
       onclose();
     } catch (e) {
@@ -213,6 +221,12 @@
         integration && !integration.tray_available ? "No system tray was found, so closing the window quits Siler" : "Closing the window keeps downloads going",
         s.close_to_tray,
         (v) => (s.close_to_tray = v),
+      )}
+      {@render toggle(
+        "Start when you log in",
+        integration && !integration.tray_available ? "Opens the window when you log in" : "Opens in the tray, ready for downloads",
+        autostart,
+        (v) => (autostart = v),
       )}
       {@render toggle("Ask before quitting", "Confirm when quitting would pause running downloads", s.confirm_quit, (v) => (s.confirm_quit = v))}
       {@render toggle("Notifications", "Notify when a download finishes or fails", s.notify_on_complete, (v) => (s.notify_on_complete = v))}
@@ -501,16 +515,19 @@
         <div class="t-label"><Puzzle size={15} /> Installing the extension</div>
         {#if integration?.signed_xpi}
           <div class="xpi">
-            <span class="hint grow">A signed extension is ready and stays installed across Firefox restarts.</span>
+            <span class="hint grow">The signed Siler extension is ready to add. Then allow it to access all websites when Firefox asks.</span>
             <button class="btn btn-primary btn-sm" onclick={installExtension}>Add to Firefox</button>
           </div>
         {:else}
           <ol>
             <li>Click <b>Install</b> above to register Siler with Firefox.</li>
-            <li>For a permanent install, sign the extension with <span class="mono">scripts/sign-extension.sh</span>; it then appears here.</li>
-            <li>For testing, load <span class="mono">extension/manifest.json</span> in <span class="mono">about:debugging</span> (removed when Firefox restarts).</li>
-            <li>Grant the extension access to all websites when Firefox asks.</li>
+            <li>
+              Download <span class="mono">siler-integration.xpi</span> from the latest release
+              <button class="btn btn-sm" onclick={() => api.openUrl(RELEASES).catch((e) => toasts.error(e))}>Open releases</button>
+            </li>
+            <li>Open the file with Firefox, and allow the extension to access all websites when Firefox asks.</li>
           </ol>
+          <div class="hint">Building from source? See <span class="mono">docs/browser-extension.md</span>.</div>
         {/if}
       </div>
     {:else}

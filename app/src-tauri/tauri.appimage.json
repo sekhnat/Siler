@@ -2,11 +2,20 @@
   "$schema": "https://schema.tauri.app/config/2",
   "bundle": {
     "active": true,
-    "targets": ["appimage"],
+    "targets": [
+      "appimage"
+    ],
     "category": "Utility",
     "shortDescription": "Download manager",
     "longDescription": "A download manager with segmented downloads, queues and schedules, video downloads (HLS, DASH, YouTube and more) and a Firefox extension.",
-    "externalBin": ["binaries/siler-nmhost", "binaries/ffmpeg", "binaries/ffprobe"],
+    "externalBin": [
+      "binaries/siler-nmhost",
+      "binaries/ffmpeg",
+      "binaries/ffprobe"
+    ],
+    "resources": {
+      "resources/siler-integration.xpi": "siler-integration.xpi"
+    },
     "linux": {
       "appimage": {
         "bundleMediaFramework": false

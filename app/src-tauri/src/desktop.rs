@@ -5,7 +5,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 pub const APP_ID: &str = "siler";
-const MARKER: &str = "X-Siler-Managed=true";
+pub(crate) const MARKER: &str = "X-Siler-Managed=true";
 
 const ICONS: &[(&str, &[u8])] = &[
     ("32x32", include_bytes!("../icons/32x32.png")),
@@ -33,25 +33,31 @@ pub fn entry_path() -> PathBuf {
 
 /// The program the menu entry starts: the AppImage file when Siler runs from one (the
 /// executable itself sits in a mount that changes every run), else this executable.
-fn exe() -> io::Result<PathBuf> {
+pub(crate) fn exe() -> io::Result<PathBuf> {
     match crate::integration::appimage() {
         Some(file) => Ok(file),
         None => std::env::current_exe(),
     }
 }
 
-fn entry(exe: &Path) -> String {
-    let exec = exe
+/// The program's path as a quoted `Exec=` argument.
+pub(crate) fn quoted(exe: &Path) -> String {
+    let path = exe
         .to_string_lossy()
         .replace('\\', "\\\\")
         .replace('"', "\\\"");
+    format!("\"{path}\"")
+}
+
+fn entry(exe: &Path) -> String {
+    let exec = quoted(exe);
     format!(
         "[Desktop Entry]
 Type=Application
 Name=Siler
 GenericName=Download Manager
 Comment=Fast downloads with many connections
-Exec=\"{exec}\" %U
+Exec={exec} %U
 Icon={APP_ID}
 Terminal=false
 Categories=Network;FileTransfer;

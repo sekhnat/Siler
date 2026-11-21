@@ -73,12 +73,46 @@ fn bundled_host() -> Option<PathBuf> {
     host.exists().then_some(host)
 }
 
-/// Where `scripts/sign-extension.sh` puts the signed extension.
+/// The app's resource folder (inside the AppImage), set once at start-up.
+static RESOURCE_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+pub fn set_resource_dir(dir: PathBuf) {
+    let _ = RESOURCE_DIR.set(dir);
+}
+
+const XPI: &str = "siler-integration.xpi";
+
+/// The signed extension to install: one signed by `scripts/sign-extension.sh`, else the
+/// copy bundled with the AppImage (resource folder) or the tarball (next to the
+/// executable).
 pub fn signed_xpi() -> Option<PathBuf> {
-    let p = dirs::data_dir()?
-        .join("siler")
-        .join("siler-integration.xpi");
-    p.exists().then_some(p)
+    let own = dirs::data_dir().map(|d| d.join("siler").join(XPI));
+    let bundled = RESOURCE_DIR.get().map(|d| d.join(XPI));
+    let beside = std::env::current_exe()
+        .ok()
+        .and_then(|e| Some(e.parent()?.join(XPI)));
+    [own, bundled, beside]
+        .into_iter()
+        .flatten()
+        .find(|p| p.is_file())
+}
+
+/// A copy of the signed extension that stays put while Firefox installs it: the AppImage's
+/// own files disappear when Siler quits.
+pub fn xpi_for_firefox() -> std::io::Result<PathBuf> {
+    let xpi = signed_xpi().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "No signed extension found. Download siler-integration.xpi from the latest release and open it with Firefox.",
+        )
+    })?;
+    let dir = dirs::cache_dir()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no cache folder"))?
+        .join("siler");
+    std::fs::create_dir_all(&dir)?;
+    let copy = dir.join(XPI);
+    std::fs::copy(&xpi, &copy)?;
+    Ok(copy)
 }
 
 fn host_of(manifest: &Path) -> Option<String> {

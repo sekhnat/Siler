@@ -312,11 +312,12 @@ mod tests {
             "#!/bin/sh\necho out_time_us=500000\necho out_time_us=1000000\necho progress=end\necho boom >&2\nexit 3\n",
         )
         .expect("write script");
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        // Run through `sh` rather than executing the file just written: another test forking
+        // at that moment can briefly hold it open for writing ("text file busy").
         let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let s2 = seen.clone();
-        let res = run(&script, &[], &cancel, 1_000_000, move |p| {
+        let args = [script.to_string_lossy().into_owned()];
+        let res = run(Path::new("/bin/sh"), &args, &cancel, 1_000_000, move |p| {
             s2.lock().expect("lock").push(p)
         })
         .await;

@@ -4708,7 +4708,7 @@ dependencies = [
 
 [[package]]
 name = "siler"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "arboard",
  "dirs",
@@ -4741,7 +4741,7 @@ dependencies = [
 
 [[package]]
 name = "siler-core"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -4776,7 +4776,7 @@ dependencies = [
 
 [[package]]
 name = "siler-ipc"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -4785,7 +4785,7 @@ dependencies = [
 
 [[package]]
 name = "siler-media"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "aes",
  "cbc",
@@ -4802,7 +4802,7 @@ dependencies = [
 
 [[package]]
 name = "siler-nmhost"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "serde_json",
  "siler-ipc",

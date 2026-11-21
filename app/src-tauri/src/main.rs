@@ -1,3 +1,4 @@
+mod autostart;
 mod clipboard;
 mod commands;
 mod desktop;
@@ -706,7 +707,11 @@ fn main() {
                         tray_available: AtomicBool::new(false),
                         power: power::PowerState::default(),
                     });
+                    if let Ok(dir) = app.path().resource_dir() {
+                        integration::set_resource_dir(dir);
+                    }
                     desktop::ensure();
+                    autostart::ensure();
                     integration::refresh_appimage();
                     setup_notifications(app.handle());
                     let activity = inhibit::spawn(engine.clone());
@@ -819,6 +824,8 @@ fn main() {
             commands::integration_status,
             commands::install_integration,
             commands::install_extension,
+            commands::autostart_enabled,
+            commands::set_autostart,
             commands::show_main_window,
             commands::request_quit,
             commands::quit_app,
