@@ -70,7 +70,7 @@ Siler.sites = (() => {
         m = p.match(/\/(?:video|photo)\/(\d+)/);
         return m ? m[1] : null;
       case "instagram":
-        m = p.match(/\/(?:p|reel|reels|tv)\/([^/?#]+)/);
+        m = p.match(/\/(?:p|reel|tv)\/([^/?#]+)/) || p.match(/\/reels\/(?!audio\/)([^/?#]+)/);
         return m ? m[1] : null;
       case "facebook":
         m = p.match(/\/(?:videos|reel|watch\/live)\/(?:[^/]+\/)?(\d+)/) || p.match(/\/videos\/(?:vb\.\d+\/)?(\d+)/);
@@ -278,17 +278,33 @@ Siler.sites = (() => {
 
   // ------------------------------------------------------------ Instagram (yt-dlp instagram.py)
 
-  function instagramMedia(o, pageUrl) {
+  /**
+   * One video. A carousel slide (`parent`) has no code, user or caption of its own: it takes
+   * its post's, so the post's links and poster find it.
+   */
+  function instagramMedia(o, pageUrl, parent = null, slide = null) {
     const mpd = decodeMpd(o.video_dash_manifest);
     const versions = (o.video_versions || []).filter((v) => v?.url);
     if (!mpd && !versions.length) return null;
     const code = o.code || o.shortcode || null;
     const id = String(o.pk || o.id || code || "");
     if (!id) return null;
-    const user = o.user?.username || o.owner?.username;
-    const title = firstLine(text(o.caption)) || (user ? `Video by ${user}` : `Instagram video ${code || id}`);
-    const ids = [code, id, String(o.pk || "")].filter(Boolean);
-    const base = { key: `instagram:${code || id}`, site: "instagram", title, ids, referrer: pageUrl };
+    const postCode = code || parent?.code || parent?.shortcode || null;
+    const user = o.user?.username || o.owner?.username || parent?.user?.username || parent?.owner?.username || null;
+    const caption = firstLine(text(o.caption)) || firstLine(text(parent?.caption));
+    const title = caption || (user ? `Video by ${user}` : `Instagram video ${postCode || id}`);
+    const ids = [...new Set([code, id, String(o.pk || ""), postCode, parent && String(parent.pk || parent.id || "")].filter(Boolean))];
+    const base = {
+      key: `instagram:${code || id}`,
+      site: "instagram",
+      title,
+      ids,
+      referrer: pageUrl,
+      owner: user ? user.toLowerCase() : null,
+      width: o.original_width || null,
+      height: o.original_height || null,
+      slide,
+    };
     if (mpd) {
       return {
         ...base,
@@ -302,17 +318,80 @@ Siler.sites = (() => {
   }
 
   function instagramData(data, pageUrl) {
+    // Carousel slides first: which post each belongs to, and where in it.
+    const parentOf = new Map();
+    walk(data, (o) => {
+      if (!Array.isArray(o.carousel_media)) return;
+      o.carousel_media.forEach((child, i) => {
+        if (child && typeof child === "object") parentOf.set(String(child.pk || child.id || ""), { parent: o, slide: i });
+      });
+    });
     const out = new Map();
     walk(data, (o) => {
       if ((o.video_dash_manifest || o.video_versions) && (o.code || o.pk || o.id)) {
-        const c = instagramMedia(o, pageUrl);
-        if (c && (!out.has(c.key) || c.kind === "dash")) out.set(c.key, c);
+        const p = parentOf.get(String(o.pk || o.id || "")) || null;
+        const c = instagramMedia(o, pageUrl, p?.parent, p?.slide ?? null);
+        if (!c) return;
+        const old = out.get(c.key);
+        if (!old) out.set(c.key, c);
+        else {
+          // A DASH manifest beats a plain file; what either knows about its post is kept.
+          const [win, lose] = c.kind === "dash" && old.kind !== "dash" ? [c, old] : [old, c];
+          out.set(c.key, { ...lose, ...win, ids: [...new Set([...win.ids, ...lose.ids])], owner: win.owner || lose.owner });
+        }
       }
     });
     return [...out.values()];
   }
 
   const instagramHtml = (html, pageUrl) => scriptJson(html).flatMap((d) => instagramData(d, pageUrl));
+
+  // ------------------------------------------------------------ which video was clicked
+
+  const IG_NOT_USERS = new Set(["p", "reel", "reels", "tv", "explore", "stories", "direct", "accounts", "about", "legal", "developer", "api", "graphql", "web", "challenge", "emails", "session", "privacy", "help", "your_activity", "notifications"]);
+
+  /** The poster a profile link names (only Instagram's profiles are told apart so). */
+  function ownerFromUrl(url) {
+    let u;
+    try {
+      u = new URL(url);
+    } catch {
+      return null;
+    }
+    if (siteOf(url)?.id !== "instagram") return null;
+    const m = u.pathname.match(/^\/([A-Za-z0-9._]{1,30})\/?$/);
+    return m && !IG_NOT_USERS.has(m[1].toLowerCase()) ? m[1].toLowerCase() : null;
+  }
+
+  /**
+   * The candidate behind a clicked video, from the clues around it: the links in its post
+   * (a permalink, the poster's profile), the page or frame address, the frame, and the
+   * video's shape. Returns null rather than guess when several videos fit equally badly.
+   */
+  function pickVideo(cands, { pageUrl = "", frameUrl = "", frameId = 0, links = [], width = 0, height = 0 } = {}) {
+    if (!cands.length) return null;
+    const withIds = (ids) => (ids.length ? cands.filter((c) => c.ids?.some((i) => ids.includes(i))) : []);
+    const linkIds = [...new Set(links.map(idFromUrl).filter(Boolean))];
+    let pool = withIds(linkIds);
+    if (!pool.length) pool = withIds([idFromUrl(frameUrl), idFromUrl(pageUrl)].filter(Boolean));
+    if (!pool.length) {
+      const owners = new Set(links.map(ownerFromUrl).filter(Boolean));
+      if (owners.size) pool = cands.filter((c) => c.owner && owners.has(c.owner));
+    }
+    if (!pool.length && frameId) {
+      const inFrame = cands.filter((c) => c.frameId === frameId);
+      if (inFrame.length === 1) pool = inFrame;
+    }
+    if (!pool.length && cands.length === 1) pool = cands;
+    if (!pool.length) return null;
+    // Slides of one post: the one shaped like the clicked video, else the first slide.
+    if (width > 0 && height > 0) {
+      const ratio = width / height;
+      const shaped = pool.filter((c) => c.width && c.height && Math.abs(c.width / c.height - ratio) <= ratio * 0.03);
+      if (shaped.length) pool = shaped;
+    }
+    return [...pool].sort((a, b) => (a.slide ?? 0) - (b.slide ?? 0))[0];
+  }
 
   // ------------------------------------------------------------ dispatch
 
@@ -337,5 +416,5 @@ Siler.sites = (() => {
     return reader ? reader.html(html, pageUrl) : [];
   }
 
-  return { SITES, BODY_URLS, siteOf, idFromUrl, fromBody, fromHtml, vimeoConfig, tiktokData, facebookData, instagramData };
+  return { SITES, BODY_URLS, siteOf, idFromUrl, ownerFromUrl, pickVideo, fromBody, fromHtml, vimeoConfig, tiktokData, facebookData, instagramData };
 })();

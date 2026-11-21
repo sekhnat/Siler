@@ -44,6 +44,7 @@ For a quick test instead, open `about:debugging#/runtime/this-firefox`, choose *
 
 - **Finding them:** the extension watches what a page's player loads. HLS and DASH manifests (by address or content type) and whole video or audio files (512 KB and up; pieces of streams are skipped) are listed per tab, with their number on the toolbar button. An HLS master playlist is listed once, without the playlists it names.
 - **Download button:** pointing at a video (240×135 or larger) shows a **Download** button at its top right. It runs in the extension's own world, in a closed shadow root, so pages can't style or script it. The popup's "Videos on this page" list and the right-click menu's **Download this video with Siler** do the same.
+- **Feeds:** on pages with many videos, such as Instagram's home feed, the button and the right-click menu find the clicked video by the post it sits in: the post's permalink, its poster, and the video's shape. If Siler can't tell which video was clicked, it says so instead of sending another one.
 - **Hand-over:** the video goes to Siler's Add window with the page's cookies, referrer and user agent. A stream opens the quality, audio and subtitle picker; a file opens the usual form. The window says which site it came from.
 - **Names:** videos are named by their title (slashes become "⧸", as yt-dlp writes them).
 
@@ -64,6 +65,7 @@ The YouTube solver and its parser libraries are vendored unmodified in `extensio
 
 - DRM-protected videos are refused. Live streams aren't recorded.
 - Links from a page expire (YouTube's after a few hours). A download whose links expired says so, and the video has to be sent from the page again.
+- In an Instagram carousel with several videos of the same shape, the button takes the first of them; the popup's "Videos on this page" list has all of them, under the post's title.
 - Content that needs a login works only when you are logged in in Firefox.
 - Sites change their players; recogniser fixes come with extension updates.
 

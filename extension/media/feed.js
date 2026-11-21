@@ -9,7 +9,7 @@ const Feed = (() => {
   const MANIFEST_PEEK = 256 * 1024;
   const BODY_MAX = 8 * 1024 * 1024;
   const { classify, keyOf, inspectManifest, label } = Siler.media;
-  const { siteOf, idFromUrl, fromBody, fromHtml, BODY_URLS, SITES } = Siler.sites;
+  const { siteOf, idFromUrl, pickVideo, fromBody, fromHtml, BODY_URLS, SITES } = Siler.sites;
 
   // ------------------------------------------------------------ settings, kept in memory
   // (the request listeners must decide without waiting)
@@ -481,8 +481,10 @@ const Feed = (() => {
   /**
    * The video behind a click (the button over a video, or the context menu): the
    * recognised video of the page, the element's own file, or the stream its frame played.
+   * `clues` describe the clicked element: the links in its post and the video's shape, which
+   * tell a feed's videos apart.
    */
-  async function forVideo(tab, frameId, src, frameUrl) {
+  async function forVideo(tab, frameId, src, frameUrl, clues = {}) {
     const pageUrl = tab.url;
     const site = siteOf(frameUrl || "") || siteOf(pageUrl);
     if (site && recogniserOn(site.id) && watching(pageUrl)) {
@@ -494,9 +496,19 @@ const Feed = (() => {
       } else {
         await scan(tab);
         const mine = (await list(tab.id)).filter((c) => c.site === site.id);
-        const id = idFromUrl(frameUrl || "") || idFromUrl(pageUrl);
-        const hit = (id && mine.find((c) => c.ids?.includes(id))) || (mine.length === 1 ? mine[0] : null) || mine.find((c) => c.frameId === frameId);
+        const hit = pickVideo(mine, {
+          pageUrl,
+          frameUrl: frameUrl || "",
+          frameId,
+          links: Array.isArray(clues.links) ? clues.links.slice(0, 60) : [],
+          width: Number(clues.width) || 0,
+          height: Number(clues.height) || 0,
+        });
         if (hit) return itemFor(tab, hit);
+        // Several videos and nothing says which one was clicked: never send another one.
+        if (mine.length > 1) {
+          throw new Error(`Siler couldn't tell which of this page's ${site.name} videos you clicked. Open the post (its date links to it), then try again.`);
+        }
       }
     }
     if (src && /^https?:/i.test(src)) {

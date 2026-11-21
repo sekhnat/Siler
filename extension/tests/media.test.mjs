@@ -144,6 +144,36 @@ test("Instagram: the reel's DASH manifest, else its largest file", () => {
   assert.equal(b.title, "Video by other");
 });
 
+test("Instagram feed: the clicked post's video, never just the newest one", () => {
+  const page = "https://www.instagram.com/";
+  const cands = plain(K.sites.fromBody("https://www.instagram.com/graphql/query", fixture("instagram/feed.json"), page));
+  const pick = (ctx) => plain(K.sites.pickVideo(cands, { pageUrl: page, links: [], ...ctx }));
+  const ig = (path) => `https://www.instagram.com${path}`;
+
+  // The post's own links say which video it is (its date links to /p/<code>/).
+  const clicked = pick({ links: [ig("/clicked_user/"), ig("/p/DfCLICKED02/"), ig("/reels/audio/123/")] });
+  assert.ok(clicked?.ids.includes("DfCLICKED02"), `got ${clicked?.key}`);
+  assert.equal(clicked.title, "The clicked video");
+
+  // Carousel slides (an ad's) carry no code or user of their own: they take their post's.
+  const slide = cands.find((c) => c.ids.includes("4000000000000000901"));
+  assert.ok(slide.ids.includes("DfADPOST003"));
+  assert.equal(slide.owner, "ad_brand");
+  // An ad's post often has no permalink; its poster's profile link finds it, and the
+  // video's shape tells its slides apart.
+  assert.ok(pick({ links: [ig("/ad_brand/")] })?.ids.includes("4000000000000000901"));
+  assert.ok(pick({ links: [ig("/ad_brand/")], width: 540, height: 540 })?.ids.includes("4000000000000000902"));
+  assert.ok(pick({ links: [ig("/p/DfADPOST003/")], width: 720, height: 960 })?.ids.includes("4000000000000000901"));
+
+  // On a post's own page, its address is enough.
+  assert.ok(pick({ pageUrl: ig("/p/DfNEWEST001/") })?.ids.includes("DfNEWEST001"));
+  // Nothing to tell several videos apart: no guess.
+  assert.equal(pick({}), null);
+  assert.equal(pick({ links: [ig("/someone_else/"), ig("/explore/")] }), null);
+  // A page with one video needs no clues.
+  assert.ok(plain(K.sites.pickVideo(cands.slice(0, 1), { pageUrl: page, links: [] }))?.key);
+});
+
 test("YouTube: the formats become a DASH manifest the app reads", () => {
   const pr = JSON.parse(fixture("youtube/visionos.json"));
   const fmts = pr.streamingData.adaptiveFormats;

@@ -412,7 +412,9 @@ browser.contextMenus.onClicked.addListener(async (info, tab) => {
       if (!url) return;
       await handOver([await describe(url, { referrer: info.pageUrl, pageUrl: info.pageUrl, storeId })]);
     } else if (info.menuItemId === "siler-video" && tab) {
-      await handOver([await Feed.forVideo(tab, info.frameId ?? 0, info.srcUrl, info.frameUrl || info.pageUrl)]);
+      const frameId = info.frameId ?? 0;
+      const clues = await browser.tabs.sendMessage(tab.id, { type: "video-clues" }, { frameId }).catch(() => null);
+      await handOver([await Feed.forVideo(tab, frameId, info.srcUrl, info.frameUrl || info.pageUrl, clues || {})]);
     } else if (info.menuItemId === "siler-all" && tab?.id != null) {
       const [res] = await browser.scripting.executeScript({ target: { tabId: tab.id, frameIds: [info.frameId ?? 0] }, func: collectLinks });
       const { links = [], selection = false } = res?.result ?? {};
@@ -457,7 +459,7 @@ browser.runtime.onMessage.addListener((msg, sender) => {
       if (!tab) return;
       // The frame's address as it is now: sender.url stays the one the frame opened with,
       // so after YouTube moves to another video in place it still names the first.
-      return Feed.forVideo(tab, sender.frameId ?? 0, msg.src, msg.pageUrl || sender.url)
+      return Feed.forVideo(tab, sender.frameId ?? 0, msg.src, msg.pageUrl || sender.url, { links: msg.links, width: msg.width, height: msg.height })
         .then((item) => handOver([item]))
         .then(
           () => ({ ok: true }),

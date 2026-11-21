@@ -13,6 +13,43 @@ document.addEventListener(
   { capture: true, passive: true },
 );
 
+/**
+ * What surrounds a video, so a feed's videos can be told apart: the links in its post (a
+ * permalink, the poster's profile) and the video's shape.
+ */
+function silerVideoClues(v) {
+  let box = v.closest("article, [role='article']");
+  if (!box) {
+    // The largest ancestor holding this video and no other.
+    for (let el = v.parentElement, i = 0; el && el !== document.body && i < 15; el = el.parentElement, i++) {
+      if ([...el.getElementsByTagName("video")].some((o) => o !== v)) break;
+      box = el;
+    }
+  }
+  const hrefs = box ? [...box.querySelectorAll("a[href]")].map((a) => a.href).filter((h) => /^https?:/i.test(h)) : [];
+  return { links: [...new Set(hrefs)].slice(0, 60), width: v.videoWidth || 0, height: v.videoHeight || 0 };
+}
+
+// The video under the last right-click, for the context menu's "Download this video".
+let silerMenuVideo = null;
+document.addEventListener(
+  "contextmenu",
+  (e) => {
+    const t = e.target instanceof Element ? e.target : null;
+    silerMenuVideo =
+      t?.closest("video") ||
+      [...document.getElementsByTagName("video")].find((v) => {
+        const r = v.getBoundingClientRect();
+        return e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+      }) ||
+      null;
+  },
+  { capture: true, passive: true },
+);
+browser.runtime.onMessage.addListener((msg) => {
+  if (msg?.type === "video-clues") return Promise.resolve(silerMenuVideo ? silerVideoClues(silerMenuVideo) : null);
+});
+
 (() => {
   const MIN_W = 240;
   const MIN_H = 135;
@@ -138,7 +175,7 @@ document.addEventListener(
     button.querySelector("span").textContent = "Sending…";
     const src = target.currentSrc || target.src || target.querySelector("source[src]")?.src || "";
     try {
-      const r = await browser.runtime.sendMessage({ type: "video-button", src, pageUrl: location.href });
+      const r = await browser.runtime.sendMessage({ type: "video-button", src, pageUrl: location.href, ...silerVideoClues(target) });
       button.querySelector("span").textContent = r?.ok ? "Sent to Siler" : "Not sent";
     } catch {
       button.querySelector("span").textContent = "Not sent";
