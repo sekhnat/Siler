@@ -1,6 +1,6 @@
 //! Unix-socket server that receives requests relayed by `kstar-nmhost`.
 
-use kstar_core::{NewDownload, OnConflict, Status};
+use kstar_core::{NewDownload, OnConflict, SourceHint, Status};
 use kstar_ipc::nonblocking::{read_frame, write_frame};
 use kstar_ipc::{BrowserItem, PROTOCOL, Request, Response, socket_path};
 use std::io;
@@ -216,8 +216,10 @@ pub fn handle_add(app: &AppHandle, items: Vec<BrowserItem>, opts: &AddOptions) -
     if direct && !items.iter().any(needs_asking) {
         let mut errors = Vec::new();
         for item in &items {
-            if crate::media::is_stream(&item.url) {
-                // A manifest is a stream: its tracks are chosen by default, as a media download.
+            let hint = hint_for(item);
+            if is_video(item, hint.as_ref()) {
+                // A stream: its tracks are chosen by default, as a media download, with what
+                // the extension found out about it (a manifest from the page, subtitles).
                 let engine = state.engine.clone();
                 let app = app.clone();
                 let item = item.clone();
@@ -228,6 +230,7 @@ pub fn handle_add(app: &AppHandle, items: Vec<BrowserItem>, opts: &AddOptions) -
                     let nd = kstar_core::NewMediaDownload {
                         url: url.clone(),
                         meta: meta_of(&item),
+                        hint,
                         filename: item.filename.clone(),
                         dir: opts.dir.clone(),
                         start_paused: opts.later,
@@ -278,6 +281,17 @@ pub fn handle_add(app: &AppHandle, items: Vec<BrowserItem>, opts: &AddOptions) -
     }
 }
 
+/// The extension's details of a hand-over's video, as the engine takes them.
+fn hint_for(item: &BrowserItem) -> Option<SourceHint> {
+    item.media.as_ref().and_then(crate::commands::hint_of)
+}
+
+/// Whether a hand-over is a video download: a stream's own link, or a page whose manifest the
+/// extension found and sent as text (YouTube). Anything else is a file.
+fn is_video(item: &BrowserItem, hint: Option<&SourceHint>) -> bool {
+    crate::media::is_stream(&item.url) || hint.is_some_and(|h| h.manifest.is_some())
+}
+
 /// The download waiting for a fresh link, if `item` looks like it (same size when known).
 fn take_refresh_target(state: &AppState, item: &BrowserItem) -> Option<i64> {
     let mut waiting = state.awaiting_refresh.lock().unwrap();
@@ -296,5 +310,57 @@ fn take_refresh_target(state: &AppState, item: &BrowserItem) -> Option<i64> {
         Some(id)
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kstar_ipc::{InlineManifest, MediaHint};
+
+    fn item(url: &str, media: Option<MediaHint>) -> BrowserItem {
+        BrowserItem {
+            url: url.into(),
+            media,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_page_whose_manifest_came_as_text_is_a_video() {
+        // What the YouTube recogniser hands over: the watch page, with the manifest it wrote.
+        let youtube = item(
+            "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            Some(MediaHint {
+                site: Some("youtube".into()),
+                title: Some("Me at the zoo".into()),
+                manifest: Some(InlineManifest {
+                    kind: "dash".into(),
+                    body: "<MPD/>".into(),
+                    base_url: "https://www.youtube.com/watch?v=jNQXAC9IVRw".into(),
+                }),
+                ..Default::default()
+            }),
+        );
+        let hint = hint_for(&youtube);
+        assert!(hint.as_ref().is_some_and(|h| h.manifest.is_some()));
+        assert!(is_video(&youtube, hint.as_ref()));
+    }
+
+    #[test]
+    fn a_stream_link_is_a_video_and_a_named_file_is_a_file() {
+        let hls = item("https://cdn.example/v/master.m3u8?t=1", None);
+        assert!(is_video(&hls, None));
+        // A recognised site's plain file (TikTok's MP4): its details only name it.
+        let file = item(
+            "https://cdn.example/v/clip.mp4",
+            Some(MediaHint {
+                site: Some("tiktok".into()),
+                title: Some("A clip".into()),
+                ..Default::default()
+            }),
+        );
+        let hint = hint_for(&file);
+        assert!(!is_video(&file, hint.as_ref()));
     }
 }
