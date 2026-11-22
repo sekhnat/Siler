@@ -1,0 +1,54 @@
+{
+ "playabilityStatus": {
+  "status": "OK",
+  "reason": null,
+  "subreason": null
+ },
+ "videoDetails": {
+  "videoId": "BBBBBBBBBBB",
+  "title": "A film",
+  "lengthSeconds": "5400"
+ },
+ "streamingData": {
+  "adaptiveFormats": [
+   {
+    "itag": 1,
+    "mimeType": "video/mp4; codecs=\"avc1.4d401f\"",
+    "bitrate": 900000,
+    "drmFamilies": [
+     "WIDEVINE",
+     "PLAYREADY"
+    ],
+    "initRange": {
+     "start": "0",
+     "end": "700"
+    },
+    "indexRange": {
+     "start": "701",
+     "end": "2000"
+    },
+    "url": "https://rr1---sn-x.googlevideo.com/videoplayback?itag=1"
+   },
+   {
+    "itag": 2,
+    "mimeType": "audio/mp4; codecs=\"mp4a.40.2\"",
+    "bitrate": 128000,
+    "drmFamilies": [
+     "WIDEVINE",
+     "PLAYREADY"
+    ],
+    "initRange": {
+     "start": "0",
+     "end": "700"
+    },
+    "indexRange": {
+     "start": "701",
+     "end": "2000"
+    },
+    "url": "https://rr1---sn-x.googlevideo.com/videoplayback?itag=2"
+   }
+  ],
+  "hlsManifestUrl": null,
+  "expiresInSeconds": null
+ }
+}

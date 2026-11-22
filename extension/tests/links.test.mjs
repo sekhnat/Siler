@@ -81,6 +81,8 @@ async function background({ settings = {}, windows = [{ id: 1, incognito: false,
       onCreated: event(),
       onRemoved: event(),
       onUpdated: event(),
+      onActivated: event(),
+      query: async () => [],
       async create(props) {
         const tab = { id: nextTab++, windowId: props.windowId, url: props.url, status: "complete", title: "A page", incognito: false, cookieStoreId: props.cookieStoreId, props };
         opened.push(tab);

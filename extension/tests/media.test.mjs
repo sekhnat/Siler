@@ -44,19 +44,100 @@ test("responses are told apart: manifests, whole files, and pieces", () => {
 });
 
 test("manifests say whether they are a master and how high they go", () => {
+  const pick = (o, keys) => Object.fromEntries(keys.map((k) => [k, o[k]]));
+  const basic = ["master", "height", "live", "children"];
   const master =
     '#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",NAME="en",URI="audio/en.m3u8"\n#EXT-X-STREAM-INF:BANDWIDTH=1,RESOLUTION=640x360,AUDIO="a"\na.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=2,RESOLUTION=1920x1080\nb.m3u8\n';
-  assert.deepEqual(plain(K.media.inspectManifest("hls", master)), {
+  assert.deepEqual(pick(plain(K.media.inspectManifest("hls", master)), basic), {
     master: true,
     height: 1080,
     live: false,
     children: ["audio/en.m3u8", "a.m3u8", "b.m3u8"],
   });
   const media = "#EXTM3U\n#EXTINF:4,\na.ts\n#EXT-X-ENDLIST\n";
-  assert.deepEqual(plain(K.media.inspectManifest("hls", media)), { master: false, height: null, live: false, children: [] });
+  assert.deepEqual(pick(plain(K.media.inspectManifest("hls", media)), basic), { master: false, height: null, live: false, children: [] });
   assert.equal(K.media.inspectManifest("hls", "<html>"), null);
   const mpd = '<MPD type="static"><Period><AdaptationSet><Representation height="720"/></AdaptationSet></Period></MPD>';
   assert.equal(K.media.inspectManifest("dash", mpd).height, 720);
+});
+
+test("manifests say their qualities, length, subtitles and DRM, as the app judges it", () => {
+  const hls = (t) => plain(K.media.inspectManifest("hls", "#EXTM3U\n" + t));
+  const master = hls(
+    '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="s",NAME="English",URI="subs/en.m3u8"\n' +
+      '#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360,CODECS="avc1.4d401e,mp4a.40.2"\nlow.m3u8\n' +
+      '#EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080,CODECS="avc1.640028,mp4a.40.2"\nhigh.m3u8\n',
+  );
+  assert.deepEqual(master.variants, [
+    { height: 360, bandwidth: 800000, codecs: "avc1.4d401e,mp4a.40.2" },
+    { height: 1080, bandwidth: 5000000, codecs: "avc1.640028,mp4a.40.2" },
+  ]);
+  assert.equal(master.subs, true);
+  assert.equal(master.audioOnly, false);
+  assert.deepEqual(master.drm, []);
+  // A media playlist's length is the sum of its pieces, once it has an end.
+  assert.equal(hls("#EXTINF:6.0,\na.ts\n#EXTINF:6.0,\nb.ts\n#EXTINF:3.5,\nc.ts\n#EXT-X-ENDLIST\n").duration, 16);
+  assert.equal(hls("#EXTINF:6.0,\na.ts\n").duration, null);
+  // Audio only: no picture in any variant.
+  assert.equal(hls('#EXT-X-STREAM-INF:BANDWIDTH=128000,CODECS="mp4a.40.2"\na.m3u8\n').audioOnly, true);
+  // AES-128 is decrypted by the app; SAMPLE-AES with a key format, or FairPlay's skd:, is DRM.
+  assert.deepEqual(hls('#EXT-X-KEY:METHOD=AES-128,URI="k.key"\n#EXTINF:6,\na.ts\n').drm, []);
+  assert.deepEqual(hls('#EXT-X-KEY:METHOD=SAMPLE-AES,URI="skd://x",KEYFORMAT="com.apple.streamingkeydelivery"\n#EXTINF:6,\na.ts\n').drm, ["FairPlay"]);
+  assert.deepEqual(hls('#EXT-X-KEY:METHOD=SAMPLE-AES-CTR,URI="data:x",KEYFORMAT="urn:uuid:edef8ba9-79d6-4ace-a3c8-27dcd51d21ed"\n#EXTINF:6,\na.ts\n').drm, ["Widevine"]);
+  const mpd = plain(
+    K.media.inspectManifest(
+      "dash",
+      '<MPD type="static" mediaPresentationDuration="PT1M30.5S"><Period><AdaptationSet mimeType="video/mp4">' +
+        '<ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011" value="cenc"/>' +
+        '<ContentProtection schemeIdUri="urn:uuid:9a04f079-9840-4286-ab92-e65be0885f95"/>' +
+        '<Representation height="1080" bandwidth="4000000" codecs="avc1.640028"/></AdaptationSet>' +
+        '<AdaptationSet contentType="text" mimeType="text/vtt"/></Period></MPD>',
+    ),
+  );
+  assert.equal(mpd.duration, 91);
+  assert.deepEqual(mpd.drm, ["PlayReady"]);
+  assert.equal(mpd.subs, true);
+  assert.equal(K.media.estimateSize({ variants: [{ bandwidth: 8_000_000 }], duration: 60 }), 60_000_000);
+  assert.equal(K.media.estimateSize({ variants: [], duration: 60 }), null);
+});
+
+test("content sniffing tells streams and files from pieces, whatever the address says", () => {
+  const bytes = (...parts) => new Uint8Array(parts.flatMap((p) => (typeof p === "string" ? [...p].map((c) => c.charCodeAt(0)) : p)));
+  const s = (b, size = null) => K.media.sniff(b, size);
+  // The same cases as the app's classify.rs tests.
+  assert.equal(s(bytes("#EXTM3U\n#EXT-X-VERSION:3\n")), "hls");
+  assert.equal(s(bytes("#EXTM3U\n#EXTINF:1,\na.ts\n")), "hls");
+  assert.equal(s(bytes("#EXTM3U\nhttp://x/a.mp3\n")), null); // an M3U without HLS tags
+  assert.equal(s(bytes([0xef, 0xbb, 0xbf], '  <?xml?><MPD xmlns="urn:mpeg:dash:schema:mpd:2011">')), "dash");
+  assert.equal(s(bytes("<html><body>expired</body></html>")), "html");
+  assert.equal(s(bytes("WEBVTT\n\n")), "vtt");
+  const ts = new Uint8Array(3 * 188 + 1);
+  for (const k of [0, 188, 376]) ts[k] = 0x47;
+  assert.equal(s(ts, 2_000_000), "piece");
+  assert.equal(s(ts, 300_000_000), "file");
+  // An MP4 start is a whole file when big, a stream's first piece when small.
+  const ftyp = bytes([0, 0, 0, 24], "ftypisom", [0, 0, 0, 0]);
+  assert.equal(s(ftyp, 50_000_000), "file");
+  assert.equal(s(ftyp, 1200), "piece");
+  assert.equal(s(ftyp), "file"); // size unknown
+  assert.equal(s(bytes([0, 0, 0, 24], "moof")), "piece");
+  assert.equal(s(bytes([0x1a, 0x45, 0xdf, 0xa3, 0x9f]), 9_000_000), "file");
+  assert.equal(s(bytes([0x1f, 0x43, 0xb6, 0x75, 1])), "piece");
+  assert.equal(s(bytes("ID3", [3, 0]), 4_000_000), "file");
+  assert.equal(s(bytes('{"a":1}')), null);
+});
+
+test("the cheap first look lets media, manifests and vague types through, and nothing else", () => {
+  const i = (url, mime = "") => K.media.interesting(url, mime);
+  assert.equal(i("https://x/api/items?page=2", "application/json"), false);
+  assert.equal(i("https://x/app.js", "text/javascript"), false);
+  assert.equal(i("https://x/v/index", "application/vnd.apple.mpegurl"), true);
+  assert.equal(i("https://x/v/master.m3u8?token=a.b", "text/plain"), true);
+  assert.equal(i("https://x/v/seg-1.ts"), true);
+  assert.equal(i("https://x/clip", "video/mp4"), true);
+  assert.equal(i("https://x/get_playlist.php", "text/plain"), true); // vague: looked at closer
+  assert.equal(K.media.rawExt("https://x/a.b/c.M3U8?x=y.mp4#z"), "m3u8");
+  assert.equal(K.media.rawExt("https://x/a.b/c"), "");
 });
 
 test("JSON is found after a marker in a script", () => {
@@ -271,6 +352,52 @@ test("YouTube: the hand-over carries the manifest, ranges and the client's user 
   assert.ok(item.media.subtitles.length >= 1);
   const live = plain(K.youtube.handOver({ pr: { ...pr, videoDetails: { ...pr.videoDetails, isLive: true } } }, client, "u", null));
   assert.match(live.error, /live/);
+});
+
+test("YouTube: a live stream goes over as its HLS playlist, to be recorded", () => {
+  // Recorded from ios_producer (scrubbed): live answers carry no adaptive formats, only HLS.
+  const pr = JSON.parse(fixture("youtube/live_ios_producer.json"));
+  const client = K.youtube.CLIENTS.ios_producer;
+  const out = plain(K.youtube.handOver({ pr }, client, K.youtube.watchUrl("tP8etKB7IIk"), null));
+  assert.equal(out.live, true);
+  assert.match(out.item.url, /^https:\/\/manifest\.googlevideo\.com\/.*\.m3u8$/);
+  assert.equal(out.item.page_url, "https://www.youtube.com/watch?v=tP8etKB7IIk");
+  assert.equal(out.item.user_agent, client.context.client.userAgent);
+  // No inline manifest: the app sees an .m3u8 and records it until Finish.
+  assert.equal(out.item.media.manifest, undefined);
+  assert.equal(out.item.media.title, "A news channel, live");
+  // Without a playlist, the kind says so; nothing reaches users in English from here.
+  const bare = { ...pr, streamingData: { ...pr.streamingData, hlsManifestUrl: null } };
+  assert.deepEqual(plain(K.youtube.handOver({ pr: bare }, client, "u", null)), { error: "live_no_url" });
+});
+
+test("YouTube: refusals are told apart, facts about the video first", () => {
+  // botcheck.json is recorded (tv_samsung from a machine YouTube didn't trust); the others are
+  // hand-made in the shape of YouTube's answers (they need a login or a scheduled premiere).
+  const pr = (f) => JSON.parse(fixture(`youtube/${f}.json`));
+  const why = (...files) => plain(K.youtube.failure(files.map((f) => ({ name: "x", pr: pr(f) }))));
+  assert.deepEqual(why("botcheck"), { kind: "bot" });
+  assert.deepEqual(why("upcoming"), { kind: "upcoming" });
+  assert.deepEqual(why("members"), { kind: "members" });
+  assert.deepEqual(why("age"), { kind: "age" });
+  assert.deepEqual(why("drm_all"), { kind: "drm" });
+  // One client bot-checked, another says members-only: the members answer is the true one.
+  assert.deepEqual(why("botcheck", "members"), { kind: "members" });
+  assert.deepEqual(why("botcheck", "upcoming"), { kind: "upcoming" });
+  // An unknown refusal keeps YouTube's own words; nothing at all is "no formats".
+  const odd = { playabilityStatus: { status: "ERROR", reason: "Video unavailable" } };
+  assert.deepEqual(plain(K.youtube.failure([{ pr: odd }])), { kind: "says", reason: "Video unavailable" });
+  assert.deepEqual(plain(K.youtube.failure([{ pr: null }])), { kind: "no_formats" });
+  // An all-DRM answer hands nothing over and says why.
+  assert.deepEqual(plain(K.youtube.handOver({ pr: pr("drm_all") }, K.youtube.CLIENTS.visionos, "u", null)), { error: "drm" });
+});
+
+test("YouTube: the clients are asked in order, ios_producer last", () => {
+  assert.deepEqual(plain(K.youtube.clients().map((c) => c.name)), ["tv_samsung", "visionos", "ios_producer"]);
+  const c = K.youtube.CLIENTS.ios_producer;
+  assert.equal(c.js, false);
+  assert.equal(c.cookies, false);
+  assert.equal(c.number, 92);
 });
 
 test("YouTube: a Short scrolled to in the Shorts feed keeps its name", () => {

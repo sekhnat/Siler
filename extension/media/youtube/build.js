@@ -7,7 +7,8 @@
 var Siler = globalThis.Siler || (globalThis.Siler = {});
 
 Siler.youtube = (() => {
-  // Copied from yt-dlp's INNERTUBE_CLIENTS. `cookies`: SUPPORTS_COOKIES; `js`: REQUIRE_JS_PLAYER.
+  // Copied from yt-dlp's INNERTUBE_CLIENTS (yt_dlp/extractor/youtube/_base.py, checked against
+  // revision 7940e14 of 2026-11-19). `cookies`: SUPPORTS_COOKIES; `js`: REQUIRE_JS_PLAYER.
   const CLIENTS = {
     tv_samsung: {
       number: 7,
@@ -43,9 +44,32 @@ Siler.youtube = (() => {
         },
       },
     },
+    // Not one of yt-dlp's defaults, but one of the few clients whose links need neither a PO
+    // token nor the player's code: H.264 up to 1080p. Tried last, when the TV and visionOS
+    // clients were refused (seen: "confirm you're not a bot" for both, while this one
+    // answered).
+    ios_producer: {
+      number: 92,
+      cookies: false,
+      js: false,
+      context: {
+        client: {
+          clientName: "IOS_PRODUCER",
+          clientVersion: "0.147.945",
+          deviceMake: "Apple",
+          deviceModel: "iPhone16,2",
+          userAgent: "com.google.ios.youtubeproducer/0.147.945 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)",
+          osName: "iPhone",
+          osVersion: "18.3.2.22D82",
+          hl: "en",
+        },
+      },
+    },
   };
-  // yt-dlp's _DEFAULT_CLIENTS without `web`, whose formats need a PO token (SABR only).
-  const ORDER = ["tv_samsung", "visionos"];
+  // yt-dlp's _DEFAULT_CLIENTS without `web`, whose formats need a PO token (SABR only), then
+  // ios_producer. (The spec's TVHTML5_SIMPLY_EMBEDDED_PLAYER is gone from yt-dlp; its
+  // successor tv_simply needs a PO token.)
+  const ORDER = ["tv_samsung", "visionos", "ios_producer"];
   // yt-dlp's CHUNK_SIZE for https formats.
   const CHUNK = 10 << 20;
 
@@ -199,22 +223,37 @@ Siler.youtube = (() => {
   }
 
   /**
-   * The hand-over for a client's answer: the Siler item, or why there's none. The title is
-   * the answer's, else the page's own player answer's, else `fallbackTitle` (the tab's):
-   * TV clients answer without one.
+   * The hand-over for a client's answer: `{item, title}`, or `{error: kind}` with a kind the
+   * extension turns into words (see `failure`). The title is the answer's, else the page's own
+   * player answer's, else `fallbackTitle` (the tab's): TV clients answer without one.
    */
   function handOver(answer, client, pageUrl, web, fallbackTitle = null) {
     const pr = answer.pr;
     const details = pr.videoDetails || web?.videoDetails || {};
-    if (details.isLive || details.isUpcoming) {
-      return { error: "This is a live stream. Siler can't record live streams yet." };
+    const title = details.title || web?.videoDetails?.title || fallbackTitle || null;
+    if (details.isUpcoming) return { error: "upcoming" };
+    if (details.isLive) {
+      // A live stream goes over as its HLS playlist; the app records it until Finish.
+      const hls = pr.streamingData?.hlsManifestUrl;
+      if (!hls) return { error: "live_no_url" };
+      return {
+        item: {
+          url: hls,
+          referrer: "https://www.youtube.com/",
+          page_url: pageUrl,
+          user_agent: client.context.client.userAgent,
+          headers: [],
+          media: { site: "youtube", title },
+        },
+        title,
+        live: true,
+      };
     }
     const duration =
       Number(details.lengthSeconds) ||
       Math.max(0, ...usable(pr.streamingData?.adaptiveFormats).map((f) => Number(f.approxDurationMs || 0) / 1000));
     const mpd = buildMpd(pr.streamingData?.adaptiveFormats, duration);
-    if (!mpd) return { error: "YouTube offered no formats Siler can download for this video." };
-    const title = details.title || web?.videoDetails?.title || fallbackTitle || null;
+    if (!mpd) return { error: onlyDrm(pr) ? "drm" : "no_formats" };
     const tracks = pr.captions?.playerCaptionsTracklistRenderer?.captionTracks || web?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
     const wait = adWait(pr);
     return {
@@ -237,8 +276,49 @@ Siler.youtube = (() => {
     };
   }
 
+  /** Whether every format of an answer is DRM-protected (and there are some). */
+  function onlyDrm(pr) {
+    const all = pr?.streamingData?.adaptiveFormats || [];
+    return all.length > 0 && all.every((f) => f?.drmFamilies);
+  }
+
+  /** What one client's refusal means, or null when it says nothing specific. */
+  function refusal(pr) {
+    if (!pr) return null;
+    const ps = pr.playabilityStatus || {};
+    const words = `${ps.reason || ""} ${ps.subreason || ""}`;
+    if (pr.videoDetails?.isUpcoming || ps.status === "LIVE_STREAM_OFFLINE") return "upcoming";
+    if (/members[- ]only|join this channel|channel's members|channel members/i.test(words)) return "members";
+    if (/confirm your age|age[- ]restricted|inappropriate for some users/i.test(words)) return "age";
+    if (/not a bot/i.test(words)) return "bot";
+    if (ps.status === "OK" && onlyDrm(pr)) return "drm";
+    if (ps.status === "OK" && pr.videoDetails?.isLive && !pr.streamingData?.hlsManifestUrl) return "live_no_url";
+    return null;
+  }
+
+  // Facts about the video outrank one client's trouble: "members only" from one client says
+  // more than "prove you're not a bot" from another.
+  const RANK = ["upcoming", "members", "age", "drm", "live_no_url", "bot"];
+
+  /**
+   * Why no client gave a downloadable video: `{kind}` from RANK, `{kind: "says", reason}` with
+   * YouTube's own words, or `{kind: "no_formats"}`. `answers` are page.js's client answers.
+   */
+  function failure(answers) {
+    const kinds = new Set();
+    let said = null;
+    for (const a of answers || []) {
+      const k = refusal(a?.pr);
+      if (k) kinds.add(k);
+      else if (!said && a?.pr?.playabilityStatus?.reason && a.pr.playabilityStatus.status !== "OK") said = a.pr.playabilityStatus.reason;
+    }
+    for (const k of RANK) if (kinds.has(k)) return { kind: k };
+    if (said) return { kind: "says", reason: said };
+    return { kind: "no_formats" };
+  }
+
   /** The canonical address of a video. */
   const watchUrl = (id) => `https://www.youtube.com/watch?v=${encodeURIComponent(id)}`;
 
-  return { CLIENTS, clients, buildMpd, captions, adWait, usable, handOver, watchUrl, CHUNK };
+  return { CLIENTS, clients, buildMpd, captions, adWait, usable, handOver, failure, refusal, watchUrl, CHUNK };
 })();

@@ -1,0 +1,13 @@
+{
+ "playabilityStatus": {
+  "status": "LOGIN_REQUIRED",
+  "reason": "Sign in to confirm you’re not a bot",
+  "subreason": null
+ },
+ "videoDetails": null,
+ "streamingData": {
+  "adaptiveFormats": [],
+  "hlsManifestUrl": null,
+  "expiresInSeconds": null
+ }
+}

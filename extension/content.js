@@ -47,22 +47,98 @@ function silerVideoClues(v) {
   }
   const hrefs = box ? [...box.querySelectorAll("a[href]")].map((a) => a.href).filter((h) => /^https?:/i.test(h)) : [];
   const duration = Number.isFinite(v.duration) ? v.duration : 0;
-  return { links: [...new Set(hrefs)].slice(0, 60), width: v.videoWidth || 0, height: v.videoHeight || 0, duration };
+  return {
+    links: [...new Set(hrefs)].slice(0, 60),
+    width: v.videoWidth || 0,
+    height: v.videoHeight || 0,
+    duration,
+    mse: silerIsMse(v),
+    protected: silerProtected(v),
+  };
 }
 
+// ---------------------------------------------------------------- videos the page assembles
+// A video playing from a blob: (or data:) address is fed by the page through Media Source
+// Extensions: its pieces are invisible as files. A video that raised `encrypted`, or has
+// MediaKeys, plays DRM-protected media. Both are only observed here, never changed: the feed
+// lists them so the popup can say what they are instead of nothing.
+
+const silerEncrypted = new WeakSet();
+
+/** Whether a video element shows EME evidence (an `encrypted` event, or MediaKeys set). */
+function silerProtected(v) {
+  try {
+    return silerEncrypted.has(v) || !!v.mediaKeys;
+  } catch {
+    return silerEncrypted.has(v);
+  }
+}
+
+const silerIsMse = (v) => /^(blob|data):/i.test(v.currentSrc || v.src || "");
+
+/** What the feed needs to list a blob-fed or protected video. */
+function silerMseInfo(v) {
+  const live = v.duration === Infinity;
+  return {
+    src: (v.currentSrc || v.src || "").slice(0, 200),
+    width: v.videoWidth || 0,
+    height: v.videoHeight || 0,
+    duration: Number.isFinite(v.duration) ? v.duration : 0,
+    live,
+    mse: silerIsMse(v),
+    protected: silerProtected(v),
+  };
+}
+
+/** The frame's blob-fed or protected videos (asked for by the feed's page scan). */
+function silerMseList() {
+  return [...document.getElementsByTagName("video")].filter((v) => silerIsMse(v) || silerProtected(v)).map(silerMseInfo);
+}
+
+const silerMseSent = new Map();
+function silerReportMse(v) {
+  if (!(v instanceof HTMLVideoElement)) return;
+  const info = silerMseInfo(v);
+  if (!info.mse && !info.protected) return;
+  // Once per address and state, again after a while (single-page sites reuse elements).
+  const key = `${info.src}|${info.protected}|${info.height}`;
+  const at = silerMseSent.get(key);
+  if (at && Date.now() - at < 30_000) return;
+  silerMseSent.set(key, Date.now());
+  if (silerMseSent.size > 50) silerMseSent.delete(silerMseSent.keys().next().value);
+  browser.runtime.sendMessage({ type: "mse-video", pageUrl: location.href, ...info }).catch(() => {});
+}
+for (const type of ["play", "loadedmetadata"]) {
+  document.addEventListener(type, (e) => silerReportMse(e.target), { capture: true, passive: true });
+}
+document.addEventListener(
+  "encrypted",
+  (e) => {
+    if (!(e.target instanceof HTMLMediaElement)) return;
+    silerEncrypted.add(e.target);
+    silerReportMse(e.target);
+  },
+  { capture: true, passive: true },
+);
+
 // The video under the last right-click, for the context menu's "Download this video".
+/** The video at a point, looking through overlays and into open shadow roots. */
+function silerVideoAtPoint(x, y, root = document, depth = 0) {
+  for (const el of root.elementsFromPoint(x, y)) {
+    if (el instanceof HTMLVideoElement) return el;
+    if (el.shadowRoot && depth < 4) {
+      const inner = silerVideoAtPoint(x, y, el.shadowRoot, depth + 1);
+      if (inner) return inner;
+    }
+  }
+  return null;
+}
 let silerMenuVideo = null;
 document.addEventListener(
   "contextmenu",
   (e) => {
     const t = e.target instanceof Element ? e.target : null;
-    silerMenuVideo =
-      t?.closest("video") ||
-      [...document.getElementsByTagName("video")].find((v) => {
-        const r = v.getBoundingClientRect();
-        return e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
-      }) ||
-      null;
+    silerMenuVideo = t?.closest("video") || silerVideoAtPoint(e.clientX, e.clientY);
   },
   { capture: true, passive: true },
 );
@@ -80,6 +156,8 @@ silerOnMessage((msg) => {
   let target = null;
   let hideTimer = 0;
   let busy = false;
+  let prepared = null;
+  let preparedAt = "";
 
   async function readSettings() {
     try {
@@ -107,11 +185,21 @@ silerOnMessage((msg) => {
       button:hover{background:#2563eb}
       button:focus-visible{outline:2px solid #93c5fd;outline-offset:2px}
       button[data-busy]{opacity:.75;cursor:progress}
+      button[data-locked]{cursor:not-allowed;background:rgba(55,65,81,.82)}
+      button[data-locked]:hover{background:rgba(55,65,81,.82)}
       svg{width:15px;height:15px;flex:none}
     </style><button type="button" aria-label="${silerT("menuDownloadVideo")}" title="${silerT("menuDownload")}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 20h14"/></svg><span>${silerT("buttonDownload")}</span></button>`;
     button = root.querySelector("button");
     button.addEventListener("click", onClick);
-    button.addEventListener("pointerenter", () => clearTimeout(hideTimer));
+    button.addEventListener("pointerenter", () => {
+      clearTimeout(hideTimer);
+      // The background starts on the video now; a click usually follows.
+      if (target && (target !== prepared || location.href !== preparedAt)) {
+        prepared = target;
+        preparedAt = location.href;
+        browser.runtime.sendMessage({ type: "video-hover", pageUrl: location.href }).catch(() => {});
+      }
+    });
     button.addEventListener("pointerleave", () => scheduleHide());
     (document.body || document.documentElement).appendChild(host);
   }
@@ -132,10 +220,26 @@ silerOnMessage((msg) => {
     host.style.transform = `translate(${Math.round(Math.max(4, r.right - 132))}px, ${Math.round(Math.max(4, r.top + 10))}px)`;
   }
 
+  /** The button's state for a video: a DRM-protected one can't be sent, and says so. */
+  function label(v) {
+    if (busy) return;
+    const locked = silerProtected(v);
+    if (locked) {
+      button.dataset.locked = "";
+      button.title = silerT("feedDRMRefused");
+      button.querySelector("span").textContent = silerT("buttonDRMLocked");
+    } else {
+      delete button.dataset.locked;
+      button.title = silerT("menuDownload");
+      button.querySelector("span").textContent = silerT("buttonDownload");
+    }
+  }
+
   function show(v) {
     if (!enabled) return;
     if (!host || !host.isConnected) make();
     target = v;
+    label(v);
     host.style.display = "block";
     place();
     scheduleHide();
@@ -153,13 +257,13 @@ silerOnMessage((msg) => {
     }, IDLE_MS);
   }
 
-  /** The video under the pointer: players lay their controls over the video element. */
+  /**
+   * The video under the pointer: players lay their controls over the video element, so this
+   * looks through everything at that point (one hit test), into open shadow roots too.
+   */
   function videoAt(x, y) {
-    for (const v of document.getElementsByTagName("video")) {
-      const r = v.getBoundingClientRect();
-      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom && big(v) && visible(v)) return v;
-    }
-    return null;
+    const v = silerVideoAtPoint(x, y);
+    return v && big(v) && visible(v) ? v : null;
   }
 
   let frame = 0;
@@ -189,7 +293,7 @@ silerOnMessage((msg) => {
   async function onClick(e) {
     e.preventDefault();
     e.stopPropagation();
-    if (busy || !target) return;
+    if (busy || !target || silerProtected(target)) return;
     busy = true;
     button.dataset.busy = "";
     button.querySelector("span").textContent = silerT("buttonSending");
@@ -203,7 +307,8 @@ silerOnMessage((msg) => {
     setTimeout(() => {
       busy = false;
       delete button.dataset.busy;
-      button.querySelector("span").textContent = silerT("buttonDownload");
+      if (target) label(target);
+      else button.querySelector("span").textContent = silerT("buttonDownload");
       scheduleHide();
     }, 1800);
   }

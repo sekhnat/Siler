@@ -26,6 +26,12 @@ const tabLookup = browser.tabs
   })
   .catch(() => null);
 
+let showAds = false;
+$("video-ads").addEventListener("click", () => {
+  showAds = !showAds;
+  renderVideos();
+});
+
 /** The videos Siler found on the tab, to pick from. */
 async function renderVideos(fresh = false) {
   await tabLookup;
@@ -37,8 +43,14 @@ async function renderVideos(fresh = false) {
   const box = $("videos");
   box.hidden = !list?.length;
   if (!list?.length) return;
-  $("videos-count").textContent = list.length === 1 ? "" : silerT("popupFound", [String(list.length)]);
+  const ads = list.filter((v) => v.ad).length;
+  const shown = showAds ? list.length : list.length - ads;
+  $("videos-count").textContent = shown <= 1 ? "" : silerT("popupFound", [String(shown)]);
+  // Ads are listed last and kept out of sight until asked for.
+  $("video-ads").hidden = !ads;
+  $("video-ads").textContent = showAds ? silerT("popupHideAds") : silerT("popupShowAds", [String(ads)]);
   const ul = $("video-list");
+  const firstFree = list.findIndex((v) => !v.protected && !v.ad);
   ul.replaceChildren(
     ...list.map((v, i) => {
       const li = document.createElement("li");
@@ -46,20 +58,54 @@ async function renderVideos(fresh = false) {
       const box = document.createElement("input");
       box.type = "checkbox";
       box.value = v.key;
-      box.checked = touched ? ticked.has(v.key) : i === 0;
+      // A DRM-protected video is listed to say why it can't be had, never to be ticked.
+      box.disabled = !!v.protected;
+      box.checked = !v.protected && (touched ? ticked.has(v.key) : i === firstFree);
       box.addEventListener("change", syncButton);
       const text = document.createElement("span");
       text.className = "v-text";
       const name = document.createElement("span");
       name.className = "v-name";
-      name.textContent = v.name;
+      name.textContent = v.protected ? `🔒 ${v.name}` : v.name;
       name.title = v.name;
       const meta = document.createElement("span");
       meta.className = "v-label";
       meta.textContent = v.label;
       text.append(name, meta);
       label.append(box, text);
+      if (v.protected) {
+        li.className = "v-locked";
+        label.title = silerT("popupDRMProtected");
+      }
+      li.hidden = !!v.ad && !showAds;
+      if (v.poster) {
+        const img = document.createElement("img");
+        img.className = "v-thumb";
+        img.alt = "";
+        img.referrerPolicy = "no-referrer";
+        img.loading = "lazy";
+        img.src = v.poster;
+        label.insertBefore(img, text);
+      }
       li.append(label);
+      if (v.link) {
+        const copy = document.createElement("button");
+        copy.type = "button";
+        copy.className = "v-copy";
+        copy.textContent = "⧉";
+        copy.title = silerT("popupCopyLink");
+        copy.setAttribute("aria-label", silerT("popupCopyLink"));
+        copy.addEventListener("click", async () => {
+          try {
+            await navigator.clipboard.writeText(v.link);
+            copy.title = silerT("popupCopied");
+            copy.textContent = "✓";
+          } catch {
+            /* the clipboard said no */
+          }
+        });
+        li.append(copy);
+      }
       return li;
     }),
   );

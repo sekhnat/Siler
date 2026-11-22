@@ -75,11 +75,27 @@ const Links = (() => {
   }
 
   const clicks = new Map();
+  // Kept in storage.session too: Firefox may unload the background page between a click and
+  // the download it starts (a slow server, a save dialog).
+  let clicksSaving = 0;
+  browser.storage.session
+    .get("clicks")
+    .then(({ clicks: saved }) => {
+      for (const [url, c] of saved || []) {
+        if (Date.now() - c.at < CLICK_KEPT && !clicks.has(url)) clicks.set(url, c);
+      }
+    })
+    .catch(() => {});
 
   /** A link the user clicked (content.js). */
   function clicked(msg, sender) {
     if (!sender.tab || sender.tab.incognito || !isWeb(msg.url)) return;
     remember(clicks, msg.url, { text: tidy(msg.text), page: sender.tab.url || msg.page || null, at: Date.now() });
+    clearTimeout(clicksSaving);
+    clicksSaving = setTimeout(() => {
+      const recent = [...clicks].filter(([, c]) => Date.now() - c.at < CLICK_KEPT);
+      browser.storage.session.set({ clicks: recent }).catch(() => {});
+    }, 300);
   }
 
   /** The click that led to one of these addresses. */

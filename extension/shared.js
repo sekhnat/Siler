@@ -26,6 +26,8 @@ const SILER_DEFAULTS = {
   refreshLinks: true,
   // Show a Download button over videos on pages.
   videoButton: true,
+  // Read the start of responses whose type says nothing, to find disguised streams.
+  sniffUnlabelled: true,
   // Site recognisers, each on or off.
   site_youtube: true,
   site_vimeo: true,

@@ -32,6 +32,10 @@ function element() {
     append(...c) {
       el.children.push(...c);
     },
+    insertBefore(c, ref) {
+      const i = el.children.indexOf(ref);
+      el.children.splice(i < 0 ? el.children.length : i, 0, c);
+    },
     replaceChildren(...c) {
       el.children = c;
     },
@@ -93,4 +97,38 @@ test("the popup lists the tab's videos as soon as it opens", async () => {
 test("the popup keeps the videos section hidden when the tab has none", async () => {
   const { els } = await openPopup([]);
   assert.equal(els.get("videos").hidden, true);
+});
+
+test("a DRM-protected video is listed locked, and never ticked", async () => {
+  const videos = [
+    { key: "mse:0:x", name: "A film", label: "DRM-protected · can't be downloaded", protected: true },
+    { key: "hls:a", name: "master.m3u8", label: "HLS stream · up to 1080p" },
+  ];
+  const { els } = await openPopup(videos);
+  const [locked, free] = els.get("video-list").children;
+  const box = (li) => li.children[0].children[0];
+  assert.equal(locked.className, "v-locked");
+  assert.equal(box(locked).disabled, true);
+  assert.equal(box(locked).checked, false);
+  assert.match(locked.children[0].title, /DRM-protected/);
+  // The first video that can be had is the one ticked.
+  assert.equal(box(free).disabled, false);
+  assert.equal(box(free).checked, true);
+});
+
+test("ads are listed last and hidden until asked for; a row can copy its address", async () => {
+  const videos = [
+    { key: "a", name: "The story", label: "HLS stream", link: "https://cdn.example/a.m3u8", poster: "https://cdn.example/a.jpg" },
+    { key: "b", name: "Preroll", label: "HLS stream · ad", link: "https://s0.2mdn.net/b.m3u8", ad: true },
+  ];
+  const { els } = await openPopup(videos);
+  const [story, ad] = els.get("video-list").children;
+  assert.equal(story.hidden, false);
+  assert.equal(ad.hidden, true);
+  assert.equal(els.get("video-ads").hidden, false);
+  assert.equal(els.get("video-ads").textContent, "Show ads (1)");
+  assert.equal(els.get("videos-count").textContent, "");
+  // The thumbnail sits before the words; the copy button after the label.
+  assert.equal(story.children[0].children[1].className, "v-thumb");
+  assert.equal(story.children[1].className, "v-copy");
 });

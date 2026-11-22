@@ -86,6 +86,60 @@
   "feedYouTubeSays": {
     "message": "YouTube says: $1"
   },
+  "commandSendVideo": {
+    "message": "Send this tab's video to Siler"
+  },
+  "popupCopyLink": {
+    "message": "Copy the video's address"
+  },
+  "popupCopied": {
+    "message": "Copied"
+  },
+  "popupShowAds": {
+    "message": "Show ads ($1)"
+  },
+  "popupHideAds": {
+    "message": "Hide ads"
+  },
+  "optionsSniff": {
+    "message": "Look inside unlabelled responses"
+  },
+  "optionsSniffHint": {
+    "message": "When a page loads something whose type says nothing (plain text, raw bytes), read its first kilobyte again to see whether it is a video or a stream's playlist."
+  },
+  "buttonDRMLocked": {
+    "message": "DRM-protected"
+  },
+  "feedDRMRefused": {
+    "message": "This video is DRM-protected, and Siler doesn't download DRM-protected videos"
+  },
+  "feedMseNeedsApp": {
+    "message": "This page builds its video from pieces and never shows a stream address. Siler can't record such videos yet; this needs a newer Siler"
+  },
+  "popupDRMProtected": {
+    "message": "DRM-protected: Siler doesn't download DRM-protected videos"
+  },
+  "popupPageVideo": {
+    "message": "A video on this page"
+  },
+  "feedYouTubeUpcoming": {
+    "message": "This hasn't started yet: it's a premiere or an upcoming live stream"
+  },
+  "feedYouTubeMembers": {
+    "message": "Only this channel's members can watch this video"
+  },
+  "feedYouTubeAge": {
+    "message": "This video is age-restricted: sign in to YouTube in this browser with an account allowed to watch it, then try again"
+  },
+  "feedYouTubeDRM": {
+    "message": "YouTube serves this video with DRM, and Siler refuses DRM-protected videos"
+  },
+  "feedYouTubeLiveNoUrl": {
+    "message": "This is a live stream, and YouTube offered no playable stream of it"
+  },
+  "feedYouTubeBot": {
+    "message": "YouTube asks to confirm you're not a bot: sign in to YouTube in this browser, then try again"
+  },
   "menuDownload": {
     "message": "Download with Siler"
   },

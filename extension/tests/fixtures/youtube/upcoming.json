@@ -1,0 +1,18 @@
+{
+ "playabilityStatus": {
+  "status": "LIVE_STREAM_OFFLINE",
+  "reason": "Premieres in 2 hours",
+  "subreason": null
+ },
+ "videoDetails": {
+  "videoId": "AAAAAAAAAAA",
+  "title": "A premiere",
+  "isUpcoming": true,
+  "isLiveContent": true
+ },
+ "streamingData": {
+  "adaptiveFormats": [],
+  "hlsManifestUrl": null,
+  "expiresInSeconds": null
+ }
+}

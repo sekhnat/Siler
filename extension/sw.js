@@ -7,6 +7,7 @@ importScripts(
   "media/sites.js",
   "media/youtube/build.js",
   "media/youtube/page.js",
+  "media/players.js",
   "media/feed.js",
   "links.js",
   "background.js",

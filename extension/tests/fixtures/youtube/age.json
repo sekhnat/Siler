@@ -1,0 +1,13 @@
+{
+ "playabilityStatus": {
+  "status": "LOGIN_REQUIRED",
+  "reason": "Sign in to confirm your age",
+  "subreason": "This video may be inappropriate for some users."
+ },
+ "videoDetails": null,
+ "streamingData": {
+  "adaptiveFormats": [],
+  "hlsManifestUrl": null,
+  "expiresInSeconds": null
+ }
+}

@@ -5,7 +5,29 @@ const HEALTH_TTL = 30_000;
 let health = { installed: false, running: false, outdated: null, checkedAt: 0 };
 let bypassUntil = 0;
 // URLs we re-issued to Firefox ourselves after a failed hand-over; don't capture them again.
-const passThrough = new Set();
+// An entry is used up by the download it was made for, or forgotten after a minute (a
+// download that never started would otherwise keep its address out of Siler for good).
+const passThrough = (() => {
+  const TTL = 60_000;
+  const at = new Map();
+  const fresh = (url) => {
+    const t = at.get(url);
+    if (t == null) return false;
+    if (Date.now() - t <= TTL) return true;
+    at.delete(url);
+    return false;
+  };
+  return {
+    add: (url) => void at.set(url, Date.now()),
+    has: fresh,
+    /** Whether it was there (and fresh); it isn't any more. */
+    delete: (url) => {
+      const was = fresh(url);
+      at.delete(url);
+      return was;
+    },
+  };
+})();
 
 async function refreshHealth(force = false) {
   if (!force && Date.now() - health.checkedAt < HEALTH_TTL) return health;
@@ -94,18 +116,38 @@ async function cookieHeader(url, storeId) {
   return cookies.map((c) => `${c.name}=${c.value}`).join("; ");
 }
 
+/**
+ * cookieHeader for many links at once: one cookie lookup per folder of a site, not per link
+ * (a page of 2,000 links would otherwise ask 2,000 times). The one case it can't tell apart:
+ * a cookie whose path is a single file of that folder goes along with its sibling links too.
+ */
+function sharedCookies() {
+  const asked = new Map();
+  return (url, storeId) => {
+    let key;
+    try {
+      const u = new URL(url);
+      key = `${storeId}|${u.origin}${u.pathname.slice(0, u.pathname.lastIndexOf("/") + 1)}`;
+    } catch {
+      return cookieHeader(url, storeId);
+    }
+    if (!asked.has(key)) asked.set(key, cookieHeader(url, storeId));
+    return asked.get(key);
+  };
+}
+
 function basename(path) {
   const b = (path || "").split(/[\\/]/).pop();
   return b || null;
 }
 
-async function describe(url, { referrer = null, pageUrl = null, filename = null, size = null, mime = null, storeId = null, from = null } = {}) {
+async function describe(url, { referrer = null, pageUrl = null, filename = null, size = null, mime = null, storeId = null, from = null, cookiesOf = cookieHeader } = {}) {
   const item = {
     url,
     filename,
     referrer,
     page_url: pageUrl,
-    cookies: await cookieHeader(url, storeId),
+    cookies: await cookiesOf(url, storeId),
     user_agent: navigator.userAgent,
     headers: [],
     size,
@@ -479,13 +521,14 @@ browser.contextMenus.onClicked.addListener(async (info, tab) => {
       }
       const cfg = await silerConfig();
       const exts = new Set(cfg.extensions.toLowerCase().split(/[\s,]+/).filter(Boolean));
+      const cookiesOf = sharedCookies();
       // Everything goes to Siler for review; links that look like files (or were selected)
       // start out ticked.
       const items = await Promise.all(
         links.slice(0, 2000).map(async ({ url, text }) => {
           const hint = nameFromText(text);
           const from = { incognito: tab.incognito, text };
-          const item = await describe(url, { referrer: info.pageUrl, pageUrl: info.pageUrl, storeId, filename: hint, from });
+          const item = await describe(url, { referrer: info.pageUrl, pageUrl: info.pageUrl, storeId, filename: hint, from, cookiesOf });
           item.selected = selection || exts.has(extensionOf(hint || url));
           return item;
         }),
@@ -515,7 +558,14 @@ silerOnMessage((msg, sender) => {
       if (!tab) return;
       // The frame's address as it is now: sender.url stays the one the frame opened with,
       // so after YouTube moves to another video in place it still names the first.
-      return Feed.forVideo(tab, sender.frameId ?? 0, msg.src, msg.pageUrl || sender.url, { links: msg.links, width: msg.width, height: msg.height, duration: msg.duration })
+      return Feed.forVideo(tab, sender.frameId ?? 0, msg.src, msg.pageUrl || sender.url, {
+        links: msg.links,
+        width: msg.width,
+        height: msg.height,
+        duration: msg.duration,
+        mse: !!msg.mse,
+        protected: !!msg.protected,
+      })
         .then((item) => handOver([item]))
         .then(
           () => ({ ok: true }),
@@ -526,6 +576,12 @@ silerOnMessage((msg, sender) => {
           },
         );
     }
+    case "mse-video":
+      if (sender.tab) Feed.addMse(sender.tab.id, sender.frameId ?? 0, msg, msg.pageUrl || sender.url);
+      return;
+    case "video-hover":
+      if (sender.tab) Feed.prepare(sender.tab, sender.frameId ?? 0, msg.pageUrl || sender.url);
+      return;
     case "link-click":
       Links.clicked(msg, sender);
       return;
@@ -548,6 +604,17 @@ silerOnMessage((msg, sender) => {
     case "clear-error":
       return browser.storage.session.remove("lastError");
   }
+});
+
+// The keyboard command (Alt+Shift+V unless changed): the tab's best video to Siler.
+browser.commands?.onCommand.addListener(async (name, tab) => {
+  if (name !== "send-video") return;
+  tab ??= (await browser.tabs.query({ active: true, currentWindow: true }))[0];
+  if (!tab?.id) return;
+  Feed.sendBest(tab).catch((e) => {
+    health.checkedAt = 0;
+    notify(silerT("bgCouldntTakeVideo"), reasonOf(e));
+  });
 });
 
 browser.runtime.onInstalled.addListener(({ reason }) => {

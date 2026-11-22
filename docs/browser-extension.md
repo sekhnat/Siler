@@ -58,12 +58,22 @@ For a quick test instead, open `about:debugging#/runtime/this-firefox`, choose *
 
 ## Videos on web pages
 
-- **Finding them:** the extension watches what a page's player loads. HLS and DASH manifests (by address or content type) and whole video or audio files (512 KB and up; pieces of streams are skipped) are listed per tab, with their number on the toolbar button. An HLS master playlist is listed once, without the playlists it names.
-- **Download button:** pointing at a video (240×135 or larger) shows a **Download** button at its top right. It runs in the extension's own world, in a closed shadow root, so pages can't style or script it. The popup's "Videos on this page" list and the right-click menu's **Download this video with Siler** do the same.
+- **Finding them:** the extension watches what a page's player loads. HLS and DASH manifests (by address or content type) and whole video or audio files (512 KB and up; pieces of streams are skipped) are listed per tab, with their number on the toolbar button. An HLS master playlist is listed once, without the playlists it names; those lend it their length.
+- **Disguised streams:** a response whose type says nothing (`text/plain`, raw bytes) at an address without a telling ending has its first kilobyte read again, with the page's cookies, to see whether it is a playlist or a video (the same rules as the app's own classifier). At most 30 such reads per tab a minute, each address once; scripts, styles, pages and images are never read. **Look inside unlabelled responses** in the options turns this off.
+- **Service workers:** a page's service worker fetches outside any tab. Its playlists are listed in the tab showing that origin (the only one, or else the active one).
+- **What the player sent:** some CDNs answer a playlist only with the player's token or Origin header. Those headers (`Authorization`, `Origin`, custom `X-` headers, and the player's `Referer`) go along with the hand-over; the app sends them only to the stream's own and related hosts. Cookies and the browser's own headers aren't copied this way.
+- **Before a video plays:** when the popup opens (or the button finds nothing yet), the extension reads the page's JW Player, Video.js (Brightcove) and Flowplayer registries in the page itself, read only, and its OpenGraph, Twitter card and JSON-LD `VideoObject` data, `<video>` sources and `<track>` subtitles. Videos found there are listed with the page's title for them.
+- **Details:** each stream shows its best quality, length and an estimated size; audio-only streams say so.
+- **Subtitles:** WebVTT files the page loads, or names in `<track>` elements and players, go along with a stream that has no subtitles of its own.
+- **Which stream:** the button sends the stream that is playing in the clicked video's frame (its pieces are the ones being fetched), with the video's length when both are known. Streams from ad servers, and short clips beside a longer video, are listed last; the popup keeps ads out of sight until **Show ads** is clicked.
+- **Download button:** pointing at a video (240×135 or larger) shows a **Download** button at its top right, also for players that keep their video in a shadow root. It runs in the extension's own world, in a closed shadow root, so pages can't style or script it. The popup's "Videos on this page" list (with a thumbnail and a button to copy each video's address), the right-click menu's **Download this video with Siler**, and **Alt+Shift+V** (the tab's best video; change it in Firefox's add-on shortcuts) do the same.
+- **Videos a page assembles itself:** a video playing from a `blob:` address is fed by the page through Media Source Extensions. When its frame shows no playlist or file, the popup lists it as "Assembled by the page in pieces" and says that recording such videos needs a newer Siler; the button never sends another frame's video for it.
+- **DRM:** a video that raised `encrypted` or has MediaKeys, and a stream whose manifest names a DRM system (SAMPLE-AES with a key format, DASH `ContentProtection`), are listed locked as **DRM-protected**: the button shows that and does nothing, and the popup can't tick it. AES-128 streams are fine.
 - **Feeds:** on pages with many videos, such as Instagram's home feed, the button and the right-click menu find the clicked video by the post it sits in: the post's permalink, its poster, and the video's shape (and its length, when the site's data gives one). If Siler can't tell which video was clicked, it says so instead of sending another one.
 - **Scrolling viewers:** Instagram's Reels, Facebook and TikTok change the page's address in place as you scroll from video to video. The videos the page fetched ahead stay listed until a real page load, so the button sends the video the address names. YouTube's Shorts feed also switches videos in place; the extension reads the title from the Shorts player, so files are named after the Short.
 - **Hand-over:** the video goes to Siler's Add window with the page's cookies, referrer and user agent. A stream opens the quality, audio and subtitle picker; a file opens the usual form. The window says which site it came from.
 - **Names:** videos are named by their title (slashes become "⧸", as yt-dlp writes them).
+- **Speed:** Firefox holds back only responses whose address looks like a manifest (`.m3u8`, `.mpd`) or a recognised site's API, to read them as they pass; everything else is looked at without holding it, so a page's requests never wait for the extension. Lists are saved for the background page at most four times a second per tab.
 
 ### Site recognisers
 
@@ -71,7 +81,7 @@ Each can be switched off in the options. They are ported from yt-dlp's extractor
 
 | Site | What Siler gets |
 | --- | --- |
-| **YouTube** | The extension asks YouTube's player API from the page, as the clients yt-dlp uses by default without a PO token (`tv_samsung`, then `visionos`). It finishes the signed links with YouTube's own player code, run by yt-dlp's [ejs](https://github.com/yt-dlp/ejs) solver inside a blank frame of the page. Before handing over, it checks that one link answers and falls back to the next client. Siler receives a DASH manifest of every format (up to 4K, H.264/VP9/AV1, AAC/Opus) with captions as WebVTT. It fetches the files in 10 MiB ranges, as yt-dlp does, and waits out a pre-roll ad when YouTube asks for that. |
+| **YouTube** | The extension asks YouTube's player API from the page, as the clients yt-dlp uses by default without a PO token (`tv_samsung`, then `visionos`), and then as `ios_producer`, whose links need neither a token nor the player's code (H.264 up to 1080p). It finishes the signed links with YouTube's own player code, run by yt-dlp's [ejs](https://github.com/yt-dlp/ejs) solver inside a blank frame of the page. Before handing over, it checks that one link answers and falls back to the next client. Siler receives a DASH manifest of every format (up to 4K, H.264/VP9/AV1, AAC/Opus) with captions as WebVTT. It fetches the files in 10 MiB ranges, as yt-dlp does, and waits out a pre-roll ad when YouTube asks for that. A **live stream** goes over as its HLS playlist and is recorded until you press **Finish**. When no client gives the video, the message says why: a premiere that hasn't started, members only, age-restricted, DRM, or YouTube asking to confirm you're not a bot. |
 | **Vimeo** | The player config's HLS stream, with its subtitle files. Videos whose owners turned on DRM are refused, like any DRM stream. |
 | **Facebook**, **Instagram** | The DASH manifest the page's data carries (read from its embedded JSON and its GraphQL answers), or the plain video file when there is none. |
 | **TikTok** | The best H.264 file of the video, with the page's cookies and referrer, which TikTok's servers require. |
@@ -80,11 +90,13 @@ The YouTube solver and its parser libraries are vendored unmodified in `extensio
 
 ### Limits
 
-- DRM-protected videos are refused. Live streams aren't recorded.
+- DRM-protected videos are refused (and listed as such).
+- Videos a page assembles from pieces without ever showing a playlist address (Media Source Extensions with hidden or one-time addresses) can't be downloaded yet; recording them from the player is planned with a newer Siler.
 - Links from a page expire (YouTube's after a few hours). Siler asks the browser for fresh ones by itself (see [Fresh links](#fresh-links)); when that isn't possible, the download says so and the video has to be sent from the page again.
 - In an Instagram carousel with several videos of the same shape, the button takes the first of them; the popup's "Videos on this page" list has all of them, under the post's title.
 - Content that needs a login works only when you are logged in in Firefox.
 - Sites change their players; recogniser fixes come with extension updates.
+- In Chromium, unlabelled responses are read again as in Firefox, but manifests are always fetched once more (Chromium can't read responses as they pass).
 
 ## Fresh links
 
@@ -99,5 +111,6 @@ When a download's link expires, Siler first asks the original address again by i
 ## Notes for reviewers and developers
 
 - **Mozilla review:** the YouTube solver compiles YouTube's player script with `Function`. `web-ext lint` reports this as `DANGEROUS_EVAL`, a warning that doesn't stop unlisted signing.
-- **Tests:** `node --test extension/tests/*.test.mjs` checks the request rules and each recogniser against recorded, scrubbed answers in `extension/tests/fixtures/`. The app's DASH parser reads the same YouTube manifest snapshot in its own tests.
+- **Tests:** `node --test extension/tests/*.test.mjs` checks the request rules, the feed at work against a stand-in browser (`feed.test.mjs`), the player probes and page metadata (`players.test.mjs`), content sniffing against the app's classifier cases, and each recogniser against recorded, scrubbed answers in `extension/tests/fixtures/` (the YouTube refusal answers other than the bot check are hand-made in YouTube's shape). The app's DASH parser reads the same YouTube manifest snapshot in its own tests.
+- **Player probes:** `media/players.js`'s `silerPlayerProbe` is injected into the page's own world only while scanning, on demand (`scripting.executeScript`); it reads the players' registries and changes nothing. No content script runs in the page's world on every site.
 - **Protocol 2:** the extension 0.3.0 and the app 0.6.0 (and later) speak protocol 2, which adds video details to a hand-over. An older app still takes plain downloads. The extension 0.5.0 and the app 0.9.0 add the messages for fresh links to it; they are additive, so either side still works with an older other side, without fresh links.

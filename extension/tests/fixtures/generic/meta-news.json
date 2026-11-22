@@ -1,0 +1,36 @@
+{
+  "url": "https://news.example/story/storm",
+  "title": "Storm hits the coast | News Example",
+  "og": {
+    "video": "https://cdn.news.example/videos/storm.mp4",
+    "videoSecure": null,
+    "videoType": "video/mp4",
+    "title": "Storm hits the coast",
+    "image": "https://cdn.news.example/thumbs/storm.jpg",
+    "twitterStream": null
+  },
+  "jsonld": [
+    {
+      "@context": "https://schema.org",
+      "@graph": [
+        { "@type": "NewsArticle", "headline": "Storm hits the coast" },
+        {
+          "@type": "VideoObject",
+          "name": "Storm hits the coast — full report",
+          "contentUrl": "https://cdn.news.example/videos/storm/master.m3u8",
+          "thumbnailUrl": ["https://cdn.news.example/thumbs/storm-hd.jpg"],
+          "duration": "PT12M34S"
+        },
+        {
+          "@type": "VideoObject",
+          "name": "The embedded clip",
+          "embedUrl": "https://player.example/embed/9"
+        }
+      ]
+    }
+  ],
+  "videos": [
+    { "poster": null, "height": null, "sources": [{ "url": "/media/teaser.webm", "type": "video/webm" }] }
+  ],
+  "tracks": [{ "url": "/subs/storm.en.vtt", "lang": "en", "label": "English" }]
+}

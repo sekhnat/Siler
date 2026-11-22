@@ -10,6 +10,7 @@ const SWITCHES = [
   "refreshLinks",
   "findVideos",
   "videoButton",
+  "sniffUnlabelled",
   "site_youtube",
   "site_vimeo",
   "site_facebook",

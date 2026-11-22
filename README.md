@@ -38,11 +38,11 @@
 - HLS, DASH and Adobe HDS streams with a picker for quality, audio languages and subtitles, muxed into MP4 or MKV by a bundled FFmpeg, with no re-encoding.
 - **Live streams are recorded** (HLS, DASH, RTMP and MMS) until you press **Finish**; plain M3U, PLS and ASX playlists open as lists of links.
 - AES-128 streams and WebVTT/TTML subtitles, timed to the video. DRM-protected streams are refused.
-- From the browser: YouTube, Vimeo, Facebook, Instagram, TikTok and any page that plays HLS, DASH or a video file.
+- From the browser: YouTube (live streams too), Vimeo, Facebook, Instagram, TikTok and any page that plays HLS, DASH or a video file, including playlists disguised as plain text, ones a service worker fetches or that need the player's token, and videos a page's player or metadata names before they play. Subtitle files the page loads go along.
 
 **Browser integration**
 - Firefox, LibreWolf, Waterfox, Floorp and Zen, and Chrome, Chromium, Brave, Vivaldi, Edge and Opera. Downloads come with their cookies, referrer and form data; in Firefox they are taken before its own dialog appears.
-- A **Download** button over videos, **Download all links**, a per-site switch, and a clear message whenever a download stays in the browser.
+- A **Download** button over videos, **Download all links**, a keyboard shortcut (**Alt+Shift+V**) for the tab's video, a per-site switch, and a clear message whenever a download stays in the browser, or a video can't be had (DRM, members only, a premiere).
 
 **Organised and automated**
 - Named queues with schedules, and an action when they finish: quit, sleep, hibernate or shut down.

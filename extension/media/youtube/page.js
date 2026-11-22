@@ -30,7 +30,12 @@ async function silerYouTubeInPage(args) {
     drmFamilies: f.drmFamilies,
   });
   const trim = (pr) => ({
-    playabilityStatus: { status: pr?.playabilityStatus?.status, reason: pr?.playabilityStatus?.reason },
+    playabilityStatus: {
+      status: pr?.playabilityStatus?.status,
+      reason: pr?.playabilityStatus?.reason,
+      // The longer explanation some refusals carry (members-only, age checks).
+      subreason: (pr?.playabilityStatus?.errorScreen?.playerErrorMessageRenderer?.subreason?.runs || []).map((r) => r.text).join("") || null,
+    },
     videoDetails: pr?.videoDetails
       ? {
           videoId: pr.videoDetails.videoId,
@@ -38,9 +43,15 @@ async function silerYouTubeInPage(args) {
           lengthSeconds: pr.videoDetails.lengthSeconds,
           isLive: pr.videoDetails.isLive,
           isUpcoming: pr.videoDetails.isUpcoming,
+          isLiveContent: pr.videoDetails.isLiveContent,
         }
       : null,
-    streamingData: { adaptiveFormats: (pr?.streamingData?.adaptiveFormats || []).map(pick) },
+    streamingData: {
+      adaptiveFormats: (pr?.streamingData?.adaptiveFormats || []).map(pick),
+      // A live stream's own HLS playlist (Siler records it until Finish).
+      hlsManifestUrl: pr?.streamingData?.hlsManifestUrl || null,
+      expiresInSeconds: pr?.streamingData?.expiresInSeconds || null,
+    },
     captions: pr?.captions
       ? { playerCaptionsTracklistRenderer: { captionTracks: pr.captions.playerCaptionsTracklistRenderer?.captionTracks || [] } }
       : null,
