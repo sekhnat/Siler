@@ -19,6 +19,19 @@ document.addEventListener(
   { capture: true, passive: true },
 );
 
+// Which link was clicked, and its words: how Siler finds it again when it expires. Not in
+// private windows, and only real clicks.
+function silerLinkClick(e) {
+  if (!e.isTrusted || e.altKey || browser.extension?.inIncognitoContext) return;
+  if (e.type === "auxclick" && e.button !== 1) return;
+  const a = e.target instanceof Element ? e.target.closest("a[href]") : null;
+  if (!a || typeof a.href !== "string" || !/^https?:/i.test(a.href)) return;
+  const text = (a.textContent || "").replace(/\s+/g, " ").trim() || a.getAttribute("aria-label") || a.title || "";
+  browser.runtime.sendMessage({ type: "link-click", url: a.href, text: text.slice(0, 200), page: location.href }).catch(() => {});
+}
+document.addEventListener("click", silerLinkClick, { capture: true, passive: true });
+document.addEventListener("auxclick", silerLinkClick, { capture: true, passive: true });
+
 /**
  * What surrounds a video, so a feed's videos can be told apart: the links in its post (a
  * permalink, the poster's profile), the video's shape and its length.

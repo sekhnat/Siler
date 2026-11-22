@@ -61,9 +61,11 @@ pub(crate) struct Inner {
     /// Commands after downloads run one at a time.
     command_turn: tokio::sync::Mutex<()>,
     /// Cancelled when Siler quits (stops a running command).
-    quit: CancellationToken,
+    pub(crate) quit: CancellationToken,
     /// Site grabs in progress, with the project each belongs to.
     pub(crate) grabs: Mutex<HashMap<u64, (Option<i64>, CancellationToken)>>,
+    /// Who finds fresh links for expired ones (the app, through the browser).
+    pub(crate) finder: RwLock<Option<Arc<dyn crate::LinkFinder>>>,
 }
 
 #[derive(Default)]
@@ -83,8 +85,19 @@ pub(crate) struct State {
     pub(crate) hold: HashSet<i64>,
     /// Downloads being checked for a newer version.
     pub(crate) checking: HashSet<i64>,
+    /// Queued downloads waiting for a fresh link from the browser; they don't start until then.
+    pub(crate) refreshing: HashMap<i64, CancellationToken>,
     pub(crate) shutting_down: bool,
     pub(crate) idle_reported: bool,
+}
+
+impl State {
+    /// Stops waiting for a fresh link from the browser.
+    pub(crate) fn call_off_refresh(&mut self, id: i64) {
+        if let Some(token) = self.refreshing.remove(&id) {
+            token.cancel();
+        }
+    }
 }
 
 pub(crate) fn now_ms() -> i64 {
@@ -107,7 +120,7 @@ fn preallocate(file: &File, len: u64) -> Result<()> {
     }
 }
 
-fn human_size(bytes: u64) -> String {
+pub(crate) fn human_size(bytes: u64) -> String {
     let units = ["B", "KB", "MB", "GB", "TB"];
     let mut v = bytes as f64;
     let mut u = 0;
@@ -124,6 +137,7 @@ fn human_size(bytes: u64) -> String {
 
 /// Forget everything learned about the file so the download starts from zero.
 fn reset_progress(r: &mut Record) {
+    r.extras.refresh = Default::default();
     r.extras.verify = None;
     r.extras.accept_unverified = false;
     r.extras.command = None;
@@ -182,6 +196,16 @@ fn visible_segments(segs: &[Segment]) -> Vec<Segment> {
         Vec::new()
     } else {
         segs.to_vec()
+    }
+}
+
+/// An address typed for "Test with an address": http when it names no scheme.
+fn checkable(url: &str) -> Result<url::Url> {
+    let url = url.trim();
+    if url.contains("://") {
+        probe::parse_url(url)
+    } else {
+        probe::parse_url(&format!("http://{url}"))
     }
 }
 
@@ -274,6 +298,7 @@ impl Engine {
             command_turn: tokio::sync::Mutex::new(()),
             quit: CancellationToken::new(),
             grabs: Mutex::new(HashMap::new()),
+            finder: RwLock::new(None),
         });
 
         let weak = Arc::downgrade(&inner);
@@ -438,6 +463,7 @@ impl Engine {
             },
             pieces: nd.pieces.clone().filter(|_| nd.zip_entry.is_none()),
             zip_entry: nd.zip_entry.clone(),
+            link: nd.link.clone(),
             ..Default::default()
         };
         let category = nd
@@ -473,7 +499,7 @@ impl Engine {
             notice: None,
             etag: None,
             last_modified: None,
-            meta: nd.meta,
+            meta: nd.meta.bound_to(url.as_str()),
             connections: nd.connections.unwrap_or(s.connections).clamp(1, 32),
             speed_limit: 0,
             created_at: now_ms(),
@@ -508,6 +534,7 @@ impl Engine {
             run.stop(STOP_PAUSE);
             return Ok(());
         }
+        st.call_off_refresh(id);
         st.forced.remove(&id);
         let rec = st.records.get_mut(&id).ok_or(Error::NotFound)?;
         if matches!(rec.status, Status::Queued | Status::Waiting) {
@@ -806,6 +833,7 @@ impl Engine {
         self.stop_and_wait(id).await;
         {
             let mut st = self.inner.state();
+            st.call_off_refresh(id);
             let rec = st.records.get_mut(&id).ok_or(Error::NotFound)?;
             if let (Some(dir), Some(name)) = (&rec.dir, &rec.filename) {
                 let _ = partial_remove(rec, dir, name);
@@ -846,79 +874,35 @@ impl Engine {
     /// Points an unfinished download at a new link (e.g. after the old one expired),
     /// keeping the progress. Refused if the new link is evidently a different file.
     pub async fn refresh_url(&self, id: i64, url: &str, meta: Option<RequestMeta>) -> Result<()> {
-        let url = probe::parse_url(&self.inner.strip_login(url)?)?;
-        let (old_size, old_meta, is_media) = {
-            let st = self.inner.state();
-            let rec = st.records.get(&id).ok_or(Error::NotFound)?;
-            if rec.status == Status::Completed {
-                return Err(Error::Protocol("This download has already finished".into()));
-            }
-            (rec.total_size, rec.meta.clone(), rec.kind.is_media())
+        let found = crate::FoundLink {
+            url: url.to_string(),
+            meta,
+            ..Default::default()
         };
-        let meta = meta.unwrap_or(old_meta);
-        let s = self.settings();
-        if is_media {
-            // A stream is checked when it runs: the same tracks must be offered, and the
-            // fingerprint tells whether the finished pieces still belong to it.
-            let probe = self.probe_media(url.as_str(), &meta, None).await?;
-            if !matches!(probe.kind, media::MediaKind::Hls | media::MediaKind::Dash) {
-                return Err(Error::LinkMismatch(
-                    probe
-                        .message
-                        .unwrap_or_else(|| "The new link isn't a stream.".into()),
-                ));
-            }
-            self.stop_and_wait(id).await;
-            let mut st = self.inner.state();
-            let rec = st.records.get_mut(&id).ok_or(Error::NotFound)?;
-            rec.url = url.to_string();
-            rec.meta = meta;
-            // The new link is read from now on, not a manifest the page gave as text.
-            if let Some(h) = rec.media.as_mut().and_then(|m| m.hint.as_mut()) {
-                h.manifest = None;
-            }
-            rec.error = None;
-            rec.notice = Some("The download link was updated.".into());
-            rec.status = Status::Queued;
-            self.inner.persist_and_emit(rec, None)?;
-            drop(st);
-            self.inner.schedule();
-            return Ok(());
-        }
-        // Probe first, so a bad link doesn't interrupt a running download.
-        let p = probe::probe(&self.inner.net, url.as_str(), &meta, &s.user_agent).await?;
-        match (old_size, p.total_size) {
-            (Some(a), Some(b)) if a != b => {
-                return Err(Error::LinkMismatch(format!(
-                    "The new link points to a different file ({} instead of {}).",
-                    human_size(b),
-                    human_size(a)
-                )));
-            }
-            (Some(_), None) => {
-                return Err(Error::LinkMismatch(
-                    "The new link doesn't report the file size, so Siler can't tell whether it is the same file."
-                        .into(),
-                ));
-            }
-            _ => {}
-        }
+        self.refresh_link(id, found).await
+    }
+
+    /// The same with all the browser knows about the new link.
+    pub async fn refresh_link(&self, id: i64, found: crate::FoundLink) -> Result<()> {
+        use crate::refresh::By;
+        // Checked first, so a bad link doesn't interrupt a running download.
+        let fresh = self.inner.check_link(id, found, By::User).await?;
         self.stop_and_wait(id).await;
         {
             let mut st = self.inner.state();
+            st.call_off_refresh(id);
             let rec = st.records.get_mut(&id).ok_or(Error::NotFound)?;
-            rec.url = url.to_string();
-            rec.final_url = Some(p.final_url);
-            rec.meta = meta;
-            rec.etag = p.etag;
-            rec.last_modified = p.last_modified;
-            rec.error = None;
-            rec.notice = Some("The download link was updated.".into());
+            Inner::put_link(rec, fresh, By::User);
             rec.status = Status::Queued;
             self.inner.persist_and_emit(rec, None)?;
         }
         self.inner.schedule();
         Ok(())
+    }
+
+    /// Who is asked for a fresh link when one expires; none means the user is asked at once.
+    pub fn set_link_finder(&self, finder: Option<Arc<dyn crate::LinkFinder>>) {
+        *self.inner.finder.write().unwrap() = finder;
     }
 
     /// An unfinished download with progress that looks like the same file, so a fresh
@@ -994,21 +978,11 @@ impl Engine {
         headers: &[(&str, &str)],
     ) -> Result<Vec<u8>> {
         use futures_util::StreamExt;
-        let mut rb = self.inner.net.client().get(url);
-        for (k, v) in headers {
-            rb = rb.header(*k, *v);
-        }
-        let resp = rb
-            .send()
-            .await
-            .map_err(|e| Error::Network(crate::error::describe(&e)))?;
-        if !resp.status().is_success() {
-            return Err(Error::Http(resp.status().as_u16()));
-        }
+        let resp = self.send_own(url, headers).await?;
         let mut body = Vec::new();
-        let mut stream = resp.bytes_stream();
+        let mut stream = resp.into_stream();
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|e| Error::Network(crate::error::describe(&e)))?;
+            let chunk = chunk.map_err(Error::Network)?;
             if body.len() as u64 + chunk.len() as u64 > max {
                 return Err(Error::Protocol("The answer is larger than expected".into()));
             }
@@ -1029,23 +1003,13 @@ impl Engine {
     ) -> Result<()> {
         use futures_util::StreamExt;
         use tokio::io::AsyncWriteExt;
-        let mut rb = self.inner.net.client().get(url);
-        for (k, v) in headers {
-            rb = rb.header(*k, *v);
-        }
-        let resp = rb
-            .send()
-            .await
-            .map_err(|e| Error::Network(crate::error::describe(&e)))?;
-        if !resp.status().is_success() {
-            return Err(Error::Http(resp.status().as_u16()));
-        }
+        let resp = self.send_own(url, headers).await?;
         let total = resp.content_length();
         let mut file = tokio::fs::File::create(path).await?;
         let mut done = 0u64;
-        let mut stream = resp.bytes_stream();
+        let mut stream = resp.into_stream();
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|e| Error::Network(crate::error::describe(&e)))?;
+            let chunk = chunk.map_err(Error::Network)?;
             file.write_all(&chunk).await?;
             done += chunk.len() as u64;
             progress(done, total);
@@ -1056,6 +1020,27 @@ impl Engine {
             return Err(Error::Network("connection closed early".into()));
         }
         Ok(())
+    }
+
+    /// A request of the app's own: no context, no login, only these headers.
+    async fn send_own(&self, url: &str, headers: &[(&str, &str)]) -> Result<crate::session::Reply> {
+        let url = probe::parse_web_url(url)?;
+        let meta = RequestMeta::default();
+        let resp = self
+            .inner
+            .net
+            .send(crate::session::Request {
+                url: &url,
+                meta: &meta,
+                user_agent: &self.settings().user_agent,
+                range: None,
+                policy: crate::session::Policy::Own(headers),
+            })
+            .await?;
+        if !resp.status().is_success() {
+            return Err(Error::Http(resp.status().as_u16()));
+        }
+        Ok(resp)
     }
 
     /// Trusts an SFTP server's key (saved in Siler's own known_hosts next to the database),
@@ -1096,6 +1081,27 @@ impl Engine {
     /// Where connections go under the current proxy settings.
     pub fn proxy_route(&self) -> ProxyRoute {
         self.inner.net.route()
+    }
+
+    /// Where `siler-pac`, which runs proxy scripts, is when it isn't next to Siler.
+    pub fn set_pac_helper(&self, path: Option<PathBuf>) {
+        self.inner.net.router.set_helper(path);
+    }
+
+    /// Which way an address would go and why ("Test with an address"); nothing is sent to it.
+    pub async fn check_proxy(&self, url: &str) -> Result<crate::proxy::ProxyCheck> {
+        self.inner.net.router.check(&checkable(url)?).await
+    }
+
+    /// The same with settings that aren't saved yet.
+    pub async fn check_proxy_with(
+        &self,
+        settings: &crate::proxy::ProxySettings,
+        url: &str,
+    ) -> Result<crate::proxy::ProxyCheck> {
+        let url = checkable(url)?;
+        let trial = self.inner.net.router.trying(settings);
+        trial.check(&url).await
     }
 
     /// The password for the manual proxy (from the keyring); applies immediately.
@@ -1236,6 +1242,9 @@ impl Engine {
     pub fn remove_many(&self, ids: &[i64], delete_files: bool) -> Result<usize> {
         let removed: Vec<(Record, bool)> = {
             let mut st = self.inner.state();
+            for id in ids {
+                st.call_off_refresh(*id);
+            }
             ids.iter()
                 .filter_map(|id| {
                     let rec = st.records.remove(id)?;
@@ -1396,6 +1405,7 @@ impl Engine {
         };
         let mrec = MediaRecord {
             manifest: pres.kind,
+            picked: media::same::picked(&pres, &selection),
             selection,
             container: choice,
             output,
@@ -1414,6 +1424,7 @@ impl Engine {
             finish: false,
         };
         self.insert_media(MediaInsert {
+            link: nd.link.clone(),
             url,
             final_url,
             dir,
@@ -1475,10 +1486,12 @@ impl Engine {
             fingerprint: None,
             sidecars: Vec::new(),
             hint: None,
+            picked: Vec::new(),
             live: true,
             finish: false,
         };
         self.insert_media(MediaInsert {
+            link: nd.link.clone(),
             final_url: url.clone(),
             url,
             dir,
@@ -1504,6 +1517,7 @@ impl Engine {
             meta,
             kind,
             media: mrec,
+            link,
         } = m;
         let s = self.settings();
         let mut st = self.inner.state();
@@ -1533,7 +1547,7 @@ impl Engine {
             notice: None,
             etag: None,
             last_modified: None,
-            meta,
+            meta: meta.bound_to(url.as_str()),
             connections: s.connections.clamp(1, 32),
             speed_limit: 0,
             created_at: now_ms(),
@@ -1548,7 +1562,10 @@ impl Engine {
             needs_host_key: None,
             kind,
             media: Some(mrec),
-            extras: Extras::default(),
+            extras: Extras {
+                link,
+                ..Default::default()
+            },
         };
         rec.id = self.inner.store.lock().unwrap().insert(&rec)?;
         let id = rec.id;
@@ -1762,7 +1779,7 @@ impl Engine {
             probe::fetch_range(
                 &self.inner.net,
                 &p.final_url,
-                meta,
+                &p.final_meta,
                 &s.user_agent,
                 start,
                 len,
@@ -1858,7 +1875,10 @@ impl Engine {
                 checksum: r.extras.checksum.as_ref(),
                 mirrors: r.extras.mirrors.iter().map(|m| m.url.as_str()).collect(),
                 referrer: r.meta.referrer.as_deref(),
-                cookies: r.meta.cookies.as_deref().filter(|_| include_cookies),
+                // A list pairs cookies with the link, so only when they are that link's.
+                cookies: r.meta.cookies.as_deref().filter(|_| {
+                    include_cookies && reqwest::Url::parse(&r.url).is_ok_and(|u| r.meta.is_home(&u))
+                }),
                 user_agent: r.meta.user_agent.as_deref(),
             })
             .collect();
@@ -2025,6 +2045,7 @@ impl Inner {
             error_code: r.error.as_ref().and(r.extras.error_code.clone()),
             needs_login: r.needs_login.clone(),
             needs_host_key: r.needs_host_key.clone(),
+            needs_link: r.status == Status::Failed && r.extras.refresh.expired,
             speed,
             active_connections: active,
             segments: visible_segments(&segments),
@@ -2102,7 +2123,7 @@ impl Inner {
 
     /// Starts queued downloads while there are free slots.
     /// Moves `user:password@` from a URL into the login for its server.
-    fn strip_login(&self, url: &str) -> Result<String> {
+    pub(crate) fn strip_login(&self, url: &str) -> Result<String> {
         let mut u = probe::parse_url(url)?;
         self.net.take_userinfo(&mut u);
         Ok(u.to_string())
@@ -2150,7 +2171,7 @@ impl Inner {
         }
     }
 
-    fn schedule(self: &Arc<Self>) {
+    pub(crate) fn schedule(self: &Arc<Self>) {
         let max = self.settings.read().unwrap().max_concurrent;
         let mut st = self.state();
         if st.shutting_down || self.quota.reached() || self.global.over_budget() {
@@ -2161,6 +2182,7 @@ impl Inner {
             running,
             forced,
             moving,
+            refreshing,
             queues,
             queue_results,
             ..
@@ -2179,6 +2201,7 @@ impl Inner {
                 r.status == Status::Queued
                     && !running.contains_key(&r.id)
                     && !moving.contains(&r.id)
+                    && !refreshing.contains_key(&r.id)
             })
             .map(|r| (!forced.contains(&r.id), r.position, r.id))
             .collect();
@@ -2207,6 +2230,7 @@ impl Inner {
             rec.error = None;
             rec.needs_login = None;
             rec.needs_host_key = None;
+            rec.extras.refresh.expired = false;
             let run = Arc::new(Running::new(rec.speed_limit, rec.connections));
             running.insert(id, run.clone());
             if let Err(e) = self.persist_and_emit(rec, Some(&run)) {
@@ -2290,7 +2314,7 @@ impl Inner {
 
     /// Ends active queues with nothing left to run. With `announce`, a queue that ran
     /// something reports `QueueDone`; otherwise (the user stopped things) it ends quietly.
-    fn finish_queues(&self, st: &mut State, announce: bool) {
+    pub(crate) fn finish_queues(&self, st: &mut State, announce: bool) {
         let State {
             records,
             running,
@@ -2447,24 +2471,66 @@ impl Inner {
     }
 
     async fn run(self: Arc<Self>, id: i64, run: Arc<Running>) {
-        let kind = self.state().records.get(&id).map(|r| r.kind);
-        let result = match kind {
-            Some(JobKind::Media) => media::drive(&self, id, &run).await,
-            Some(JobKind::Stream) => media::stream::drive(&self, id, &run).await,
-            _ => self.drive(id, &run).await,
+        let (kind, waited) = match self.state().records.get(&id) {
+            Some(r) => (Some(r.kind), crate::refresh::waited(r, now_ms())),
+            None => (None, false),
+        };
+        let mut expired = false;
+        // An attempt at a fresh link that is left to the browser.
+        let mut attempt = None;
+        let mut result = loop {
+            let result = match kind {
+                Some(JobKind::Media) => media::drive(&self, id, &run).await,
+                Some(JobKind::Stream) => media::stream::drive(&self, id, &run).await,
+                _ => self.drive(id, &run).await,
+            };
+            let Err(e) = &result else { break result };
+            if run.stop_reason.load(Relaxed) != 0 {
+                break result;
+            }
+            expired = self.state().records.get(&id).is_some_and(|rec| {
+                let table = run.table.lock().unwrap().downloaded();
+                let downloaded = rec.downloaded.max(table).max(run.downloaded.load(Relaxed));
+                crate::refresh::expired(rec, downloaded, waited, e)
+            });
+            if !expired {
+                break result;
+            }
+            attempt = self.begin_refresh(id, &run);
+            // The second attempt goes straight to the browser.
+            if attempt != Some(1) || !self.renew_silently(id, &run).await {
+                break result;
+            }
+            expired = false;
+            attempt = None;
         };
         let reason = run.stop_reason.load(Relaxed);
+        if expired {
+            result = result.map_err(crate::refresh::failure);
+        }
         let mut failed = None;
+        let mut seek = None;
         let removed;
         {
             let mut st = self.state();
             st.running.remove(&id);
             let held = st.hold.remove(&id);
+            if reason == 0 && attempt.is_some() && !st.shutting_down {
+                seek = st
+                    .records
+                    .get(&id)
+                    .and_then(|rec| self.browser_to_ask(rec))
+                    .map(|ask| (ask, CancellationToken::new()));
+                if let Some((_, token)) = &seek {
+                    st.refreshing.insert(id, token.clone());
+                }
+            }
             let qid = st.records.get(&id).map(|r| r.queue_id);
             if let Some(counts) = qid.and_then(|q| st.queue_results.get_mut(&q)) {
                 match (&result, reason) {
                     (Ok(Outcome::Done), _) => counts.0 += 1,
-                    (Err(_), 0) => counts.1 += 1,
+                    // Not yet, while a fresh link is looked for.
+                    (Err(_), 0) if seek.is_none() => counts.1 += 1,
                     _ => {}
                 }
             }
@@ -2500,8 +2566,20 @@ impl Inner {
                                 &rec.segments,
                             );
                         }
+                        (Err(e), 0) if seek.is_some() => {
+                            tracing::info!(
+                                "download {id}: its link expired ({e}); asking the browser"
+                            );
+                            rec.status = Status::Queued;
+                            rec.error = None;
+                            rec.notice = Some(
+                                "The link expired. Getting a fresh one from the browser…".into(),
+                            );
+                            let _ = self.persist_and_emit(rec, None);
+                        }
                         (Err(e), 0) => {
                             tracing::info!("download {id} failed: {e}");
+                            rec.extras.refresh.expired = expired;
                             rec.status = Status::Failed;
                             rec.error = Some(e.to_string());
                             rec.extras.error_code = Some(e.into());
@@ -2526,6 +2604,7 @@ impl Inner {
                                     filename: rec.filename.clone(),
                                     error: e.to_string(),
                                     code: Some(e.into()),
+                                    needs_link: expired,
                                 },
                             });
                             let _ = self.persist_and_emit(rec, None);
@@ -2558,7 +2637,12 @@ impl Inner {
         if let Some(ev) = failed {
             self.emit(ev);
         }
-        if matches!(result, Ok(Outcome::Done)) && reason == 0 && !removed {
+        let done = matches!(result, Ok(Outcome::Done));
+        if let (Some(((finder, ask), token)), Err(failure)) = (seek, result) {
+            self.rt
+                .spawn(self.clone().refresh_in_browser(finder, ask, failure, token));
+        }
+        if done && reason == 0 && !removed {
             let me = self.clone();
             self.rt.spawn(async move { me.after_download(id).await });
         }
@@ -2673,7 +2757,7 @@ impl Inner {
                     Some(d) => d,
                     None => {
                         let head = tokio::select! {
-                            r = probe::fetch_range(&self.net, &probe.final_url, &rec.meta, &s.user_agent, z.header_offset, 30) => r?,
+                            r = probe::fetch_range(&self.net, &probe.final_url, &probe.final_meta, &s.user_agent, z.header_offset, 30) => r?,
                             _ = run.cancel.cancelled() => return Ok(Outcome::Stopped),
                         };
                         zip::data_offset(&head, z.header_offset).map_err(Error::Protocol)?
@@ -2835,7 +2919,7 @@ impl Inner {
             net: self.net.clone(),
             sources: sources.clone(),
             base,
-            meta: rec.meta.clone(),
+            meta: probe.final_meta.clone(),
             user_agent: s.user_agent.clone(),
             file,
             run: run.clone(),
@@ -3068,7 +3152,7 @@ impl Inner {
         let http = Http::new(
             self.net.clone(),
             &url,
-            rec.meta.clone(),
+            probe.final_meta.clone(),
             &s.user_agent,
             true,
         );
@@ -3423,6 +3507,7 @@ impl Inner {
 
 /// A media download about to be added.
 struct MediaInsert {
+    link: crate::LinkSource,
     url: Url,
     final_url: Url,
     dir: PathBuf,

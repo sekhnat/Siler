@@ -84,23 +84,6 @@ impl Resolve for Any {
     }
 }
 
-/// The host names of the proxies a route uses.
-pub(crate) fn proxy_hosts(urls: &[Option<&str>]) -> HashSet<String> {
-    urls.iter()
-        .flatten()
-        .filter_map(|u| {
-            reqwest::Url::parse(u)
-                .ok()
-                .filter(|p| p.host_str().is_some())
-                .or_else(|| reqwest::Url::parse(&format!("http://{u}")).ok())
-        })
-        .filter_map(|u| {
-            u.host_str()
-                .map(|h| h.trim_end_matches('.').to_ascii_lowercase())
-        })
-        .collect()
-}
-
 /// Whether an error came from a refused lookup; gives its message.
 pub(crate) fn refused(e: &(dyn std::error::Error + 'static)) -> Option<String> {
     let mut src: Option<&(dyn std::error::Error + 'static)> = Some(e);
@@ -196,16 +179,11 @@ mod tests {
 
     #[tokio::test]
     async fn the_proxy_host_may_be_local() {
-        let exempt = proxy_hosts(&[
-            Some("http://Proxy.Home:3128"),
-            Some("socks5h://127.0.0.1:1080"),
-        ]);
+        let host = |raw: &str| crate::proxy::Proxy::parse(raw).unwrap().0.host;
+        let exempt = HashSet::from([host("http://Proxy.Home:3128")]);
         assert!(exempt.contains("proxy.home"));
         let r = PublicOnly::new(table(&[("proxy.home", vec![vec!["192.168.1.2"]])]), exempt);
         assert!(resolve(&r, "proxy.home").await.is_ok());
-        assert_eq!(
-            proxy_hosts(&[Some("proxy.lan:8080")]),
-            HashSet::from(["proxy.lan".to_string()])
-        );
+        assert_eq!(host("proxy.lan:8080"), "proxy.lan");
     }
 }

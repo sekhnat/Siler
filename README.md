@@ -30,7 +30,8 @@
 **Fast and resilient**
 - Segmented downloads over many connections, with dynamic splitting: a free connection takes over half of the largest remaining piece. The connection count can change while a download runs.
 - Pause and resume across restarts and crashes; passing network failures are retried, honouring `Retry-After`.
-- Mirrors and multi-source downloads, metalinks with piece hashes, and **Refresh link** for expired addresses without losing progress.
+- Mirrors and multi-source downloads, and metalinks with piece hashes.
+- **Expired links refresh themselves**: Siler asks the original address again, or the browser the link came from finds it on its page in a background tab. Siler checks that the file is still the same and continues where it was.
 - HTTP(S), **FTP, FTPS and SFTP**, through the same proxy; SFTP checks the server's key the way `ssh` does.
 
 **Video and audio**
@@ -51,20 +52,27 @@
 **In control**
 - Global and per-download speed limits, per-server connection limits and a data quota (so many MB every so many hours).
 - Checksums (MD5 to SHA-512, and the server's `Digest` header), **Verify checksum…** for any file, and ZIP preview to fetch just the files you need from an archive.
-- Proxies (system, HTTP, SOCKS5), and logins saved in the desktop keyring.
+- **Proxies:** the desktop's, HTTP, HTTPS, SOCKS4/4a and SOCKS5, an FTP proxy, **proxy scripts (PAC)** and **automatic detection (WPAD)**, with failover. Scripts run in a separate helper with tight limits on time and memory.
+- **Logins:** Basic, Digest, **NTLM** and **Kerberos (Negotiate)**, for sites and proxies, saved in the desktop keyring.
 
 **Your way**
 - Cards or a **Details** table with the columns you choose, resizable and in your order, sorted either way; a toolbar you arrange.
+- **Skins:** seven built in, each with light and dark colours, or your own from a JSON file.
 - Checks for a new version once a day (you can turn it off); the AppImage updates itself after checking the release's checksum.
 - Ready for translation: every word is in a catalog ([Translating Siler](docs/translating.md)).
 
 **At home on Linux**
-- Starts with your session if you like, waiting in the tray; live status, notifications and sounds; keeps the computer awake while downloads run; drag finished files out of the list. Wayland and X11.
+- **A tray panel:** click the tray icon to see each download's progress and speed, pause, resume or cancel them, and set a speed limit. The icon fills a progress ring, and the right-click menu lists the running downloads.
+- Starts with your session if you like, waiting in the tray; notifications and sounds; keeps the computer awake while downloads run; drag finished files out of the list. Wayland and X11.
 
 <table>
   <tr>
     <td align="center" valign="top" width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/add-video-dark.png"><source media="(prefers-color-scheme: light)" srcset="docs/images/add-video-light.png"><img src="docs/images/add-video-light.png" alt="The Add window with a stream's qualities, audio languages and subtitles" width="400"></picture><br><sub><b>Pick the quality, audio and subtitles of a stream</b></sub></td>
     <td align="center" valign="top" width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-dark.png"><source media="(prefers-color-scheme: light)" srcset="docs/images/settings-light.png"><img src="docs/images/settings-light.png" alt="Settings: connections per download, simultaneous downloads, connections per server, speed limit" width="400"></picture><br><sub><b>Tune connections, limits and quotas</b></sub></td>
+  </tr>
+  <tr>
+    <td align="center" valign="top" width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/tray-panel-dark.png"><source media="(prefers-color-scheme: light)" srcset="docs/images/tray-panel-light.png"><img src="docs/images/tray-panel-light.png" alt="The tray panel: three downloads with their progress, speed and time left, one waiting and one just finished" width="300"></picture><br><sub><b>Watch and control downloads from the tray</b></sub></td>
+    <td align="center" valign="top" width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/skins-dark.png"><source media="(prefers-color-scheme: light)" srcset="docs/images/skins-light.png"><img src="docs/images/skins-light.png" alt="Settings → Appearance: seven skins to choose from, with Import and Export" width="400"></picture><br><sub><b>Choose a skin, or make your own</b></sub></td>
   </tr>
 </table>
 
@@ -83,7 +91,7 @@ Keep the file where it is: the menu entry and the browser host point at it. To h
 
 **Arch Linux (AUR)** — `siler-bin`, built from the release tarball: `yay -S siler-bin` (or your AUR helper). It installs Siler, its FFmpeg, both browser extensions and the browser hosts system-wide; updates come with your system's.
 
-**Tarball** — the same programs in a folder (`siler-<version>-linux-x86_64.tar.gz`). Unpack it where it will stay and run `./siler --install-integration`. It needs WebKitGTK 4.1, plus libayatana-appindicator for the tray.
+**Tarball** — the same programs in a folder (`siler-<version>-linux-x86_64.tar.gz`). Unpack it where it will stay and run `./siler --install-integration`. It needs WebKitGTK 4.1, plus libayatana-appindicator for the tray. Optional: gtk-layer-shell for the tray panel on Wayland, and the MIT Kerberos library (`krb5`) for Kerberos logins.
 
 ## Browser extension
 
@@ -134,7 +142,6 @@ cd .. && ./scripts/install-dev.sh          # release build + desktop and Firefox
 
 ## Roadmap
 
-- NTLM/Kerberos logins and proxy auto-config (PAC)
 - Translations (the catalogs are ready: see [Translating Siler](docs/translating.md))
 - The Chromium extension in the Chrome Web Store
 - FTP folder listings, recording live streams from the start of their time-shift window

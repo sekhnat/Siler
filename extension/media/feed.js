@@ -430,6 +430,9 @@ const Feed = (() => {
       const out = Siler.youtube.handOver(answer, client, Siler.youtube.watchUrl(id), r.web, tabTitle);
       if (out.error) throw new Error(out.error);
       if (waited) out.item.media.not_before_ms = null;
+      const video = { site: "youtube", id, format: null };
+      const link = await Links.source({ url: out.item.url, storeId: tab.cookieStoreId, incognito: tab.incognito, video });
+      if (link) out.item.link = link;
       console.info(`Siler: YouTube ${id} via the ${answer.name} client`);
       return out.item;
     }
@@ -474,6 +477,10 @@ const Feed = (() => {
       size: c.size || null,
       mime: c.mime || null,
       storeId: c.storeId || tab.cookieStoreId,
+      from: {
+        incognito: tab.incognito,
+        video: c.site && c.ids?.length ? { site: c.site, id: String(c.ids[0]), format: formatOf(c) } : null,
+      },
     });
     if (hints && (c.hint || c.site)) item.media = { ...(c.hint || {}), site: c.site || c.hint?.site || null, title: title || c.hint?.title || null };
     return item;
@@ -568,7 +575,7 @@ const Feed = (() => {
       }
     }
     if (src && /^https?:/i.test(src)) {
-      const item = await describe(src, { referrer: frameUrl || pageUrl, pageUrl, storeId: tab.cookieStoreId });
+      const item = await describe(src, { referrer: frameUrl || pageUrl, pageUrl, storeId: tab.cookieStoreId, from: { incognito: tab.incognito } });
       // On a recognised site, the page names the video.
       const title = site && recogniserOn(site.id) ? pageTitle(tab.title) : null;
       if (title) {
@@ -589,6 +596,36 @@ const Feed = (() => {
     return itemFor(tab, hit);
   }
 
+  /** Which format of a video a candidate is. */
+  const formatOf = (c) => (c.height ? `${c.kind}:${c.height}` : c.kind || null);
+
+  /**
+   * An expired hand-over's video or stream, found again in a tab opened for it: the same
+   * video in the same format, or the one stream that is the same playlist. Null until then.
+   */
+  async function refind(tab, task) {
+    const video = task.video;
+    if (video?.site === "youtube") {
+      return idFromUrl(tab.url || "") === video.id ? youtubeItem(tab, { site: "youtube", ids: [video.id], frameId: 0 }) : null;
+    }
+    if (video?.site) {
+      await scan(tab);
+      const same = (await list(tab.id)).filter(
+        (c) => c.site === video.site && c.ids?.some((id) => String(id) === video.id) && (!video.format || formatOf(c) === video.format),
+      );
+      return same.length === 1 ? itemFor(tab, same[0]) : null;
+    }
+    const streams = (await list(tab.id)).filter((c) => c.kind === "hls" || c.kind === "dash");
+    const old = keyOf(task.url);
+    let same = streams.filter((c) => keyOf(c.url) === old);
+    if (!same.length) {
+      // A token in the path: the same playlist's name, if only one has it.
+      const name = old.split("/").pop();
+      same = streams.filter((c) => c.master && keyOf(c.url).split("/").pop() === name);
+    }
+    return same.length === 1 ? itemFor(tab, same[0]) : null;
+  }
+
   /** Chromium: a site API's answer copied from the page by hook.js. */
   function fromPage(tab, frameId, url, text, pageUrl) {
     if (!tab?.id || typeof url !== "string" || typeof text !== "string" || text.length > BODY_MAX) return;
@@ -597,5 +634,5 @@ const Feed = (() => {
     fromSiteAnswer(tab.id, frameId ?? 0, url, text, pageUrl || tab.url, tab.cookieStoreId);
   }
 
-  return { forPopup, download, forVideo, scan, list, add, clear, fromPage };
+  return { forPopup, download, forVideo, refind, scan, list, add, clear, fromPage };
 })();

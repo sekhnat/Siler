@@ -849,13 +849,14 @@ async fn refresh_link_keeps_progress() {
     assert_eq!(e.get(id).unwrap().status, Status::Paused);
 
     let served_before = srv.shared.served.load(SeqCst);
-    e.refresh_url(id, &srv.url("/file/mirror.bin"), None)
+    // Paced: unpaced, "served" also counts what the loopback's socket buffers took in.
+    e.refresh_url(id, &srv.url("/file/mirror.bin?rate=8388608"), None)
         .await
         .unwrap();
     let d = wait_finished(&e, id).await;
     assert_complete(&d, &srv.data(SIZE));
     assert_eq!(d.filename.as_deref(), Some("a.bin"));
-    assert!(d.url.ends_with("/file/mirror.bin"));
+    assert!(d.url.ends_with("/file/mirror.bin?rate=8388608"));
     let served = srv.shared.served.load(SeqCst) - served_before;
     assert!(
         served <= SIZE as u64 - paused.downloaded + MIB,
@@ -1251,6 +1252,7 @@ async fn basic_login_flow() {
             host: h,
             realm,
             rejected,
+            ..
         }) => {
             assert_eq!(
                 (h.as_str(), realm.as_deref(), rejected),
@@ -1268,6 +1270,7 @@ async fn basic_login_flow() {
         host: host.clone(),
         realm: Some("test".into()),
         rejected: false,
+        asked: Default::default(),
     };
     assert_eq!(d.needs_login, Some(want.clone()));
     let ev = tokio::time::timeout(Duration::from_secs(2), async {

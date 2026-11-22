@@ -457,3 +457,55 @@ async fn missing_file_and_folder() {
         .to_string();
     assert!(err.contains("folder"), "{err}");
 }
+
+/// An HTTP proxy that only tunnels.
+async fn connect_proxy(count: Arc<AtomicUsize>) -> u16 {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((mut from, _)) = listener.accept().await {
+            let count = count.clone();
+            tokio::spawn(async move {
+                let mut head = Vec::new();
+                while !head.ends_with(b"\r\n\r\n") {
+                    head.push(from.read_u8().await.ok()?);
+                }
+                let head = String::from_utf8(head).ok()?;
+                let to = head.strip_prefix("CONNECT ")?.split(' ').next()?;
+                let mut up = tokio::net::TcpStream::connect(to).await.ok()?;
+                count.fetch_add(1, SeqCst);
+                from.write_all(b"HTTP/1.1 200 OK\r\n\r\n").await.ok()?;
+                tokio::io::copy_bidirectional(&mut from, &mut up).await.ok()
+            });
+        }
+    });
+    port
+}
+
+#[tokio::test]
+async fn goes_where_a_script_says() {
+    let srv = start("host_a").await;
+    let count = Arc::new(AtomicUsize::new(0));
+    let proxy = connect_proxy(count.clone()).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let pac = tmp.path().join("proxy.pac");
+    let body = format!(
+        "function FindProxyForURL(url) {{ return /^sftp:/.test(url) ? 'PROXY 127.0.0.1:{proxy}' : 'DIRECT'; }}"
+    );
+    std::fs::write(&pac, body).unwrap();
+    let e = engine(tmp.path(), |s| {
+        s.proxy.mode = siler_core::proxy::ProxyMode::Script;
+        s.proxy.script = pac.display().to_string();
+    })
+    .await;
+    let helper = Path::new(env!("CARGO_TARGET_TMPDIR")).parent().unwrap();
+    e.set_pac_helper(Some(helper.join("debug/siler-pac")));
+    let id = add(
+        &e,
+        format!("sftp://{USER}:{PASS}@0.0.0.0:{}/srv/data.bin", srv.port),
+    );
+    trust_first(&e, id).await;
+    assert_complete(&wait_finished(&e, id).await, &data(SIZE));
+    assert!(count.load(SeqCst) > 0, "the script's proxy wasn't used");
+}

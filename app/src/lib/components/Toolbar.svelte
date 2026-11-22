@@ -94,9 +94,9 @@
     {#if selectedCount > 0}
       <div class="group">
         <span class="sel">{t("toolbar-selected", { selectedCount })}</span>
-        <button class="icon-btn" title={t("toolbar-resume-space")} disabled={!canResume} onclick={onresume}><Play size={17} /></button>
-        <button class="icon-btn" title={t("toolbar-pause-space")} disabled={!canPause} onclick={onpause}><Pause size={17} /></button>
-        <button class="icon-btn" title={t("toolbar-remove-del")} onclick={onremove}><Trash2 size={17} /></button>
+        <button class="icon-btn" title={t("toolbar-resume-space")} disabled={!canResume} onclick={onresume}><Play size={17} /><span class="tb-label">{t("toolbar-label-resume")}</span></button>
+        <button class="icon-btn" title={t("toolbar-pause-space")} disabled={!canPause} onclick={onpause}><Pause size={17} /><span class="tb-label">{t("toolbar-label-pause")}</span></button>
+        <button class="icon-btn" title={t("toolbar-remove-del")} onclick={onremove}><Trash2 size={17} /><span class="tb-label">{t("toolbar-label-remove")}</span></button>
       </div>
     {/if}
 
@@ -104,21 +104,21 @@
       {#each shown as item (item)}
         {#if item === "queue" && selectedCount === 0}
           {#if waitingCount}
-            <button class="btn btn-ghost btn-sm" onclick={onstartqueue} title={t("toolbar-start-the-downloads-added-with-download")}><ListStart size={14} /> {t("toolbar-start-queue")} <span class="n">{waitingCount}</span></button>
+            <button class="btn btn-ghost btn-sm" onclick={onstartqueue} title={t("toolbar-start-the-downloads-added-with-download")}><ListStart size={14} /><span class="tb-label">{t("toolbar-start-queue")}</span><span class="n">{waitingCount}</span></button>
           {:else if queuedCount}
-            <button class="btn btn-ghost btn-sm" onclick={onstopqueue} title={t("toolbar-hold-back-queued-downloads-that-haven")}><ListEnd size={14} /> {t("toolbar-stop-queue")}</button>
+            <button class="btn btn-ghost btn-sm" onclick={onstopqueue} title={t("toolbar-hold-back-queued-downloads-that-haven")}><ListEnd size={14} /><span class="tb-label">{t("toolbar-stop-queue")}</span></button>
           {/if}
         {:else if item === "resume_all" && selectedCount === 0}
-          <button class="btn btn-ghost btn-sm" onclick={onresumeall}><Play size={14} /> {t("toolbar-resume-all")}</button>
+          <button class="btn btn-ghost btn-sm" title={t("toolbar-resume-all")} onclick={onresumeall}><Play size={14} /><span class="tb-label">{t("toolbar-resume-all")}</span></button>
         {:else if item === "pause_all" && selectedCount === 0}
-          <button class="btn btn-ghost btn-sm" onclick={onpauseall}><Pause size={14} /> {t("toolbar-pause-all")}</button>
+          <button class="btn btn-ghost btn-sm" title={t("toolbar-pause-all")} onclick={onpauseall}><Pause size={14} /><span class="tb-label">{t("toolbar-pause-all")}</span></button>
         {:else if item === "when_done"}
           <div class="anchor">
             <button
               class="icon-btn"
               class:armed={whenDone !== "nothing"}
               title={whenDone === "nothing" ? t("toolbar-when-all-downloads-finish") : t("toolbar-when-all-downloads-finish-action", { action: WHEN_DONE.find((w) => w.value === whenDone)?.label })}
-              onclick={() => (whenMenu = !whenMenu)}><Power size={16} /></button
+              onclick={() => (whenMenu = !whenMenu)}><Power size={16} /><span class="tb-label">{t("toolbar-label-when-done")}</span></button
             >
             {#if whenMenu}
               <Menu align="right" value={whenDone} items={WHEN_DONE} onselect={onwhendone} onclose={() => (whenMenu = false)} />
@@ -126,7 +126,7 @@
           </div>
         {:else if item === "sort"}
           <div class="anchor">
-            <button class="icon-btn" title={(reverse ? t("toolbar-sort-reversed", { by: SORTS.find((s) => s.value === sort)?.label }) : t("toolbar-sort", { by: SORTS.find((s) => s.value === sort)?.label }))} onclick={() => (sortMenu = !sortMenu)}><ArrowDownUp size={16} /></button>
+            <button class="icon-btn" title={(reverse ? t("toolbar-sort-reversed", { by: SORTS.find((s) => s.value === sort)?.label }) : t("toolbar-sort", { by: SORTS.find((s) => s.value === sort)?.label }))} onclick={() => (sortMenu = !sortMenu)}><ArrowDownUp size={16} /><span class="tb-label">{t("toolbar-label-sort")}</span></button>
             {#if sortMenu}
               <Menu
                 align="right"
@@ -140,18 +140,18 @@
         {:else if item === "view"}
           <button class="icon-btn" title={view === "cards" ? t("toolbar-show-as-a-table-details") : t("toolbar-show-as-cards")} onclick={() => onview(view === "cards" ? "details" : "cards")}>
             {#if view === "cards"}<LayoutList size={16} />{:else}<LayoutGrid size={16} />{/if}
-          </button>
+          <span class="tb-label">{view === "cards" ? t("toolbar-label-table") : t("toolbar-label-cards")}</span></button>
         {:else if item === "batch"}
-          <button class="icon-btn" title={t("toolbar-batch-download")} onclick={() => ontool("batch")}><ListOrdered size={16} /></button>
+          <button class="icon-btn" title={t("toolbar-batch-download")} onclick={() => ontool("batch")}><ListOrdered size={16} /><span class="tb-label">{t("toolbar-batch-download")}</span></button>
         {:else if item === "grabber"}
-          <button class="icon-btn" title={t("toolbar-site-grabber")} onclick={() => ontool("grabber")}><Globe size={16} /></button>
+          <button class="icon-btn" title={t("toolbar-site-grabber")} onclick={() => ontool("grabber")}><Globe size={16} /><span class="tb-label">{t("toolbar-site-grabber")}</span></button>
         {:else if item === "import"}
-          <button class="icon-btn" title={t("toolbar-import-list")} onclick={() => ontool("import")}><FileDown size={16} /></button>
+          <button class="icon-btn" title={t("toolbar-import-list")} onclick={() => ontool("import")}><FileDown size={16} /><span class="tb-label">{t("toolbar-import-list")}</span></button>
         {:else if item === "settings"}
-          <button class="icon-btn" title={t("toolbar-settings")} onclick={onsettings}><Settings2 size={16} /></button>
+          <button class="icon-btn" title={t("toolbar-settings")} onclick={onsettings}><Settings2 size={16} /><span class="tb-label">{t("toolbar-settings")}</span></button>
         {:else if item === "more"}
           <div class="anchor">
-            <button class="icon-btn" title={t("toolbar-more")} onclick={() => (moreMenu = !moreMenu)}><Ellipsis size={17} /></button>
+            <button class="icon-btn" title={t("toolbar-more")} onclick={() => (moreMenu = !moreMenu)}><Ellipsis size={17} /><span class="tb-label">{t("toolbar-more")}</span></button>
             {#if moreMenu}
               <Menu
                 align="right"
@@ -182,6 +182,36 @@
 </div>
 
 <style>
+  /* The skin's toolbar style, or the one chosen in Settings (html[data-toolbar]). */
+  .icon-btn .tb-label {
+    display: none;
+  }
+  :global(html[data-toolbar="icons"]) .btn .tb-label {
+    display: none;
+  }
+  :global(html[data-toolbar="icons"]) .group .btn {
+    padding: 0 8px;
+  }
+  :global(html[data-toolbar="text"]) .icon-btn:not(.clear) {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    width: auto;
+    padding: 0 8px;
+  }
+  :global(html[data-toolbar="text"]) .icon-btn .tb-label {
+    display: inline;
+    font-size: 12.5px;
+    white-space: nowrap;
+  }
+  :global(html[data-toolbar="text"]) .bar,
+  :global(html[data-toolbar="text"]) .actions,
+  :global(html[data-toolbar="text"]) .group {
+    flex-wrap: wrap;
+  }
+  :global(html[data-toolbar="text"]) .actions {
+    justify-content: flex-end;
+  }
   .armed {
     color: var(--warn);
     background: color-mix(in srgb, var(--warn) 14%, transparent);

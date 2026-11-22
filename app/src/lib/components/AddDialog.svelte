@@ -641,7 +641,7 @@
   }
   .resume > :global(svg) {
     flex: none;
-    color: var(--accent);
+    color: var(--accent-text);
   }
   .min {
     flex: 1;
@@ -709,7 +709,7 @@
     gap: 8px;
   }
   .pl-head > :global(svg) {
-    color: var(--accent);
+    color: var(--accent-text);
   }
   .pl-list {
     list-style: none;

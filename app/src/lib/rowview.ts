@@ -80,12 +80,13 @@ export function sizeText(d: Download): string {
 export function statusText(d: Download): string {
   if (d.needs_host_key) return t("rowview-check-server-key");
   if (d.needs_login) return t("rowview-needs-login");
+  if (d.needs_link) return t("rowview-link-expired");
   if (d.media_progress?.phase === "recording" && d.status === "downloading") return t("rowview-recording");
   return STATUS_LABEL[d.status];
 }
 
 export function statusColor(d: Download): string {
-  return d.needs_login || d.needs_host_key ? "var(--accent)" : STATUS_COLOR[d.status];
+  return d.needs_login || d.needs_host_key || d.needs_link ? "var(--accent)" : STATUS_COLOR[d.status];
 }
 
 /** A recording that can still be finished. */

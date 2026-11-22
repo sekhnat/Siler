@@ -60,7 +60,7 @@
   .fill.active {
     background: var(--grad);
     background-size: 400px 100%;
-    box-shadow: inset -2px 0 0 rgba(255, 255, 255, 0.85);
+    box-shadow: inset -2px 0 0 var(--knob);
   }
   .done .fill {
     background: color-mix(in srgb, var(--ok) 70%, transparent);

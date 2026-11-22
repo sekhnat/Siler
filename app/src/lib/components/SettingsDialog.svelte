@@ -3,13 +3,14 @@
   import { CircleCheck, CircleX, FileText, FolderOpen, KeyRound, Monitor, Moon, Play, Plus, Puzzle, Sun, TriangleAlert, X } from "@lucide/svelte";
   import { open } from "@tauri-apps/plugin-dialog";
   import { onMount } from "svelte";
-  import { api, type AppInfo, type Category, type CommandResult, type FfmpegStatus, type IntegrationStatus, type ProxyMode, type ProxyRoute, type SavedLogin, type Settings, type SoundEvent, type UpdateInfo } from "../api";
+  import { api, type AppInfo, type Category, type CommandResult, type FfmpegStatus, type IntegrationStatus, type ProxyCheck, type ProxyMode, type ProxyRoute, type SavedLogin, type Settings, type SoundEvent, type UpdateInfo } from "../api";
   import { SPEED_PRESETS, limitLabel, relativeTime } from "../format";
   import { CATEGORIES } from "../categories";
   import { toasts } from "../store.svelte";
   import { theme, type ThemePref } from "../theme.svelte";
   import CategoryEditor from "./CategoryEditor.svelte";
   import Modal from "./Modal.svelte";
+  import SkinPicker from "./SkinPicker.svelte";
 
   let { settings, onclose, onsaved }: { settings: Settings; onclose: () => void; onsaved: (s: Settings) => void } = $props();
 
@@ -214,7 +215,46 @@
     { key: "none", label: t("settings-no-proxy") },
     { key: "system", label: t("settings-system") },
     { key: "manual", label: t("settings-manual") },
+    { key: "script", label: t("settings-proxy-script") },
+    { key: "detect", label: t("settings-proxy-detect") },
   ];
+  let testUrl = $state("");
+  let checkingProxy = $state(false);
+  let tested = $state<ProxyCheck | { error: string } | null>(null);
+
+  async function testProxy() {
+    if (!testUrl.trim() || checkingProxy) return;
+    checkingProxy = true;
+    tested = null;
+    try {
+      tested = await api.checkProxy($state.snapshot(s.proxy), testUrl.trim());
+    } catch (e) {
+      tested = { error: String(e) };
+    } finally {
+      checkingProxy = false;
+    }
+  }
+
+  function whyText(why: ProxyCheck["why"]): string {
+    switch (why.kind) {
+      case "no_proxy":
+        return t("settings-proxy-why-none");
+      case "configured":
+        return why.source === "settings"
+          ? t("settings-proxy-why-settings")
+          : t("settings-proxy-why-system", { source: why.source });
+      case "excepted":
+        return t("settings-proxy-why-excepted");
+      case "this_computer":
+        return t("settings-proxy-why-this-computer");
+      case "script":
+        return t("settings-proxy-why-script", { from: why.from });
+      case "detected":
+        return t("settings-proxy-why-detected", { from: why.from });
+      case "nothing_detected":
+        return t("settings-proxy-why-not-detected", { reason: why.reason });
+    }
+  }
   // The status line describes the saved settings; say so while they're being edited.
   const proxyEdited = $derived(JSON.stringify(s.proxy) !== JSON.stringify(settings.proxy));
 </script>
@@ -261,6 +301,7 @@
         s.close_to_tray,
         (v) => (s.close_to_tray = v),
       )}
+      {@render toggle(t("settings-tray-panel"), t("settings-tray-panel-hint"), s.tray_opens_panel, (v) => (s.tray_opens_panel = v))}
       {@render toggle(
         t("settings-start-when-you-log-in"),
         integration && !integration.tray_available ? t("settings-opens-the-window-when-you-log") : t("settings-opens-in-the-tray-ready-for"),
@@ -411,6 +452,7 @@
         <input class="input mono" bind:value={s.user_agent} spellcheck="false" />
         <div class="hint">{t("settings-used-for-links-added-by-hand")}</div>
       </div>
+      {@render toggle(t("settings-auto-refresh-links"), t("settings-auto-refresh-links-hint"), s.auto_refresh_links, (v) => (s.auto_refresh_links = v))}
       {@render toggle(t("settings-data-quota"), t("settings-download-at-most-so-much-in"), s.quota.enabled, (v) => (s.quota.enabled = v))}
       {#if s.quota.enabled}
         <div class="quota">
@@ -455,7 +497,7 @@
     {:else if tab === "network"}
       <div class="field">
         <span class="label">{t("settings-proxy")}</span>
-        <div class="seg">
+        <div class="seg proxy-modes">
           {#each proxyModes as m (m.key)}
             <button class:on={s.proxy.mode === m.key} onclick={() => (s.proxy.mode = m.key)}>{m.label}</button>
           {/each}
@@ -467,6 +509,9 @@
             <span class="label">{t("settings-type")}</span>
             <select class="input" bind:value={s.proxy.scheme}>
               <option value="http">{t("settings-http")}</option>
+              <option value="https">{t("settings-https")}</option>
+              <option value="socks4">{t("settings-socks4")}</option>
+              <option value="socks4a">{t("settings-socks4a")}</option>
               <option value="socks5">{t("settings-socks5")}</option>
             </select>
           </label>
@@ -496,10 +541,29 @@
             />
           </label>
         </div>
+        <div class="proxy ftp">
+          <label class="field">
+            <span class="label">{t("settings-ftp-proxy")} <span class="hint">{t("settings-optional")}</span></span>
+            <input class="input" bind:value={s.proxy.ftp_host} title={t("settings-ftp-proxy-hint")} spellcheck="false" />
+          </label>
+          <label class="field">
+            <span class="label">{t("settings-port")}</span>
+            <input class="input" type="number" min="1" max="65535" bind:value={s.proxy.ftp_port} />
+          </label>
+        </div>
         <label class="field">
           <span class="label">{t("settings-connect-directly-to")}</span>
           <input class="input" bind:value={s.proxy.no_proxy} placeholder={t("settings-localhost-127-0-0-1-lan")} spellcheck="false" />
         </label>
+      {/if}
+      {#if s.proxy.mode === "script"}
+        <label class="field">
+          <span class="label">{t("settings-script-address")}</span>
+          <input class="input" bind:value={s.proxy.script} placeholder={t("settings-script-placeholder")} spellcheck="false" />
+          <span class="hint">{t("settings-script-hint")}</span>
+        </label>
+      {:else if s.proxy.mode === "detect"}
+        <div class="hint">{t("settings-detect-hint")}</div>
       {/if}
       {#if route && !proxyEdited}
         <div class="route hint">
@@ -509,6 +573,32 @@
       {:else if proxyEdited}
         <div class="route hint">{t("settings-applies-when-you-save")}</div>
       {/if}
+      <div class="field">
+        <span class="label">{t("settings-proxy-test")}</span>
+        <div class="proxy-test">
+          <input
+            class="input"
+            bind:value={testUrl}
+            placeholder={t("settings-proxy-test-placeholder")}
+            spellcheck="false"
+            onkeydown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                testProxy();
+              }
+            }}
+          />
+          <button type="button" class="btn" onclick={testProxy} disabled={!testUrl.trim() || checkingProxy}>{t("settings-proxy-test-run")}</button>
+        </div>
+        {#if tested && "error" in tested}
+          <div class="tested warn" role="status"><TriangleAlert size={13} /> {tested.error}</div>
+        {:else if tested}
+          <div class="tested" role="status">
+            <b>{tested.via.map((v) => (v === "DIRECT" ? t("settings-proxy-direct") : v)).join(" → ")}</b>
+            <span class="hint">{whyText(tested.why)}</span>
+          </div>
+        {/if}
+      </div>
 
       <div class="field">
         <span class="label">{t("settings-saved-logins")}</span>
@@ -521,7 +611,7 @@
             {#each logins as l (l.host)}
               <div class="login-row">
                 <KeyRound size={14} />
-                <span class="grow truncate"><b>{l.host}</b> <span class="hint">{l.username}</span></span>
+                <span class="grow truncate"><b>{l.host.startsWith("proxy+") ? t("settings-login-proxy", { host: l.host.slice(6) }) : l.host}</b> <span class="hint">{l.username || t("settings-kerberos-ticket")}</span></span>
                 <button class="btn btn-sm btn-ghost" onclick={() => forgetLogin(l.host)}>{t("settings-forget")}</button>
               </div>
             {/each}
@@ -629,6 +719,7 @@
           {/each}
         </div>
       </div>
+      <SkinPicker bind:skin={s.ui.skin} bind:toolbar={s.ui.toolbar_style} />
       {@render toggle(t("settings-sounds"), t("settings-play-the-desktop-s-sounds-for"), s.sounds.enabled, (v) => (s.sounds.enabled = v))}
       {#if s.sounds.enabled}
         <div class="sounds">
@@ -791,6 +882,32 @@
     display: grid;
     grid-template-columns: 110px 1fr 100px;
     gap: 12px;
+  }
+  .proxy.ftp {
+    grid-template-columns: 1fr 100px;
+  }
+  .proxy-modes {
+    flex-wrap: wrap;
+  }
+  .proxy-test {
+    display: flex;
+    gap: 8px;
+  }
+  .proxy-test .input {
+    flex: 1;
+    min-width: 0;
+  }
+  .tested {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    column-gap: 8px;
+    margin-top: 6px;
+    font-size: 12.5px;
+    overflow-wrap: anywhere;
+  }
+  .tested.warn {
+    color: var(--warn);
   }
   .route {
     display: flex;

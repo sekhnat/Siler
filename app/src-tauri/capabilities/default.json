@@ -5,7 +5,8 @@
   "windows": [
     "main",
     "add",
-    "countdown"
+    "countdown",
+    "tray"
   ],
   "permissions": [
     "core:default",

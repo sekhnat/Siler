@@ -7,10 +7,12 @@ mod inhibit;
 mod integration;
 mod ipc_server;
 mod launch;
+mod links;
 mod logging;
 mod logins;
 mod media;
 mod power;
+mod skins;
 mod sound;
 mod tools;
 mod tray;
@@ -20,9 +22,9 @@ use serde::Serialize;
 use siler_core::{Engine, Event, MAIN_QUEUE};
 use siler_ipc::BrowserItem;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
-use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_notification::{Action, ActionType, NotificationExt};
 use tokio::sync::broadcast::error::RecvError;
@@ -89,8 +91,10 @@ pub struct AppState {
     pub last_browser_contact: AtomicI64,
     /// Version and protocol the extension reported in its last ping.
     pub extension: Mutex<Option<(String, u32)>>,
-    /// "Refresh link" waiting for the next browser download: (download id, until).
-    pub awaiting_refresh: Mutex<Option<(i64, Instant)>>,
+    /// "Refresh link" waiting for the browser's next download, per download.
+    pub awaiting_refresh: links::Awaiting,
+    /// The browsers that can be asked for fresh links.
+    pub browsers: Arc<links::Browsers>,
     /// The main window is on screen (not hidden in the tray); progress events are
     /// skipped otherwise.
     pub ui_visible: AtomicBool,
@@ -127,7 +131,25 @@ pub fn set_ui_visible(app: &AppHandle, visible: bool) {
     }
 }
 
+/// [`show_main`] with the activation token of the click that asked for it: on Wayland a
+/// window only comes to the front with one.
+pub fn show_main_with(app: &AppHandle, token: Option<String>) {
+    let on_main = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(token) = token
+            && let Some(w) = on_main.get_webview_window("main")
+            && let Ok(w) = w.gtk_window()
+        {
+            use gtk::prelude::GtkWindowExt;
+            w.set_startup_id(&token);
+        }
+        show_main(&on_main);
+    });
+}
+
 pub fn show_main(app: &AppHandle) {
+    // The panel's catchers would be over the window.
+    tray::panel::close(app);
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
         let _ = w.unminimize();
@@ -138,6 +160,7 @@ pub fn show_main(app: &AppHandle) {
 
 /// Opens the compact "Download file" window that confirms browser-captured downloads.
 pub fn open_add_window(app: &AppHandle) {
+    tray::panel::close(app);
     if let Some(w) = app.get_webview_window("add") {
         let _ = w.emit("pending-changed", ());
         let _ = w.show();
@@ -208,10 +231,15 @@ fn setup_notifications(app: &AppHandle) {
         let failed = n.extra().get("failed").and_then(|v| v.as_bool()) == Some(true)
             || n.extra().get("login").and_then(|v| v.as_bool()) == Some(true);
         let login = n.extra().get("login").and_then(|v| v.as_bool()) == Some(true);
+        let link = n.extra().get("link").and_then(|v| v.as_bool()) == Some(true);
         let app = handle.clone();
         let action = performed.action_id().to_string();
         // The handler runs on the notification thread; do the work elsewhere.
         tauri::async_runtime::spawn(async move {
+            if link {
+                open_for_fresh_link(&app, id);
+                return;
+            }
             let result = match (failed, action.as_str()) {
                 (true, _) => {
                     show_main(&app);
@@ -233,18 +261,79 @@ fn setup_notifications(app: &AppHandle) {
     });
 }
 
+/// Whether the notification server reads bodies as markup (Plasma and GNOME do).
+static BODY_MARKUP: AtomicBool = AtomicBool::new(true);
+
+/// Text as a notification body: file names and server words mustn't act as markup.
+pub fn body_text(text: &str) -> String {
+    if BODY_MARKUP.load(Ordering::Relaxed) {
+        tray::markup(text)
+    } else {
+        text.to_string()
+    }
+}
+
+async fn learn_body_markup() {
+    let ask = async {
+        let conn = zbus::Connection::session().await?;
+        let reply = conn
+            .call_method(
+                Some("org.freedesktop.Notifications"),
+                "/org/freedesktop/Notifications",
+                Some("org.freedesktop.Notifications"),
+                "GetCapabilities",
+                &(),
+            )
+            .await?;
+        reply.body().deserialize::<Vec<String>>()
+    };
+    let answer: Result<Vec<String>, zbus::Error> = ask.await;
+    match answer {
+        Ok(caps) => BODY_MARKUP.store(caps.iter().any(|c| c == "body-markup"), Ordering::Relaxed),
+        Err(e) => tracing::debug!("notification capabilities: {e}"),
+    }
+}
+
 fn notify(app: &AppHandle, title: &str, body: &str, id: i64, failed: bool) {
     let mut b = app
         .notification()
         .builder()
         .title(title)
-        .body(body)
+        .body(body_text(body))
         .extra("download_id", id)
         .extra("failed", failed);
     if !failed {
         b = b.action_type_id(COMPLETE_ACTIONS);
     }
     let _ = b.show();
+}
+
+/// An expired link nothing could renew: a click on this opens the page to click it again.
+fn notify_expired(app: &AppHandle, id: i64, filename: Option<&str>) {
+    let name = filename.map_or_else(|| tr("notify-a-download"), str::to_string);
+    let _ = app
+        .notification()
+        .builder()
+        .title(tr("notify-link-expired"))
+        .body(body_text(&format!(
+            "{name}\n{}",
+            tr("notify-click-to-get-a-fresh-link")
+        )))
+        .extra("download_id", id)
+        .extra("link", true)
+        .show();
+}
+
+fn open_for_fresh_link(app: &AppHandle, id: i64) {
+    let opened = app
+        .try_state::<AppState>()
+        .is_some_and(|state| commands::open_page_for_link(&state, id).unwrap_or(false));
+    if !opened {
+        // No page to open: the dialog takes a pasted link.
+        show_main(app);
+        let _ = app.emit("select-download", id);
+        let _ = app.emit("ask-link", id);
+    }
 }
 
 /// A server wants a login: use the saved one, or ask (now if the window is on screen,
@@ -276,13 +365,19 @@ async fn login_required(
             .notification()
             .builder()
             .title(tr("notify-login-needed"))
-            .body(format!(
+            .body(body_text(&format!(
                 "{name}\n{}",
-                tr_args(
-                    "notify-asks-for-a-login",
-                    vec![("host", request.host.as_str().into())]
-                )
-            ))
+                match request.host.strip_prefix("proxy+") {
+                    Some(proxy) => tr_args(
+                        "notify-proxy-asks-for-a-login",
+                        vec![("host", proxy.into())]
+                    ),
+                    None => tr_args(
+                        "notify-asks-for-a-login",
+                        vec![("host", request.host.as_str().into())]
+                    ),
+                }
+            )))
             .extra("download_id", id)
             .extra("login", true)
             .show();
@@ -309,60 +404,22 @@ fn host_key_unknown(
             .notification()
             .builder()
             .title(tr("notify-check-the-servers-key"))
-            .body(format!(
+            .body(body_text(&format!(
                 "{name}\n{}",
                 tr_args(
                     "notify-not-connected-before",
                     vec![("server", request.server.as_str().into())]
                 )
-            ))
+            )))
             .extra("download_id", id)
             .extra("login", true)
             .show();
     }
 }
 
-fn tray_status(items: &[siler_core::ProgressItem], total_speed: u64) -> String {
-    if items.is_empty() {
-        return tr("tray-no-active-downloads");
-    }
-    let (done, total) = items
-        .iter()
-        .filter_map(|i| i.total_size.map(|t| (i.downloaded, t)))
-        .fold((0u64, 0u64), |(d, t), (a, b)| (d + a, t + b));
-    let mut s = tr_args(
-        "tray-downloading",
-        vec![
-            ("count", items.len().into()),
-            ("speed", human_bytes(total_speed).into()),
-        ],
-    );
-    if let Some(pct) = (done * 100).checked_div(total) {
-        s.push_str(&format!(" · {pct}%"));
-    }
-    s
-}
-
-fn human_bytes(b: u64) -> String {
-    let units = ["B", "KB", "MB", "GB", "TB"];
-    let mut v = b as f64;
-    let mut u = 0;
-    while v >= 1000.0 && u < units.len() - 1 {
-        v /= 1000.0;
-        u += 1;
-    }
-    if u == 0 {
-        format!("{b} B")
-    } else {
-        format!("{v:.1} {}", units[u])
-    }
-}
-
 fn forward_engine_events(app: AppHandle, engine: Engine, activity: watch::Sender<usize>) {
     let mut rx = engine.subscribe();
     tauri::async_runtime::spawn(async move {
-        let mut last_tray = Instant::now() - Duration::from_secs(5);
-        let mut last_tray_text = String::new();
         loop {
             match rx.recv().await {
                 Ok(ev) => {
@@ -413,8 +470,15 @@ fn forward_engine_events(app: AppHandle, engine: Engine, activity: watch::Sender
                             Event::Failed {
                                 id,
                                 filename,
+                                needs_link: true,
+                                ..
+                            } => notify_expired(&app, *id, filename.as_deref()),
+                            Event::Failed {
+                                id,
+                                filename,
                                 error,
                                 code,
+                                ..
                             } => {
                                 let name =
                                     filename.clone().unwrap_or_else(|| tr("notify-download"));
@@ -460,21 +524,13 @@ fn forward_engine_events(app: AppHandle, engine: Engine, activity: watch::Sender
                         host_key_unknown(&app, *id, filename.as_deref(), request);
                         continue;
                     }
-                    if let Event::Progress { items, total_speed } = &ev {
+                    if let Event::Progress { items, .. } = &ev {
                         let n = items.len();
                         activity.send_if_modified(|v| std::mem::replace(v, n) != n);
-                        let text = tray_status(items, *total_speed);
-                        if text != last_tray_text
-                            && (last_tray.elapsed() >= Duration::from_secs(1) || items.is_empty())
-                        {
-                            last_tray = Instant::now();
-                            last_tray_text = text.clone();
-                            tray::set_status(text).await;
-                        }
                         let visible = app
                             .try_state::<AppState>()
                             .is_some_and(|s| s.ui_visible.load(Ordering::Relaxed));
-                        if !visible {
+                        if !visible && !tray::panel::is_open() {
                             continue;
                         }
                     }
@@ -609,7 +665,12 @@ fn forwarded_args(app: &AppHandle, argv: &[String], cwd: &str) {
     };
     if let Err(e) = add_from_args(app, &args) {
         tracing::warn!("{e}");
-        let _ = app.notification().builder().title("Siler").body(e).show();
+        let _ = app
+            .notification()
+            .builder()
+            .title("Siler")
+            .body(body_text(&e))
+            .show();
         return;
     }
     if args.urls.is_empty() && args.imports.is_empty() && !args.background && !args.start_queue {
@@ -758,8 +819,15 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_window_state::Builder::new()
-                .with_denylist(&["add"])
+                // Never whether the window was showing: Siler decides that, and a start
+                // with --background stays in the tray.
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::all()
+                        & !tauri_plugin_window_state::StateFlags::VISIBLE,
+                )
+                .with_denylist(&["add", tray::panel::LABEL])
                 .skip_initial_state("add")
+                .skip_initial_state(tray::panel::LABEL)
                 .build(),
         )
         .setup(move |app| {
@@ -775,13 +843,16 @@ fn main() {
                     } else {
                         tracing::warn!("media: FFmpeg is not usable: {:?}", ffmpeg.missing);
                     }
+                    let browsers = links::Browsers::new();
+                    engine.set_link_finder(Some(browsers.clone()));
                     app.manage(AppState {
                         engine: engine.clone(),
+                        browsers,
                         pending: Mutex::new(Vec::new()),
                         next_pending: AtomicU64::new(1),
                         last_browser_contact: AtomicI64::new(0),
                         extension: Mutex::new(None),
-                        awaiting_refresh: Mutex::new(None),
+                        awaiting_refresh: Default::default(),
                         ui_visible: AtomicBool::new(false),
                         tray_available: AtomicBool::new(false),
                         power: power::PowerState::default(),
@@ -798,13 +869,18 @@ fn main() {
                     autostart::ensure();
                     integration::refresh_appimage();
                     setup_notifications(app.handle());
+                    tauri::async_runtime::spawn(learn_body_markup());
                     let activity = inhibit::spawn(engine.clone());
                     forward_engine_events(app.handle().clone(), engine, activity);
                     ipc_server::start(app.handle().clone());
                     clipboard::spawn(app.handle().clone());
                     exit_on_signals(app.handle().clone());
+                    skins::remember(app.handle());
                     let handle = app.handle().clone();
-                    let has_tray = tauri::async_runtime::block_on(tray::spawn(handle.clone()));
+                    let has_tray = tauri::async_runtime::block_on(tray::spawn(
+                        handle.clone(),
+                        app.state::<AppState>().engine.clone(),
+                    ));
                     app.state::<AppState>()
                         .tray_available
                         .store(has_tray, Ordering::Relaxed);
@@ -911,6 +987,10 @@ fn main() {
             commands::autostart_enabled,
             commands::set_autostart,
             commands::show_main_window,
+            commands::close_tray_panel,
+            commands::resize_tray_panel,
+            commands::show_download,
+            commands::set_global_speed_limit,
             commands::request_quit,
             commands::quit_app,
             commands::submit_login,
@@ -927,6 +1007,7 @@ fn main() {
             commands::forget_saved_login,
             commands::keyring_available,
             commands::proxy_status,
+            commands::check_proxy,
             commands::set_proxy_password,
             commands::proxy_password_saved,
             commands::list_queues,
@@ -943,6 +1024,10 @@ fn main() {
             commands::get_when_done,
             commands::set_when_done,
             commands::test_sound,
+            skins::list_skins,
+            skins::import_skin,
+            skins::export_skin,
+            skins::remove_skin,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build the Siler app");
@@ -1018,26 +1103,6 @@ mod tests {
                 PathBuf::from("/home/me/Ubuntu.META4"),
                 PathBuf::from("/tmp/x.metalink")
             ]
-        );
-    }
-
-    #[test]
-    fn tray_text() {
-        assert_eq!(tray_status(&[], 0), "No active downloads");
-        let item = |d, t| siler_core::ProgressItem {
-            id: 1,
-            downloaded: d,
-            total_size: t,
-            speed: 0,
-            active_connections: 1,
-            segments: vec![],
-            media: None,
-            phase: None,
-            source_bytes: vec![],
-        };
-        assert_eq!(
-            tray_status(&[item(50, Some(100)), item(5, None)], 5_100_000),
-            "2 downloading · 5.1 MB/s · 50%"
         );
     }
 }

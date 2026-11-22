@@ -10,6 +10,7 @@
     "longDescription": "A download manager with segmented downloads, FTP and SFTP, queues and schedules, video downloads and live recording (HLS, DASH, HDS, RTMP, YouTube and more) and extensions for Firefox and Chromium-based browsers.",
     "externalBin": [
       "binaries/siler-nmhost",
+      "binaries/siler-pac",
       "binaries/ffmpeg",
       "binaries/ffprobe"
     ],
@@ -19,7 +20,11 @@
     },
     "linux": {
       "appimage": {
-        "bundleMediaFramework": false
+        "bundleMediaFramework": false,
+        "files": {
+          "/usr/lib/libgtk-layer-shell.so.0": "binaries/libgtk-layer-shell.so.0",
+          "/usr/share/licenses/gtk-layer-shell/LICENSE": "binaries/gtk-layer-shell-LICENSE"
+        }
       }
     }
   }

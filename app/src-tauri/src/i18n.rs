@@ -250,6 +250,14 @@ mod tests {
             host: "ftp://h".into(),
             realm: None,
             rejected: true,
+            asked: siler_core::Asked::Password,
+        };
+        assert_eq!(error(&e), e.to_string());
+        let e = siler_core::Error::AuthRequired {
+            host: "https://h".into(),
+            realm: None,
+            rejected: true,
+            asked: siler_core::Asked::TicketFailed,
         };
         assert_eq!(error(&e), e.to_string());
         let e = siler_core::Error::Media(siler_core::MediaError::Drm);
@@ -275,6 +283,19 @@ mod tests {
             Error::Exists("f".into()),
             Error::FileMissing,
             Error::ProxyAuth,
+            Error::Proxy("x".into()),
+            Error::AuthRequired {
+                host: "proxy+http://p:8080".into(),
+                realm: None,
+                rejected: false,
+                asked: siler_core::Asked::Windows,
+            },
+            Error::AuthRequired {
+                host: "proxy+http://p:8080".into(),
+                realm: None,
+                rejected: true,
+                asked: siler_core::Asked::Windows,
+            },
             Error::Ftp(550, "x".into()),
             Error::HostKeyChanged("h".into()),
             Error::Media(MediaError::NotMedia),

@@ -22,7 +22,21 @@ pub enum Request {
         extension_version: Option<String>,
         #[serde(default)]
         protocol: Option<u32>,
+        /// Keep the connection, to be asked for fresh links. It is part of a ping because
+        /// older hosts don't start Siler for one, and older apps just answer it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subscribe: Option<Subscriber>,
     },
+    /// On a subscribed connection: the answer to [`Response::FindLink`].
+    LinkFound {
+        request: u64,
+        #[serde(default)]
+        item: Option<Box<BrowserItem>>,
+        #[serde(default)]
+        error: Option<String>,
+    },
+    /// Keeps a subscribed connection and the extension's background alive.
+    Beat,
     AddDownloads {
         items: Vec<BrowserItem>,
         /// Enqueue directly instead of showing the Add dialog.
@@ -56,6 +70,74 @@ pub struct BrowserItem {
     pub selected: Option<bool>,
     /// What the extension found out about a video on the page (protocol 2).
     pub media: Option<MediaHint>,
+    /// Where the link came from, to find it again when it expires. Absent for private
+    /// windows and from extensions before 0.5.0.
+    pub link: Option<LinkInfo>,
+}
+
+/// A browser that takes questions about expired links.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Subscriber {
+    /// The browser instance, as [`LinkInfo::browser`] names it.
+    pub browser: String,
+}
+
+/// Where a link came from. The same shape as siler-core's `LinkSource`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LinkInfo {
+    pub browser: Option<String>,
+    pub container: Option<String>,
+    /// The start of the redirects that led to the link, with its cookies.
+    pub first: Option<FirstUrl>,
+    pub locator: Option<LinkLocator>,
+    pub video: Option<LinkVideo>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FirstUrl {
+    pub url: String,
+    pub cookies: Option<String>,
+}
+
+/// What tells a link from the others on its page.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LinkLocator {
+    /// The link's address without its query.
+    pub path: Option<String>,
+    pub text: Option<String>,
+    /// The file's name.
+    pub name: Option<String>,
+}
+
+/// A recognised site's video and its format.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LinkVideo {
+    pub site: String,
+    pub id: String,
+    pub format: Option<String>,
+}
+
+/// What the browser is asked when a link expired.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LinkTask {
+    pub request: u64,
+    /// The page to open in the background.
+    pub page: String,
+    /// The link that expired.
+    pub url: String,
+    pub filename: Option<String>,
+    pub size: Option<u64>,
+    /// A stream, not a file.
+    pub media: bool,
+    pub container: Option<String>,
+    pub locator: Option<LinkLocator>,
+    pub video: Option<LinkVideo>,
 }
 
 /// A video the extension found on a page, with what the app can't see from the URL alone.
@@ -102,6 +184,19 @@ pub enum Response {
     },
     Accepted {
         count: usize,
+    },
+    /// The answer to a ping with `subscribe`: questions follow on this connection.
+    Subscribed {
+        version: String,
+        protocol: u32,
+    },
+    /// From the host, on a subscribed connection: Siler isn't running, and the host waits.
+    Waiting,
+    Beat,
+    FindLink(Box<LinkTask>),
+    /// The question isn't open any more.
+    CancelFind {
+        request: u64,
     },
     Status {
         active: usize,
@@ -241,7 +336,8 @@ mod tests {
             old,
             Request::Ping {
                 extension_version: None,
-                protocol: None
+                protocol: None,
+                subscribe: None,
             }
         ));
         let new: Request =
@@ -280,6 +376,30 @@ mod tests {
         // Items from protocol 1 have none.
         let old: BrowserItem = serde_json::from_str(r#"{"url":"https://x/y"}"#).unwrap();
         assert!(old.media.is_none());
+    }
+
+    #[test]
+    fn subscribing_is_a_ping_to_older_apps() {
+        let req = Request::Ping {
+            extension_version: Some("0.5.0".into()),
+            protocol: Some(PROTOCOL),
+            subscribe: Some(Subscriber {
+                browser: "b-1".into(),
+            }),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["type"], "ping");
+        assert_eq!(json["subscribe"]["browser"], "b-1");
+        let ask = serde_json::to_value(Response::FindLink(Box::new(LinkTask {
+            request: 7,
+            page: "https://p/".into(),
+            ..Default::default()
+        })))
+        .unwrap();
+        assert_eq!(
+            (&ask["type"], &ask["request"]),
+            (&"find_link".into(), &7.into())
+        );
     }
 
     #[test]

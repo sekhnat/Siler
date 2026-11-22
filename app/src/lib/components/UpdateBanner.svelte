@@ -91,7 +91,7 @@
     font-size: 12.5px;
   }
   .banner > :global(svg) {
-    color: var(--accent);
+    color: var(--accent-text);
     flex: none;
   }
   .grow {

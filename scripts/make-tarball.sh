@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Makes the release tarball, siler-<version>-linux-x86_64.tar.gz, from a release build:
-#   target/release/siler and siler-nmhost, the bundled FFmpeg (app/src-tauri/resources),
+#   target/release/siler, siler-nmhost and siler-pac, the bundled FFmpeg
+#   (app/src-tauri/resources),
 #   the signed Firefox extension (its path as the first argument, or the one
 #   scripts/sign-extension.sh left in ~/.local/share/siler), the Chromium extension
 #   (built here), the desktop entry, icons, native messaging manifests for a system-wide
@@ -15,6 +16,7 @@ name="siler-$version"
 out="$root/dist/$name"
 
 for f in "$root/target/release/siler" "$root/target/release/siler-nmhost" \
+         "$root/target/release/siler-pac" \
          "$root/app/src-tauri/resources/ffmpeg" "$root/app/src-tauri/resources/ffprobe" "$xpi"; do
   [ -f "$f" ] || { echo "missing: $f" >&2; exit 1; }
 done
@@ -24,6 +26,7 @@ license="$root/app/src-tauri/resources/ffmpeg-LICENSE.txt"
 rm -rf "$out"
 mkdir -p "$out"
 install -m755 "$root/target/release/siler" "$root/target/release/siler-nmhost" \
+  "$root/target/release/siler-pac" \
   "$root/app/src-tauri/resources/ffmpeg" "$root/app/src-tauri/resources/ffprobe" "$out/"
 install -m644 "$xpi" "$out/siler-integration.xpi"
 
@@ -54,6 +57,8 @@ Run it from this folder:
 
 Keep the folder where it is: the browsers start ./siler-nmhost from here.
 It needs WebKitGTK 4.1 and libayatana-appindicator (most desktops have them).
+Optional: gtk-layer-shell for the tray panel on Wayland, and MIT Kerberos
+(libgssapi_krb5) for Kerberos logins. Keep siler-pac beside siler: it runs proxy scripts.
 
 Browser extension:
   Firefox and its relatives: Siler → Settings → Browser → Add to Firefox, or open

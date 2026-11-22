@@ -407,7 +407,7 @@
   .note :global(svg) {
     flex: none;
     margin-top: 1px;
-    color: var(--accent);
+    color: var(--accent-text);
   }
   .note.err {
     background: color-mix(in srgb, var(--err) 10%, transparent);

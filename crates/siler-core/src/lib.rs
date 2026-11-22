@@ -25,9 +25,12 @@ pub mod proxy;
 mod queue;
 pub mod quota;
 mod ratelimit;
+mod refresh;
 mod resolve;
 pub mod scheduler;
+mod scope;
 mod segment;
+mod session;
 mod settings;
 mod store;
 mod task;
@@ -45,7 +48,11 @@ pub use media::{
 pub use net::{Login, host_key};
 pub use probe::ProbeResult;
 pub use queue::{AfterDone, MAIN_QUEUE, Queue};
+pub use refresh::{
+    FirstLink, FoundLink, LinkAsk, LinkFinder, LinkSearch, LinkSource, Locator, VideoRef,
+};
 pub use scheduler::Schedule;
+pub use scope::site_of;
 pub use segment::Segment;
 pub use settings::{
     AfterDownload, CategoryRule, ColumnSetting, ServerLimit, Settings, SoundSettings, UiSettings,

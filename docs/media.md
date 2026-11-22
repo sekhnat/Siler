@@ -56,6 +56,7 @@ Plain M3U (without HLS tags), PLS and ASX files are lists of links, not streams.
 ## How a stream downloads
 
 - The manifest is read again at every attempt, so expired signed links are replaced by the playlist's own refresh.
+- When the manifest's own address has expired (YouTube's links, or a CDN's tokenised paths), Siler gets a fresh one from the page the stream came from ([Fresh links](browser-extension.md#fresh-links)). Since the new pieces have other addresses, it fetches the first and last finished piece of each track again and keeps the work only if they are identical.
 - Downloaded pieces are kept in a hidden work folder (`.<name>.siler.media`) beside the output until it is published, and never fetched twice.
 - FFmpeg reads each track's pieces in order through a named pipe (under `$XDG_RUNTIME_DIR/siler/media/`), so no joined copy is written. If a track can't be read from a pipe (an MP4 with its index at the end), Siler joins it into one file and runs FFmpeg again.
 - The pieces stay until the output is written, so a download needs about twice the stream's size on disk at the end.

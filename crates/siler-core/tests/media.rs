@@ -1452,6 +1452,67 @@ async fn a_video_from_the_page_reports_its_size_while_it_downloads() {
 }
 
 #[tokio::test]
+async fn a_fresh_manifest_from_the_page_continues() {
+    let (addr, s) = spawn_server().await;
+    let t = dir();
+    whole_files(t.path());
+    *s.extra.lock().unwrap() = Some(t.path().to_path_buf());
+    s.faults
+        .lock()
+        .unwrap()
+        .insert("/extra/audio.mp4".into(), (99, Fault::Forbidden));
+    let e = engine_plain(t.path()).await;
+    let page = url(addr, "watch?v=x");
+    let hint = page_hint(addr);
+    let p = e
+        .probe_media(&page, &RequestMeta::default(), Some(&hint))
+        .await
+        .expect("probe");
+    let id = e
+        .add_media(NewMediaDownload {
+            url: page.clone(),
+            hint: Some(hint),
+            selection: Some(Selection {
+                video: None,
+                audio: p.default.audio.clone(),
+                subtitles: Vec::new(),
+            }),
+            container: Some(ContainerChoice::Original),
+            ..Default::default()
+        })
+        .await
+        .expect("add");
+    let d = wait_done(&e, id).await;
+    assert!(d.needs_link, "the user isn't asked for a fresh link: {d:?}");
+
+    // What the browser hands over next: the same page with a newly signed manifest, whose
+    // links live under another path.
+    s.faults.lock().unwrap().clear();
+    let mut fresh = page_hint(addr);
+    let m = fresh.manifest.as_mut().expect("a manifest");
+    m.body = m.body.replace(
+        "/extra/audio.mp4?expire=1",
+        "/redir/extra/audio.mp4?expire=2",
+    );
+    e.refresh_link(
+        id,
+        siler_core::FoundLink {
+            url: page,
+            hint: Some(fresh),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("refresh");
+    let d = wait_done(&e, id).await;
+    assert_eq!(d.status, Status::Completed, "{:?}", d.error);
+    // A track that is one file keeps its own format's ending.
+    let name = d.filename.as_deref().unwrap_or_default();
+    assert!(name.ends_with(".mp4"), "saved as {name}");
+    e.shutdown().await;
+}
+
+#[tokio::test]
 async fn expired_links_from_the_page_say_so() {
     let (addr, s) = spawn_server().await;
     let t = dir();
@@ -1719,12 +1780,19 @@ async fn a_recording_behind_the_live_edge_catches_up_and_finish_stops_it_at_once
         let first = s.first.lock().unwrap();
         (first["/muxed/seg1.ts"], first["/muxed/seg2.ts"])
     };
-    assert!(b.duration_since(a) < Duration::from_millis(1000), "fetched one after the other");
+    assert!(
+        b.duration_since(a) < Duration::from_millis(1000),
+        "fetched one after the other"
+    );
     // Finish doesn't wait for the segments still coming: the recording keeps the first.
     let pressed = Instant::now();
     e.finish(id).expect("finishes");
     let d = wait_done(&e, id).await;
-    assert!(pressed.elapsed() < Duration::from_secs(3), "{:?}", pressed.elapsed());
+    assert!(
+        pressed.elapsed() < Duration::from_secs(3),
+        "{:?}",
+        pressed.elapsed()
+    );
     assert_eq!(d.status, Status::Completed, "{:?}", d.error);
     let secs = duration_of(&ff, &output_of(&d));
     assert!((1.0..3.0).contains(&secs), "{secs}");

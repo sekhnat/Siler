@@ -7,7 +7,7 @@ use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::net::{UnixListener, UnixStream};
 
@@ -64,6 +64,28 @@ async fn serve(app: AppHandle) -> io::Result<()> {
 async fn handle(app: AppHandle, mut stream: UnixStream) -> io::Result<()> {
     while let Some(frame) = read_frame(&mut stream).await? {
         let response = match serde_json::from_slice::<Request>(&frame) {
+            Ok(Request::Ping {
+                extension_version,
+                subscribe: Some(subscriber),
+                protocol,
+            }) => {
+                // The same checks and bookkeeping as any ping, then the connection stays.
+                let pong = dispatch(
+                    &app,
+                    Request::Ping {
+                        extension_version,
+                        protocol,
+                        subscribe: None,
+                    },
+                );
+                let Response::Pong { version, protocol } = pong else {
+                    write_frame(&mut stream, &serde_json::to_vec(&pong)?).await?;
+                    continue;
+                };
+                let hello = Response::Subscribed { version, protocol };
+                write_frame(&mut stream, &serde_json::to_vec(&hello)?).await?;
+                return stay(&app, stream, subscriber.browser).await;
+            }
             Ok(req) => dispatch(&app, req),
             Err(e) => Response::Error {
                 message: format!("bad request: {e}"),
@@ -72,6 +94,50 @@ async fn handle(app: AppHandle, mut stream: UnixStream) -> io::Result<()> {
         write_frame(&mut stream, &serde_json::to_vec(&response)?).await?;
     }
     Ok(())
+}
+
+/// A subscribed browser: questions go out as they come up, and answers come back.
+async fn stay(app: &AppHandle, stream: UnixStream, browser: String) -> io::Result<()> {
+    let Some(browsers) = app.try_state::<AppState>().map(|s| s.browsers.clone()) else {
+        return Ok(());
+    };
+    let (subscription, mut questions) = browsers.subscribe(browser);
+    let (mut from, mut to) = stream.into_split();
+    let answers = async {
+        while let Some(frame) = read_frame(&mut from).await? {
+            match serde_json::from_slice::<Request>(&frame) {
+                Ok(Request::LinkFound {
+                    request,
+                    item,
+                    error,
+                }) => {
+                    let found = match item.filter(|i| !i.url.trim().is_empty()) {
+                        Some(item) => Ok(*item),
+                        None => Err(error.unwrap_or_else(|| "no link was found".into())),
+                    };
+                    subscription.answer(request, found);
+                }
+                Ok(_) => {}
+                Err(e) => tracing::debug!("unreadable message from the browser: {e}"),
+            }
+            if let Some(state) = app.try_state::<AppState>() {
+                state
+                    .last_browser_contact
+                    .store(now_ms(), Ordering::Relaxed);
+            }
+        }
+        Ok(())
+    };
+    let asking = async {
+        while let Some(question) = questions.recv().await {
+            write_frame(&mut to, &serde_json::to_vec(&question)?).await?;
+        }
+        Ok(())
+    };
+    tokio::select! {
+        ended = answers => ended,
+        ended = asking => ended,
+    }
 }
 
 fn now_ms() -> i64 {
@@ -94,6 +160,7 @@ fn dispatch(app: &AppHandle, req: Request) -> Response {
         Request::Ping {
             extension_version,
             protocol,
+            ..
         } => {
             if let Some(v) = extension_version {
                 *state.extension.lock().unwrap() = Some((v, protocol.unwrap_or(0)));
@@ -115,6 +182,10 @@ fn dispatch(app: &AppHandle, req: Request) -> Response {
                 speed: list.iter().map(|d| d.speed).sum(),
             }
         }
+        Request::Beat => Response::Beat,
+        Request::LinkFound { .. } => Response::Error {
+            message: "nothing was asked on this connection".into(),
+        },
         Request::AddDownloads { items, silent } => handle_add(
             app,
             items,
@@ -185,15 +256,15 @@ pub fn handle_add(app: &AppHandle, items: Vec<BrowserItem>, opts: &AddOptions) -
 
     // "Refresh link": the user opened the page to get a fresh link for a download.
     if count == 1
-        && let Some(id) = take_refresh_target(&state, &items[0])
+        && let Some(id) = state
+            .awaiting_refresh
+            .take(&items[0], |id| state.engine.get(id))
     {
         let item = items.into_iter().next().expect("one item");
         let engine = state.engine.clone();
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
-            let result = engine
-                .refresh_url(id, &item.url, Some(meta_of(&item)))
-                .await;
+            let result = engine.refresh_link(id, crate::links::found_of(&item)).await;
             crate::show_main(&app);
             let _ = app.emit(
                 "refresh-done",
@@ -235,6 +306,7 @@ pub fn handle_add(app: &AppHandle, items: Vec<BrowserItem>, opts: &AddOptions) -
                     let nd = siler_core::NewMediaDownload {
                         url: url.clone(),
                         meta: meta_of(&item),
+                        link: crate::links::source_of(&item),
                         hint,
                         filename: item.filename.clone(),
                         dir: opts.dir.clone(),
@@ -260,6 +332,7 @@ pub fn handle_add(app: &AppHandle, items: Vec<BrowserItem>, opts: &AddOptions) -
                 url: item.url.clone(),
                 filename: item.filename.clone(),
                 meta: meta_of(item),
+                link: crate::links::source_of(item),
                 on_conflict: Some(settings.unattended_conflict()),
                 dir: opts.dir.clone(),
                 start_paused: opts.later,
@@ -295,27 +368,6 @@ fn hint_for(item: &BrowserItem) -> Option<SourceHint> {
 /// extension found and sent as text (YouTube). Anything else is a file.
 fn is_video(item: &BrowserItem, hint: Option<&SourceHint>) -> bool {
     crate::media::is_stream(&item.url) || hint.is_some_and(|h| h.manifest.is_some())
-}
-
-/// The download waiting for a fresh link, if `item` looks like it (same size when known).
-fn take_refresh_target(state: &AppState, item: &BrowserItem) -> Option<i64> {
-    let mut waiting = state.awaiting_refresh.lock().unwrap();
-    let (id, until) = (*waiting)?;
-    if Instant::now() > until {
-        *waiting = None;
-        return None;
-    }
-    let d = state.engine.get(id)?;
-    let same = match (d.total_size, item.size) {
-        (Some(a), Some(b)) => a == b,
-        _ => true, // the engine checks again after probing
-    };
-    if same {
-        *waiting = None;
-        Some(id)
-    } else {
-        None
-    }
 }
 
 #[cfg(test)]

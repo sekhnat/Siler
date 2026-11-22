@@ -182,6 +182,12 @@
   "optionsShowNotification": {
     "message": "Show a notification when Siler can't take a download, and why."
   },
+  "optionsRefreshLinks": {
+    "message": "Help Siler refresh expired links"
+  },
+  "optionsRefreshLinksHint": {
+    "message": "When a download's link expires, look at its page in a muted background tab, then close that tab. Nothing is clicked, and private windows aren't used."
+  },
   "optionsTellMe": {
     "message": "Tell me when a download stays in the browser"
   },

@@ -1,8 +1,9 @@
 # Builds the Linux AppImage when a release is published and attaches it to the release.
 # It can also be run by hand for an existing release (Actions → AppImage → Run workflow).
 #
-# The AppImage carries Siler, its native messaging host (siler-nmhost) and the bundled
-# FFmpeg (scripts/build-ffmpeg.sh). It is built on the oldest supported Ubuntu, so it runs
+# The AppImage carries Siler, its native messaging host (siler-nmhost), the proxy script
+# helper (siler-pac), gtk-layer-shell for the tray panel and the bundled FFmpeg
+# (scripts/build-ffmpeg.sh). It is built on the oldest supported Ubuntu, so it runs
 # on distributions with that glibc or newer. It carries zsync update information, and its
 # .zsync file is attached beside it, so AppImage updaters fetch only what changed
 # (scripts/appimage-zsync.sh).
@@ -41,7 +42,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential curl file xz-utils patchelf zsync zip \
-            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev libxdo-dev
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev libxdo-dev \
+            libgtk-layer-shell0
 
       - name: The tag matches the app's version
         run: |
@@ -99,12 +101,16 @@ jobs:
       - name: The Chromium extension
         run: node scripts/build-extension.mjs chromium
 
-      - name: Native messaging host and FFmpeg beside the app
+      - name: Helpers, FFmpeg and gtk-layer-shell beside the app
         run: |
-          cargo build --release --locked -p siler-nmhost
+          cargo build --release --locked -p siler-nmhost -p siler-pac
           triple=$(rustc -vV | sed -n 's/^host: //p')
           mkdir -p app/src-tauri/binaries
           cp target/release/siler-nmhost "app/src-tauri/binaries/siler-nmhost-$triple"
+          cp target/release/siler-pac "app/src-tauri/binaries/siler-pac-$triple"
+          # The tray panel loads it at run time, so linuxdeploy can't see that it is needed.
+          cp -L /usr/lib/x86_64-linux-gnu/libgtk-layer-shell.so.0 app/src-tauri/binaries/libgtk-layer-shell.so.0
+          cp /usr/share/doc/libgtk-layer-shell0/copyright app/src-tauri/binaries/gtk-layer-shell-LICENSE
           cp app/src-tauri/resources/ffmpeg "app/src-tauri/binaries/ffmpeg-$triple"
           cp app/src-tauri/resources/ffprobe "app/src-tauri/binaries/ffprobe-$triple"
 
@@ -132,7 +138,7 @@ jobs:
 
       - name: The tarball (also what the AUR package installs)
         run: |
-          cargo build --release --locked -p siler-nmhost
+          cargo build --release --locked -p siler-nmhost -p siler-pac
           tarball=$(scripts/make-tarball.sh app/src-tauri/resources/siler-integration.xpi | tail -n 1)
           cp "$tarball" "$tarball.sha256" out/
           cp "dist/siler-chromium-$(python3 -c 'import json; print(json.load(open("extension/manifest.json"))["version"])').zip" out/

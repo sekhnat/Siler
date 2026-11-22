@@ -30,14 +30,18 @@ pub enum Error {
     #[error("The file was moved or deleted")]
     FileMissing,
     /// The server answered 401: it wants a login, or refused the one sent.
-    #[error("{}", auth_message(host, *rejected))]
+    #[error("{}", auth_message(host, *rejected, *asked))]
     AuthRequired {
         host: String,
         realm: Option<String>,
         rejected: bool,
+        asked: crate::Asked,
     },
     #[error("The proxy needs a username and password")]
     ProxyAuth,
+    /// The chosen proxy script couldn't answer, and connecting directly would go round it.
+    #[error("The proxy script didn't work, so nothing was sent: {0}")]
+    Proxy(String),
     /// An FTP server refused a command (a 5xx reply), with its words.
     #[error("{}", ftp_message(*.0, .1))]
     Ftp(u16, String),
@@ -125,8 +129,16 @@ fn ftp_message(code: u16, text: &str) -> String {
     }
 }
 
-fn auth_message(host: &str, rejected: bool) -> String {
-    if rejected {
+fn auth_message(host: &str, rejected: bool, asked: crate::Asked) -> String {
+    let proxy = host.strip_prefix("proxy+");
+    let host = proxy.unwrap_or(host);
+    if asked == crate::Asked::TicketFailed {
+        format!("{host} didn't accept your Kerberos ticket, or there isn't one")
+    } else if proxy.is_some() && rejected {
+        format!("The proxy {host} didn't accept the username and password")
+    } else if proxy.is_some() {
+        format!("The proxy {host} needs a username and password")
+    } else if rejected {
         format!("{host} didn't accept the username and password")
     } else {
         format!("{host} needs a username and password")
@@ -195,15 +207,24 @@ impl Error {
             Error::LinkMismatch(text) => ("text", vec![("text", text.clone())]),
             Error::Exists(name) => ("exists", vec![("name", name.clone())]),
             Error::FileMissing => ("file-missing", vec![]),
-            Error::AuthRequired { host, rejected, .. } => (
-                if *rejected {
-                    "auth-rejected"
-                } else {
-                    "auth-required"
-                },
-                vec![("host", host.clone())],
-            ),
+            Error::AuthRequired {
+                host,
+                rejected,
+                asked,
+                ..
+            } => {
+                let proxy = host.strip_prefix("proxy+");
+                let code = match (asked, proxy.is_some(), *rejected) {
+                    (crate::Asked::TicketFailed, _, _) => "auth-ticket",
+                    (_, true, true) => "proxy-login-rejected",
+                    (_, true, false) => "proxy-login-required",
+                    (_, false, true) => "auth-rejected",
+                    (_, false, false) => "auth-required",
+                };
+                (code, vec![("host", proxy.unwrap_or(host).to_string())])
+            }
             Error::ProxyAuth => ("proxy-auth", vec![]),
+            Error::Proxy(why) => ("proxy-script", vec![("why", why.clone())]),
             Error::Ftp(code, text) if text.is_empty() => {
                 ("ftp-bare", vec![("code", code.to_string())])
             }
@@ -239,10 +260,12 @@ impl Error {
                 host,
                 realm,
                 rejected,
+                asked,
             } => Some(crate::LoginRequest {
                 host: host.clone(),
                 realm: realm.clone(),
                 rejected: *rejected,
+                asked: *asked,
             }),
             _ => None,
         }

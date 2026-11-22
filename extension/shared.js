@@ -22,6 +22,8 @@ const SILER_DEFAULTS = {
   notifyFailures: true,
   // Look for videos on pages (listed in the popup, counted on the toolbar button).
   findVideos: true,
+  // Look at a page in a background tab when Siler asks for a fresh link.
+  refreshLinks: true,
   // Show a Download button over videos on pages.
   videoButton: true,
   // Site recognisers, each on or off.

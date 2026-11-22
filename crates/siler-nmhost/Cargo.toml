@@ -7,3 +7,6 @@ publish.workspace = true
 [dependencies]
 siler-ipc = { path = "../siler-ipc" }
 serde_json.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

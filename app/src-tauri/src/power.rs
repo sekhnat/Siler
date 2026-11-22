@@ -161,6 +161,7 @@ fn verb(action: AfterDone) -> &'static str {
 }
 
 fn open_countdown_window(app: &AppHandle) {
+    crate::tray::panel::close(app);
     if let Some(w) = app.get_webview_window("countdown") {
         let _ = w.show();
         let _ = w.set_focus();
@@ -218,10 +219,10 @@ pub fn schedule(app: &AppHandle, action: AfterDone, reason: String) {
             "power-will-in-a-minute",
             vec![("action", verb(action).into())],
         ))
-        .body(tr_args(
+        .body(crate::body_text(&tr_args(
             "power-open-siler-to-cancel",
             vec![("reason", reason.as_str().into())],
-        ))
+        )))
         .show();
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -255,7 +256,7 @@ pub async fn run_now(app: &AppHandle) {
                 "power-couldnt",
                 vec![("action", verb(p.action).into())],
             ))
-            .body(e)
+            .body(crate::body_text(&e))
             .show();
     }
 }

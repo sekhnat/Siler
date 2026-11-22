@@ -3060,7 +3060,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e9ec52138abedcc58dc17a7c6c0c00a2bdb4f3427c7f63fa97fd0d859155caf"
 dependencies = [
  "gtk-sys",
- "libloading",
+ "libloading 0.7.4",
  "once_cell",
 ]
 
@@ -3087,6 +3087,16 @@ checksum = "b67380fd3b2fbe7527a606e18729d21c6f3951633d0500574c4dc22d2d638b9f"
 dependencies = [
  "cfg-if",
  "winapi",
+]
+
+[[package]]
+name = "libloading"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a1832accd5a4ca2795ace4d05d15c4039be15b62d3b950eff99746a990e3cc10"
+dependencies = [
+ "cfg-if",
+ "windows-link",
 ]
 
 [[package]]
@@ -3241,6 +3251,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "69b6441f590336821bb897fb28fc622898ccceb1d6cea3fde5ea86b090c4de98"
 dependencies = [
  "cfg-if",
+ "digest 0.11.3",
+]
+
+[[package]]
+name = "md4"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bd76fb0fd6b2e4be62a73f8e0858ca97f81babcb1af322dcaca196f735f17f80"
+dependencies = [
  "digest 0.11.3",
 ]
 
@@ -4441,6 +4460,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "psl"
+version = "2.1.261"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3058f918351d1ee290ff4e70243e419b33269dcb83bc8cd46c5afa8a97a90012"
+dependencies = [
+ "psl-types",
+]
+
+[[package]]
+name = "psl-types"
+version = "2.0.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33cb294fe86a74cbcf50d4445b37da762029549ebeea341421c7c70370f86cac"
+
+[[package]]
 name = "pxfm"
 version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4717,6 +4751,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d902046e6a28a1e4c3cab97258a0ce11e994903f01c2d97a9447a0b3df85f4f6"
 
 [[package]]
+name = "relative-path"
+version = "2.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38540a682c6e9bca04a8bca9e5ec5a6ba168dfbb04c9998fe517a9befb92eb68"
+dependencies = [
+ "serde_core",
+]
+
+[[package]]
 name = "reqwest"
 version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4806,6 +4849,35 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "rquickjs"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0a22bf72f515cc4189dd7c63d016f6de92a11eee98ddf7dd64794198f6eb34e"
+dependencies = [
+ "rquickjs-core",
+]
+
+[[package]]
+name = "rquickjs-core"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6657979a24d543e5fc66f32cef2f47ca82ce8eb55cec5f7d59a12b7b570bbf24"
+dependencies = [
+ "hashbrown 0.17.1",
+ "relative-path",
+ "rquickjs-sys",
+]
+
+[[package]]
+name = "rquickjs-sys"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cee271d0eeba64f0915b846cb7ae02e16faf3dfdffdca91731101d9d30fe3423"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
@@ -5603,12 +5675,14 @@ dependencies = [
 
 [[package]]
 name = "siler"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "arboard",
  "dirs",
  "fluent-bundle",
+ "gtk",
  "ksni",
+ "libloading 0.9.1",
  "oo7",
  "open",
  "percent-encoding",
@@ -5639,7 +5713,7 @@ dependencies = [
 
 [[package]]
 name = "siler-core"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -5651,12 +5725,17 @@ dependencies = [
  "fastrand",
  "flate2",
  "futures-util",
+ "hmac",
  "httpdate",
+ "hyper-util",
  "jiff 1.0.1",
+ "libloading 0.9.1",
  "lol_html",
  "md-5 0.11.0",
+ "md4",
  "mime_guess",
  "percent-encoding",
+ "psl",
  "reqwest",
  "rusqlite",
  "russh",
@@ -5675,11 +5754,12 @@ dependencies = [
  "tokio-util",
  "tracing",
  "url",
+ "zbus 5.19.0",
 ]
 
 [[package]]
 name = "siler-ipc"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5688,7 +5768,7 @@ dependencies = [
 
 [[package]]
 name = "siler-media"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "aes",
  "base64 0.22.1",
@@ -5706,10 +5786,21 @@ dependencies = [
 
 [[package]]
 name = "siler-nmhost"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "serde_json",
  "siler-ipc",
+ "tempfile",
+]
+
+[[package]]
+name = "siler-pac"
+version = "0.9.0"
+dependencies = [
+ "rquickjs",
+ "rustix",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

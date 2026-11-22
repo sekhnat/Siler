@@ -436,12 +436,12 @@ impl Store {
 
 fn row_to_record(row: &Row) -> rusqlite::Result<Record> {
     let meta: String = row.get("meta")?;
+    let url: String = row.get("url")?;
     let segments: String = row.get("segments")?;
     let category: String = row.get("category")?;
     let status: String = row.get("status")?;
     Ok(Record {
         id: row.get("id")?,
-        url: row.get("url")?,
         final_url: row.get("final_url")?,
         filename: row.get("filename")?,
         dir: row.get::<_, Option<String>>("dir")?.map(PathBuf::from),
@@ -454,7 +454,11 @@ fn row_to_record(row: &Row) -> rusqlite::Result<Record> {
         notice: row.get("notice")?,
         etag: row.get("etag")?,
         last_modified: row.get("last_modified")?,
-        meta: serde_json::from_str(&meta).unwrap_or_default(),
+        // Rows from before 0.9 don't say whose the context is: the download's own link's.
+        meta: serde_json::from_str::<RequestMeta>(&meta)
+            .unwrap_or_default()
+            .bound_to(&url),
+        url,
         connections: row.get("connections")?,
         speed_limit: u(row.get("speed_limit")?),
         created_at: row.get("created_at")?,
@@ -518,6 +522,10 @@ mod tests {
         assert_eq!(recs[0].status, Status::Paused);
         assert_eq!(recs[0].meta.cookies.as_deref(), Some("a=b"));
         assert_eq!(recs[0].meta.method, None);
+        assert!(
+            recs[0].meta.origin.is_some(),
+            "an old row is tied to its link's site"
+        );
         assert_eq!(recs[0].queue_id, 1);
         assert_eq!(recs[0].sync_every, 0);
         let queues = store.load_queues().unwrap();

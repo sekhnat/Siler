@@ -32,6 +32,12 @@ pub struct Extras {
     /// What the last error was, as a code the app can show in its language.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_code: Option<ErrorCode>,
+    /// Where the link came from. It holds secrets: never exported or shown.
+    #[serde(skip_serializing_if = "crate::LinkSource::is_empty")]
+    pub link: crate::LinkSource,
+    /// How far refreshing an expired link got.
+    #[serde(skip_serializing_if = "crate::refresh::Attempts::is_default")]
+    pub(crate) refresh: crate::refresh::Attempts,
 }
 
 /// An error as a code and its details (see `Error::code_args`).

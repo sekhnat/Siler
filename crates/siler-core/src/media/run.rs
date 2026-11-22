@@ -16,7 +16,7 @@ use tokio::task::JoinSet;
 use siler_media::classify;
 use siler_media::crypto::{self, AesKey};
 use siler_media::select::{self, Output, Selection, SubtitleMode};
-use siler_media::{Key, ParseLimits, Presentation, SegmentContainer, TrackKind, protection};
+use siler_media::{Key, ParseLimits, Presentation, SegmentContainer, Track, TrackKind, protection};
 
 use super::probe;
 use super::reconstruct::{self, MuxInput, Source};
@@ -28,7 +28,7 @@ use crate::ratelimit::RateLimiter;
 use crate::task::{Outcome, Running, retry_delay};
 use crate::{Error, Event, OnConflict, Result, Status, filename};
 
-use super::{MediaProgress, SourceHint, workdir};
+use super::{MediaProgress, SourceHint, same, workdir};
 
 /// Everything a piece download needs, shared by its tasks.
 pub(super) struct Fetch {
@@ -41,6 +41,8 @@ pub(super) struct Fetch {
     max_key: u64,
     /// What the browser said about the source (an inline manifest, ranged fetching).
     hint: Option<SourceHint>,
+    /// What the chosen tracks are, to find them in a manifest read again.
+    picked: Vec<same::Picked>,
     /// The size of every piece being fetched, as far as it is known.
     sizes: Mutex<Sizes>,
 }
@@ -125,6 +127,35 @@ impl Fetch {
             ..self.io()
         }
     }
+
+    /// Bytes fetched again to compare, by way of `scratch`; they don't count.
+    pub(super) async fn fetch_range_again(
+        &self,
+        url: &Url,
+        range: (u64, u64),
+        scratch: &Path,
+    ) -> Result<Vec<u8>> {
+        self.read_again(url, Some(range), scratch).await
+    }
+
+    /// A piece as it would be kept, fetched again to compare.
+    pub(super) async fn fetch_again(&self, job: &Job, scratch: &Path) -> Result<Vec<u8>> {
+        let raw = self.read_again(&job.url, job.range, scratch).await?;
+        plain_piece(self, job, raw).await
+    }
+
+    async fn read_again(
+        &self,
+        url: &Url,
+        range: Option<(u64, u64)>,
+        scratch: &Path,
+    ) -> Result<Vec<u8>> {
+        let io = self.io_uncounted();
+        http::fetch_object(&self.http, url, scratch, range, false, &io).await?;
+        let bytes = tokio::fs::read(scratch).await?;
+        tokio::fs::remove_file(scratch).await?;
+        Ok(bytes)
+    }
 }
 
 /// One object to fetch into the Work Directory.
@@ -171,32 +202,46 @@ fn jobs_of(pres: &Presentation, sel: &Selection, work: &Path) -> Result<Vec<Job>
             }
             continue;
         }
-        for (i, init) in t.plan.inits.iter().enumerate() {
-            jobs.push(Job {
-                dest: reconstruct::init_path(work, t, i),
-                url: init.object.url.clone(),
-                range: range_of(init.object.range),
-                key: init.key.clone(),
-                seq: 0,
-                whole: false,
-                init: true,
-                delay: Duration::ZERO,
-            });
+        for i in 0..t.plan.inits.len() {
+            jobs.push(Job::init(work, t, i));
         }
-        for (i, seg) in t.plan.segments.iter().enumerate() {
-            jobs.push(Job {
-                dest: reconstruct::piece_path(work, t, i),
-                url: seg.object.url.clone(),
-                range: range_of(seg.object.range),
-                key: seg.key.clone(),
-                seq: seg.seq,
-                whole: false,
-                init: false,
-                delay: Duration::ZERO,
-            });
+        for i in 0..t.plan.segments.len() {
+            jobs.push(Job::piece(work, t, i));
         }
     }
     Ok(jobs)
+}
+
+impl Job {
+    /// Initialisation segment `i` of a track.
+    pub(super) fn init(work: &Path, t: &Track, i: usize) -> Job {
+        let init = &t.plan.inits[i];
+        Job {
+            dest: reconstruct::init_path(work, t, i),
+            url: init.object.url.clone(),
+            range: range_of(init.object.range),
+            key: init.key.clone(),
+            seq: 0,
+            whole: false,
+            init: true,
+            delay: Duration::ZERO,
+        }
+    }
+
+    /// Segment `i` of a track.
+    pub(super) fn piece(work: &Path, t: &Track, i: usize) -> Job {
+        let seg = &t.plan.segments[i];
+        Job {
+            dest: reconstruct::piece_path(work, t, i),
+            url: seg.object.url.clone(),
+            range: range_of(seg.object.range),
+            key: seg.key.clone(),
+            seq: seg.seq,
+            whole: false,
+            init: false,
+            delay: Duration::ZERO,
+        }
+    }
 }
 
 fn range_of(r: Option<siler_media::ByteRange>) -> Option<(u64, u64)> {
@@ -248,26 +293,29 @@ pub(super) fn uncount(run: &Running, n: u64) {
         .try_update(Relaxed, Relaxed, |v| Some(v.saturating_sub(n)));
 }
 
-/// Checks a fetched piece and keeps it: not a web page, decrypted, not DRM-protected.
-async fn keep_piece(c: &Fetch, job: &Job, bytes: Vec<u8>) -> Result<()> {
+/// A fetched piece as it is kept: not a web page, and decrypted.
+async fn plain_piece(c: &Fetch, job: &Job, bytes: Vec<u8>) -> Result<Vec<u8>> {
     if classify::looks_like_html(&bytes) {
         return Err(Error::Media(MediaError::SegmentInvalid));
     }
-    let data = match &job.key {
-        Some(k) => {
-            let key = key_for(c, &k.url, &c.io_uncounted()).await?;
-            let iv = k.iv.unwrap_or_else(|| crypto::iv_from_sequence(job.seq));
-            let plain = crypto::decrypt_aes128_cbc(&bytes, &key, &iv)
-                .map_err(|_| Error::Media(MediaError::Decrypt))?;
-            // An init's IV may have been guessed (no IV on the key line): the result must
-            // look like the start of an initialisation segment.
-            if job.init && !classify::looks_like_init(&plain) {
-                return Err(Error::Media(MediaError::Decrypt));
-            }
-            plain
-        }
-        None => bytes,
+    let Some(k) = &job.key else {
+        return Ok(bytes);
     };
+    let key = key_for(c, &k.url, &c.io_uncounted()).await?;
+    let iv = k.iv.unwrap_or_else(|| crypto::iv_from_sequence(job.seq));
+    let plain = crypto::decrypt_aes128_cbc(&bytes, &key, &iv)
+        .map_err(|_| Error::Media(MediaError::Decrypt))?;
+    // An init's IV may have been guessed (no IV on the key line): the result must
+    // look like the start of an initialisation segment.
+    if job.init && !classify::looks_like_init(&plain) {
+        return Err(Error::Media(MediaError::Decrypt));
+    }
+    Ok(plain)
+}
+
+/// Checks a fetched piece and keeps it: not a web page, decrypted, not DRM-protected.
+async fn keep_piece(c: &Fetch, job: &Job, bytes: Vec<u8>) -> Result<()> {
+    let data = plain_piece(c, job, bytes).await?;
     if job.init && protection::init_protection(&data).is_some() {
         return Err(Error::Media(MediaError::Drm));
     }
@@ -415,8 +463,12 @@ async fn fetch_all(
                         if stale && refreshes < 3 && !c.fixed_links() {
                             refreshes += 1;
                             tracing::info!("media {url}: refreshing the playlist ({refreshes} of 3)");
-                            let fresh = refresh(c, url, lim).await?;
-                            check_fingerprint(Some(fingerprint), &fingerprint_of(&fresh, sel)?, work)?;
+                            let mut fresh = refresh(c, url, lim).await?;
+                            same::adopt(&mut fresh, &c.picked);
+                            let now = fingerprint_of(&fresh, sel)?;
+                            if check_fingerprint(Some(fingerprint), &now, work).is_err() {
+                                same::verify(c, &fresh, sel, work).await?;
+                            }
                             *pres = fresh;
                             pending = jobs_of(pres, sel, work)?
                                 .into_iter()
@@ -715,6 +767,7 @@ pub(crate) async fn drive(inner: &Arc<Inner>, id: i64, run: &Arc<Running>) -> Re
         keys: Mutex::new(HashMap::new()),
         max_key: lim.max_key_bytes as u64,
         hint: mr.hint.clone(),
+        picked: mr.picked.clone(),
         sizes: Mutex::new(Sizes::default()),
     });
 
@@ -748,16 +801,28 @@ pub(crate) async fn drive(inner: &Arc<Inner>, id: i64, run: &Arc<Running>) -> Re
         )
         .await;
     }
+    same::adopt(&mut pres, &mr.picked);
     let resolved = select::resolve(&pres, &mr.selection)
         .map_err(|_| Error::Media(MediaError::SelectionUnavailable))?;
     let fingerprint = select::fingerprint(&resolved);
     let need = select::estimate_bytes(&resolved);
-    check_fingerprint(mr.fingerprint.as_deref(), &fingerprint, &work)?;
-    if mr.fingerprint.as_deref() != Some(fingerprint.as_str()) {
+    if check_fingerprint(mr.fingerprint.as_deref(), &fingerprint, &work).is_err() {
+        // Fresh links change the fingerprint; the pieces say whether it is the same stream.
+        tokio::select! {
+            r = same::verify(&c, &pres, &mr.selection, &work) => r?,
+            _ = run.cancel.cancelled() => return Ok(Outcome::Stopped),
+        }
+    }
+    let picked = match mr.picked.is_empty() {
+        true => same::picked(&pres, &mr.selection),
+        false => mr.picked.clone(),
+    };
+    if mr.fingerprint.as_deref() != Some(fingerprint.as_str()) || picked != mr.picked {
         let mut st = inner.state();
         if let Some(r) = st.records.get_mut(&id) {
             if let Some(m) = r.media.as_mut() {
                 m.fingerprint = Some(fingerprint.clone());
+                m.picked = picked;
             }
             inner.persist_and_emit(r, Some(run))?;
         }
@@ -830,7 +895,16 @@ pub(super) fn publish(
     work: &Path,
 ) -> Result<Outcome> {
     set_media(run, |m| m.phase = "publishing");
-    let ext = out
+    // A whole-file track's name says nothing of its format: the download's does.
+    let named = if out
+        .file_name()
+        .is_some_and(|f| f == reconstruct::WHOLE_FILE)
+    {
+        Path::new(name)
+    } else {
+        out.as_path()
+    };
+    let ext = named
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("bin")

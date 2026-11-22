@@ -1,6 +1,6 @@
 <script lang="ts">
   import { t } from "../i18n";
-  import { CircleStop, FileArchive, Film, FolderOpen, KeyRound, ListOrdered, LoaderCircle, Pause, Play, Radio, RefreshCw, RotateCw, ShieldCheck, ShieldX, SquareTerminal, Waypoints } from "@lucide/svelte";
+  import { CircleStop, FileArchive, Film, FolderOpen, KeyRound, Link2, ListOrdered, LoaderCircle, Pause, Play, Radio, RefreshCw, RotateCw, ShieldCheck, ShieldX, SquareTerminal, Waypoints } from "@lucide/svelte";
   import { ALGO_LABEL, api, MAIN_QUEUE, type Download } from "../api";
     import { bytes, clock, eta, host, knownSize, nameFromUrl, percent, relativeTime, speed, STREAM_KIND, syncLabel } from "../format";
   import { errorOf, isRecording, phaseText, progressOf, sizeText, statusColor, statusText } from "../rowview";
@@ -26,6 +26,11 @@
   function askLogin(e: MouseEvent) {
     e.stopPropagation();
     window.dispatchEvent(new CustomEvent("siler-login", { detail: d.id }));
+  }
+
+  function askLink(e: MouseEvent) {
+    e.stopPropagation();
+    window.dispatchEvent(new CustomEvent("siler-link", { detail: d.id }));
   }
 </script>
 
@@ -106,6 +111,8 @@
       <button class="icon-btn sm" title={t("download-row-check-the-server-s-key")} onclick={askLogin}><KeyRound size={15} /></button>
     {:else if d.needs_login}
       <button class="icon-btn sm" title={t("download-row-log-in")} onclick={askLogin}><KeyRound size={15} /></button>
+    {:else if d.needs_link}
+      <button class="icon-btn sm" title={t("download-row-get-a-fresh-link")} onclick={askLink}><Link2 size={15} /></button>
     {:else if d.status === "failed"}
       <button class="icon-btn sm" title={t("download-row-retry")} onclick={(e) => (e.stopPropagation(), attempt(api.resume(d.id)))}><RotateCw size={15} /></button>
     {/if}

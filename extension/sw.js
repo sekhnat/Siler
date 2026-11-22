@@ -8,5 +8,6 @@ importScripts(
   "media/youtube/build.js",
   "media/youtube/page.js",
   "media/feed.js",
+  "links.js",
   "background.js",
 );

@@ -3,8 +3,10 @@ use reqwest::{Client, Method, RequestBuilder, StatusCode, Url};
 use serde::Serialize;
 use std::path::PathBuf;
 
-use crate::error::{describe, parse_retry_after};
-use crate::net::{HostAuth, Net, host_key, parse_challenge};
+use crate::net::Net;
+use crate::scope::Scoped;
+use crate::session::auth::HostAuth;
+use crate::session::{Policy, Request};
 use crate::{Category, Error, RequestMeta, Result, filename};
 
 /// What the server told us about a URL, plus where Siler would save it.
@@ -30,6 +32,10 @@ pub struct ProbeResult {
     pub duplicates: Vec<String>,
     /// The file's checksum, when the server sent a `Digest` or `Repr-Digest` header.
     pub digest: Option<crate::checksum::Checksum>,
+    /// The browser's context as it stood after the redirects: what requests to `final_url`
+    /// start from. It holds secrets, so the interface never gets it.
+    #[serde(skip)]
+    pub(crate) final_meta: RequestMeta,
 }
 
 pub(crate) fn parse_url(url: &str) -> Result<Url> {
@@ -49,15 +55,17 @@ pub(crate) fn parse_web_url(url: &str) -> Result<Url> {
     }
 }
 
-/// A request carrying the browser context (GET, or the captured form submission).
-/// Content encoding is disabled so byte ranges refer to the file itself.
+/// A request carrying what its address may have of the browser context (GET, or the
+/// captured form submission). Content encoding is disabled so byte ranges refer to the file itself.
 pub(crate) fn build_request(
     client: &Client,
     url: Url,
-    meta: &RequestMeta,
+    scoped: &Scoped,
     default_ua: &str,
     auth: Option<&HostAuth>,
 ) -> RequestBuilder {
+    let meta = scoped.meta();
+    let auth = auth.filter(|_| scoped.logins());
     let ua = meta
         .user_agent
         .as_deref()
@@ -95,6 +103,7 @@ pub(crate) fn build_request(
             header::CONTENT_LENGTH,
             header::CONNECTION,
             header::COOKIE,
+            header::PROXY_AUTHORIZATION,
             header::REFERER,
             header::USER_AGENT,
         ];
@@ -110,16 +119,6 @@ pub(crate) fn build_request(
         rb = rb.body(body);
     }
     rb
-}
-
-/// The `Retry-After` delay of a 429/503 response, as an error worth retrying.
-pub(crate) fn busy(resp: &reqwest::Response) -> Error {
-    let after = resp
-        .headers()
-        .get(header::RETRY_AFTER)
-        .and_then(|v| v.to_str().ok())
-        .and_then(parse_retry_after);
-    Error::Busy(resp.status().as_u16(), after)
 }
 
 /// Parses `bytes <a>-<b>/<total|*>`.
@@ -150,41 +149,16 @@ pub(crate) async fn probe(
     if crate::transport::kind(&url) != crate::transport::Kind::Http {
         return crate::transport::probe(net, &url).await;
     }
-    let mut target = url.clone();
-    let mut attempts = 0;
-    let resp = loop {
-        let auth = net.auth_for(&target);
-        let sent = auth.as_ref().is_some_and(|a| a.ready());
-        let resp = build_request(&net.client(), target.clone(), meta, ua, auth.as_deref())
-            .header(header::RANGE, "bytes=0-0")
-            .send()
-            .await
-            .map_err(|e| Error::Network(describe(&e)))?;
-        match resp.status() {
-            StatusCode::UNAUTHORIZED => {
-                // Possibly after redirects: the login belongs to the server that asked.
-                let at = resp.url().clone();
-                let sent_here = sent && host_key(&at) == host_key(&target);
-                let challenge = parse_challenge(resp.headers());
-                let realm = challenge.as_ref().and_then(|c| c.realm.clone());
-                let retry =
-                    challenge.is_some_and(|c| net.entry(&host_key(&at)).learn(c, sent_here));
-                attempts += 1;
-                if retry && attempts < 3 {
-                    target = at;
-                    continue;
-                }
-                return Err(Error::AuthRequired {
-                    host: host_key(&at),
-                    realm,
-                    rejected: sent_here,
-                });
-            }
-            StatusCode::PROXY_AUTHENTICATION_REQUIRED => return Err(Error::ProxyAuth),
-            _ => break resp,
-        }
-    };
-
+    let meta = meta.clone().bound_to(url.as_str());
+    let resp = net
+        .send(Request {
+            url: &url,
+            meta: &meta,
+            user_agent: ua,
+            range: Some("bytes=0-0"),
+            policy: Policy::File,
+        })
+        .await?;
     let status = resp.status();
     let get = |name: HeaderName| {
         resp.headers()
@@ -201,7 +175,7 @@ pub(crate) async fn probe(
         },
         StatusCode::RANGE_NOT_SATISFIABLE => (content_range.and_then(|r| r.2).or(Some(0)), false),
         s if s.is_success() => (resp.content_length(), false),
-        StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE => return Err(busy(&resp)),
+        StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE => return Err(resp.busy()),
         s => return Err(Error::Http(s.as_u16())),
     };
 
@@ -229,6 +203,7 @@ pub(crate) async fn probe(
     Ok(ProbeResult {
         duplicates,
         digest,
+        final_meta: resp.meta.clone(),
         final_url: final_url.to_string(),
         total_size,
         resumable,
@@ -269,25 +244,19 @@ pub(crate) async fn fetch_range(
             })?;
         return crate::transport::collect(s, len).await;
     }
-    let auth = net.auth_for(&url);
-    let resp = build_request(&net.client(), url, meta, ua, auth.as_deref())
-        .header(
-            header::RANGE,
-            format!("bytes={}-{}", start, start + len - 1),
-        )
-        .send()
-        .await
-        .map_err(|e| Error::Network(describe(&e)))?;
+    let range = format!("bytes={}-{}", start, start + len - 1);
+    let resp = net
+        .send(Request {
+            url: &url,
+            meta,
+            user_agent: ua,
+            range: Some(&range),
+            policy: Policy::File,
+        })
+        .await?;
     match resp.status() {
         StatusCode::PARTIAL_CONTENT => {}
-        StatusCode::UNAUTHORIZED => {
-            return Err(Error::AuthRequired {
-                host: host_key(resp.url()),
-                realm: None,
-                rejected: false,
-            });
-        }
-        StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE => return Err(busy(&resp)),
+        StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE => return Err(resp.busy()),
         s if s.is_success() => {
             return Err(Error::Protocol(
                 "The server doesn't send parts of files, which this needs".into(),
@@ -307,9 +276,9 @@ pub(crate) async fn fetch_range(
         ));
     }
     let mut body = Vec::with_capacity(usize::try_from(len.min(1 << 20)).unwrap_or(0));
-    let mut stream = resp.bytes_stream();
+    let mut stream = resp.into_stream();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| Error::Network(describe(&e)))?;
+        let chunk = chunk.map_err(Error::Network)?;
         let room = usize::try_from(len).unwrap_or(usize::MAX) - body.len();
         body.extend_from_slice(&chunk[..chunk.len().min(room)]);
         if body.len() as u64 >= len {

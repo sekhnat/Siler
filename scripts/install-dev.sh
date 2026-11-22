@@ -20,9 +20,9 @@ pnpm tauri build --no-bundle
 # The FFmpeg Siler looks for next to its executable.
 cp "$root/app/src-tauri/resources/ffmpeg" "$root/app/src-tauri/resources/ffprobe" "$root/target/release/"
 
-echo "==> Building the native messaging host"
+echo "==> Building the native messaging host and the proxy script helper"
 cd "$root"
-cargo build --release -p siler-nmhost
+cargo build --release -p siler-nmhost -p siler-pac
 
 echo "==> Registering"
 "$root/target/release/siler" --install-integration

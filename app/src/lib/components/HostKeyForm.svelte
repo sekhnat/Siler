@@ -65,7 +65,7 @@
   }
   .who > :global(svg) {
     flex: none;
-    color: var(--accent);
+    color: var(--accent-text);
     margin-top: 2px;
   }
   .min {

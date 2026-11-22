@@ -6,6 +6,7 @@
 //! paused (or interrupted by quitting) continues from the live edge when resumed; the
 //! segments missed meanwhile are counted as a gap.
 
+use futures_util::StreamExt;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use siler_media::select::{self, Selection};
@@ -14,7 +15,6 @@ use siler_media::{
 };
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use futures_util::StreamExt;
 use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::Duration;

@@ -81,13 +81,23 @@ The YouTube solver and its parser libraries are vendored unmodified in `extensio
 ### Limits
 
 - DRM-protected videos are refused. Live streams aren't recorded.
-- Links from a page expire (YouTube's after a few hours). A download whose links expired says so, and the video has to be sent from the page again.
+- Links from a page expire (YouTube's after a few hours). Siler asks the browser for fresh ones by itself (see [Fresh links](#fresh-links)); when that isn't possible, the download says so and the video has to be sent from the page again.
 - In an Instagram carousel with several videos of the same shape, the button takes the first of them; the popup's "Videos on this page" list has all of them, under the post's title.
 - Content that needs a login works only when you are logged in in Firefox.
 - Sites change their players; recogniser fixes come with extension updates.
+
+## Fresh links
+
+When a download's link expires, Siler first asks the original address again by itself. If that doesn't help, it asks the browser the download came from:
+
+- **What is remembered:** with each download, the extension sends the first address of its redirect chain (with its cookies), the browser it came from (a random ID kept in the extension's storage), the Firefox container, the page, and how to find the link again (its address without the query, its text and the file name), or the video's ID and format on a recognised site. Siler keeps these with the download and never exports them.
+- **The channel:** the extension keeps a connection open to the browser host (`connectNative`), which waits for Siler but never starts it. Older apps and hosts simply don't answer, and the extension asks again every five minutes.
+- **Finding the link:** the browser opens the page in a background tab, inactive and muted, looks for exactly one matching link (or the same video, through the site recognisers), and hands Siler the fresh link and cookies. Then it closes the tab it opened. It never clicks, never submits a form, opens one tab per site at a time, gives up after a minute, and does nothing for private windows.
+- **Siler checks the result:** the new link must give the same file before the download continues (see [Using Siler → Managing downloads](usage.md#managing-downloads)).
+- **Switching it off:** the options page (**Help Siler refresh expired links**) or Siler's Settings → Transfers → **Refresh expired links automatically**.
 
 ## Notes for reviewers and developers
 
 - **Mozilla review:** the YouTube solver compiles YouTube's player script with `Function`. `web-ext lint` reports this as `DANGEROUS_EVAL`, a warning that doesn't stop unlisted signing.
 - **Tests:** `node --test extension/tests/*.test.mjs` checks the request rules and each recogniser against recorded, scrubbed answers in `extension/tests/fixtures/`. The app's DASH parser reads the same YouTube manifest snapshot in its own tests.
-- **Protocol 2:** the extension 0.3.0 and the app 0.6.0 (and later) speak protocol 2, which adds video details to a hand-over. An older app still takes plain downloads.
+- **Protocol 2:** the extension 0.3.0 and the app 0.6.0 (and later) speak protocol 2, which adds video details to a hand-over. An older app still takes plain downloads. The extension 0.5.0 and the app 0.9.0 add the messages for fresh links to it; they are additive, so either side still works with an older other side, without fresh links.

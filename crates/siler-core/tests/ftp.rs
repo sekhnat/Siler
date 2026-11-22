@@ -530,3 +530,52 @@ async fn goes_through_a_socks_proxy() {
     // Control and data connections alike.
     assert!(count.load(SeqCst) >= 2 * srv.ftp.retrs.load(SeqCst));
 }
+
+#[tokio::test]
+async fn goes_through_an_ftp_proxy() {
+    // The proxy is told the server in the user's name.
+    let srv = Server::start(Config {
+        login: Some(("me@files.invalid".into(), "secret".into())),
+        ..Default::default()
+    })
+    .await;
+    let tmp = tempfile::tempdir().unwrap();
+    let e = engine(tmp.path(), |s| {
+        s.proxy.mode = ProxyMode::Manual;
+        s.proxy.ftp_host = "127.0.0.1".into();
+        s.proxy.ftp_port = srv.port;
+        s.proxy.no_proxy = String::new();
+    })
+    .await;
+    let id = add(
+        &e,
+        "ftp://me:secret@files.invalid/pub/big%20file.bin".into(),
+    );
+    assert_complete(&wait_finished(&e, id).await, &data(SIZE));
+}
+
+#[tokio::test]
+async fn goes_where_a_script_says() {
+    let srv = Server::start(Config::default()).await;
+    let count = Arc::new(AtomicUsize::new(0));
+    let proxy = socks_proxy(count.clone()).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let pac = tmp.path().join("proxy.pac");
+    let body = format!(
+        "function FindProxyForURL(url) {{ return /^ftp:/.test(url) ? 'SOCKS5 127.0.0.1:{proxy}' : 'DIRECT'; }}"
+    );
+    std::fs::write(&pac, body).unwrap();
+    let e = engine(tmp.path(), |s| {
+        s.proxy.mode = ProxyMode::Script;
+        s.proxy.script = pac.display().to_string();
+    })
+    .await;
+    let helper = Path::new(env!("CARGO_TARGET_TMPDIR")).parent().unwrap();
+    e.set_pac_helper(Some(helper.join("debug/siler-pac")));
+    // Scripts aren't asked about loopback addresses; this one reaches this computer too.
+    let id = add(&e, format!("ftp://0.0.0.0:{}/pub/big%20file.bin", srv.port));
+    assert_complete(&wait_finished(&e, id).await, &data(SIZE));
+    // Control and data connections alike.
+    assert!(count.load(SeqCst) >= 2 * srv.ftp.retrs.load(SeqCst));
+    assert!(count.load(SeqCst) > 0);
+}

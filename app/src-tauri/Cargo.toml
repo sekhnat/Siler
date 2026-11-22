@@ -26,6 +26,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rustix = { version = "1", features = ["process"] }
 dirs = "7"
 ksni = "0.3.7"
+gtk = "0.18"
+libloading = "0.9"
 tracing-appender = "0.2.5"
 tauri-plugin-window-state = "2.5.0"
 oo7 = "0.7"

@@ -135,6 +135,8 @@
     window.addEventListener("focus", reloadSoon);
     const askLogin = (e: Event) => (loginFor = (e as CustomEvent<number>).detail);
     window.addEventListener("siler-login", askLogin);
+    const askLink = (e: Event) => (refreshFor = (e as CustomEvent<number>).detail);
+    window.addEventListener("siler-link", askLink);
     const unlisten = [
       listen<number>("select-download", (e) => {
         filter = "all";
@@ -150,6 +152,7 @@
         if (!store.items[e.payload]?.needs_login && !store.items[e.payload]?.needs_host_key) await store.reload();
         loginFor = e.payload;
       }),
+      listen<number>("ask-link", (e) => (refreshFor = e.payload)),
       listen<{ id: number; error: string | null }>("refresh-done", (e) => {
         if (refreshFor === e.payload.id) return; // the dialog reports it
         if (e.payload.error) toasts.show(e.payload.error, "error");
@@ -159,6 +162,7 @@
     return () => {
       window.removeEventListener("focus", reloadSoon);
       window.removeEventListener("siler-login", askLogin);
+      window.removeEventListener("siler-link", askLink);
       unlisten.forEach((u) => u.then((f) => f()));
     };
   });

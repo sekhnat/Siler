@@ -126,10 +126,10 @@ pub fn on_engine_event(app: &AppHandle, engine: &Engine, ev: &Event) -> bool {
                     .notification()
                     .builder()
                     .title(tr("tools-the-command-failed"))
-                    .body(format!(
+                    .body(crate::body_text(&format!(
                         "{}\n{why}",
                         filename.clone().unwrap_or_else(|| tr("notify-download"))
-                    ))
+                    )))
                     .show();
             }
             false

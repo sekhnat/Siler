@@ -2,36 +2,46 @@
   --font: "Inter Variable", "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono: ui-monospace, "JetBrains Mono", "Fira Code", monospace;
 
-  --r-sm: 7px;
+  /* A skin sets --r and the colours (skins/*.json); the rest follows from them. */
   --r: 10px;
-  --r-lg: 14px;
-  --r-xl: 18px;
+  --r-sm: calc(var(--r) * 0.7);
+  --r-lg: calc(var(--r) * 1.4);
+  --r-xl: calc(var(--r) * 1.8);
 
-  --grad: linear-gradient(135deg, #7c5cff 0%, #5b6cff 55%, #22d3ee 100%);
-  --grad-soft: linear-gradient(135deg, rgba(124, 92, 255, 0.16), rgba(34, 211, 238, 0.12));
+  --grad: linear-gradient(135deg, var(--grad-from) 0%, var(--grad-mid) 55%, var(--grad-to) 100%);
+  --grad-button: linear-gradient(135deg, var(--button) 0%, var(--button-2) 100%);
+  --grad-soft: linear-gradient(135deg, color-mix(in srgb, var(--grad-from) 16%, transparent), color-mix(in srgb, var(--grad-to) 12%, transparent));
+
+  /* The default skin, until the chosen one is known (a test keeps them equal). */
   --accent: #6d5cff;
-  --accent-2: #22d3ee;
   --accent-text: #5b4ae6;
-  --ok: #16a34a;
-  --warn: #d97706;
-  --err: #dc2626;
-  --queued: #64748b;
-
+  --on-accent: #ffffff;
+  --button: #7859f7;
+  --button-2: #5666f0;
+  --grad-from: #7c5cff;
+  --grad-mid: #5b6cff;
+  --grad-to: #22d3ee;
   --bg: #f3f4f8;
   --sidebar: #eceef4;
   --surface: #ffffff;
   --surface-2: #f7f8fb;
   --surface-3: #eff1f6;
-  --hover: rgba(20, 24, 40, 0.045);
-  --selected: rgba(109, 92, 255, 0.1);
-  --selected-border: rgba(109, 92, 255, 0.35);
-  --border: rgba(20, 24, 40, 0.08);
-  --border-strong: rgba(20, 24, 40, 0.15);
+  --hover: #1418280b;
+  --selected: #6d5cff1a;
+  --selected-border: #6d5cff59;
+  --border: #14182814;
+  --border-strong: #14182826;
   --text: #121521;
   --text-2: #464c61;
-  --muted: #868ca0;
-  --track: rgba(20, 24, 40, 0.07);
-  --backdrop: rgba(18, 21, 33, 0.28);
+  --muted: #626675;
+  --ok: #107736;
+  --warn: #9a5404;
+  --err: #c62222;
+  --queued: #64748b;
+  --track: #14182812;
+  --backdrop: #12152147;
+  --knob: #ffffff;
+  --shine: #ffffff59;
   --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06);
   --shadow: 0 1px 2px rgba(16, 24, 40, 0.05), 0 10px 30px rgba(16, 24, 40, 0.1);
   --shadow-lg: 0 2px 6px rgba(16, 24, 40, 0.06), 0 24px 60px rgba(16, 24, 40, 0.18);
@@ -42,26 +52,33 @@
 :root[data-theme="dark"] {
   --accent: #8b7bff;
   --accent-text: #a99dff;
-  --ok: #34d399;
-  --warn: #fbbf24;
-  --err: #f87171;
-  --queued: #94a3b8;
-
+  --on-accent: #ffffff;
+  --button: #7859f7;
+  --button-2: #5666f0;
+  --grad-from: #7c5cff;
+  --grad-mid: #5b6cff;
+  --grad-to: #22d3ee;
   --bg: #0e1016;
   --sidebar: #0a0c11;
   --surface: #141720;
   --surface-2: #191d28;
   --surface-3: #1f2430;
-  --hover: rgba(255, 255, 255, 0.04);
-  --selected: rgba(139, 123, 255, 0.13);
-  --selected-border: rgba(139, 123, 255, 0.4);
-  --border: rgba(255, 255, 255, 0.065);
-  --border-strong: rgba(255, 255, 255, 0.13);
+  --hover: #ffffff0a;
+  --selected: #8b7bff21;
+  --selected-border: #8b7bff66;
+  --border: #ffffff11;
+  --border-strong: #ffffff21;
   --text: #e9ebf1;
   --text-2: #b3b8c8;
-  --muted: #7a8196;
-  --track: rgba(255, 255, 255, 0.075);
-  --backdrop: rgba(4, 6, 10, 0.55);
+  --muted: #878ea0;
+  --ok: #34d399;
+  --warn: #fbbf24;
+  --err: #f87171;
+  --queued: #94a3b8;
+  --track: #ffffff13;
+  --backdrop: #04060a8c;
+  --knob: #ffffff;
+  --shine: #ffffff59;
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 12px 32px rgba(0, 0, 0, 0.4);
   --shadow-lg: 0 2px 8px rgba(0, 0, 0, 0.4), 0 28px 70px rgba(0, 0, 0, 0.55);
@@ -162,13 +179,13 @@ button:disabled {
   transform: translateY(1px);
 }
 .btn-primary {
-  background: var(--grad);
+  background: var(--grad-button);
   border-color: transparent;
-  color: #fff;
-  box-shadow: 0 6px 18px -6px rgba(109, 92, 255, 0.65);
+  color: var(--on-accent);
+  box-shadow: 0 6px 18px -6px color-mix(in srgb, var(--button) 65%, transparent);
 }
 .btn-primary:hover:not(:disabled) {
-  background: var(--grad);
+  background: var(--grad-button);
   filter: brightness(1.07);
 }
 .btn-ghost {
@@ -181,7 +198,7 @@ button:disabled {
 .btn-danger {
   background: var(--err);
   border-color: transparent;
-  color: #fff;
+  color: var(--surface);
 }
 .btn-danger:hover:not(:disabled) {
   background: var(--err);
@@ -258,7 +275,7 @@ select.input {
   font-weight: 600;
   white-space: nowrap;
   background: color-mix(in srgb, var(--c, var(--muted)) 14%, transparent);
-  color: var(--c, var(--muted));
+  color: color-mix(in srgb, var(--c, var(--muted)) 70%, var(--text));
 }
 
 .switch {
@@ -278,7 +295,7 @@ select.input {
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: #fff;
+  background: var(--knob);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
   transition: transform 0.2s cubic-bezier(0.3, 0.7, 0.4, 1.2);
 }

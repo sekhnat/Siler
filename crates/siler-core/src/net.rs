@@ -1,16 +1,18 @@
-//! The HTTP client and what it knows about servers: the proxy, and logins per server.
+//! The HTTP clients (one per way out), and the logins known per server and per proxy.
 
-use base64::Engine as _;
-use digest_auth::{AuthContext, HttpMethod, WwwAuthenticateHeader};
-use reqwest::header::{HeaderMap, HeaderValue, WWW_AUTHENTICATE};
-use reqwest::{Client, Method, Url};
+use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
-use crate::proxy::{self, ProxyRoute, ProxySettings};
+use crate::proxy::router::Router;
+use crate::proxy::{ProxyRoute, ProxySettings, Via};
 use crate::resolve::{self, Lookuper, PublicOnly};
+use crate::session::auth::HostAuth;
+use crate::session::tunnel::Tunnel;
+use crate::transport::dial::{Exit, Failed, How, Stream};
 use crate::{Error, Result};
 
 /// A username and password for one server.
@@ -20,121 +22,25 @@ pub struct Login {
     pub password: String,
 }
 
+impl Login {
+    /// "Use my Kerberos ticket for this site": an approval, with no name or password.
+    pub fn kerberos_ticket() -> Login {
+        Login {
+            username: String::new(),
+            password: String::new(),
+        }
+    }
+
+    pub fn is_ticket(&self) -> bool {
+        self.username.is_empty() && self.password.is_empty()
+    }
+}
+
 impl std::fmt::Debug for Login {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Login")
             .field("username", &self.username)
             .finish_non_exhaustive()
-    }
-}
-
-/// How a server wants to be logged in to, learned from its 401 answer.
-#[derive(Debug, Clone, Default)]
-pub(crate) enum Scheme {
-    /// Not asked yet: no credentials are sent until the server asks.
-    #[default]
-    Unknown,
-    Basic,
-    Digest(Box<WwwAuthenticateHeader>),
-}
-
-/// What a 401 answer asked for.
-#[derive(Debug, Clone)]
-pub(crate) struct Challenge {
-    scheme: Scheme,
-    pub realm: Option<String>,
-    /// Digest: the nonce expired, the same login is still good.
-    stale: bool,
-}
-
-fn realm_of(v: &str) -> Option<String> {
-    let i = v.to_ascii_lowercase().find("realm=")?;
-    let rest = v[i + 6..].trim_start();
-    let realm = match rest.strip_prefix('"') {
-        Some(r) => r.split('"').next().unwrap_or(""),
-        None => rest.split(',').next().unwrap_or("").trim(),
-    };
-    (!realm.is_empty()).then(|| realm.to_string())
-}
-
-/// Reads the `WWW-Authenticate` headers, preferring Digest over Basic.
-pub(crate) fn parse_challenge(headers: &HeaderMap) -> Option<Challenge> {
-    let mut basic = None;
-    for v in headers.get_all(WWW_AUTHENTICATE) {
-        let Ok(v) = v.to_str() else { continue };
-        let lower = v.trim_start().to_ascii_lowercase();
-        if lower.starts_with("digest")
-            && let Ok(h) = WwwAuthenticateHeader::parse(v.trim())
-        {
-            return Some(Challenge {
-                realm: Some(h.realm.clone()).filter(|r| !r.is_empty()),
-                stale: h.stale,
-                scheme: Scheme::Digest(Box::new(h)),
-            });
-        }
-        if lower.starts_with("basic") {
-            basic = Some(Challenge {
-                scheme: Scheme::Basic,
-                realm: realm_of(v),
-                stale: false,
-            });
-        }
-    }
-    basic
-}
-
-/// The login state of one server.
-#[derive(Default)]
-pub(crate) struct HostAuth {
-    login: Mutex<Option<Login>>,
-    scheme: Mutex<Scheme>,
-}
-
-impl HostAuth {
-    /// A login is known and so is the way to send it.
-    pub fn ready(&self) -> bool {
-        self.login.lock().unwrap().is_some()
-            && !matches!(*self.scheme.lock().unwrap(), Scheme::Unknown)
-    }
-
-    /// The `Authorization` header for one request, if there is a login to send.
-    pub fn header(&self, method: &Method, url: &Url, body: Option<&[u8]>) -> Option<HeaderValue> {
-        let login = self.login.lock().unwrap().clone()?;
-        let value = match &mut *self.scheme.lock().unwrap() {
-            Scheme::Unknown => return None,
-            Scheme::Basic => {
-                let raw = format!("{}:{}", login.username, login.password);
-                format!(
-                    "Basic {}",
-                    base64::engine::general_purpose::STANDARD.encode(raw)
-                )
-            }
-            Scheme::Digest(h) => {
-                let uri = match url.query() {
-                    Some(q) => format!("{}?{q}", url.path()),
-                    None => url.path().to_string(),
-                };
-                let ctx = AuthContext::new_with_method(
-                    login.username.as_str(),
-                    login.password.as_str(),
-                    uri,
-                    body,
-                    HttpMethod(method.as_str().to_string().into()),
-                );
-                h.respond(&ctx).ok()?.to_header_string()
-            }
-        };
-        let mut v = HeaderValue::from_str(&value).ok()?;
-        v.set_sensitive(true);
-        Some(v)
-    }
-
-    /// Takes in a 401 answer. Returns whether trying again is worthwhile: the server just
-    /// told us how to send a login we have, or a Digest nonce went stale.
-    pub fn learn(&self, ch: Challenge, sent: bool) -> bool {
-        let has_login = self.login.lock().unwrap().is_some();
-        *self.scheme.lock().unwrap() = ch.scheme;
-        has_login && (!sent || ch.stale)
     }
 }
 
@@ -147,98 +53,60 @@ pub fn host_key(url: &Url) -> String {
     }
 }
 
+/// `scheme://host[:port]`: what Windows logins and Kerberos approvals are kept under, so
+/// that one given for https never goes to http.
+pub(crate) fn site_key(url: &Url) -> String {
+    format!("{}://{}", url.scheme(), host_key(url))
+}
+
+/// More ways out than this and the oldest clients are dropped.
+const MAX_CLIENTS: usize = 128;
+
+/// A client for one way out, and its tunnel.
+pub(crate) struct Kept {
+    pub client: Client,
+    pub tunnel: Option<Tunnel>,
+}
+
+#[derive(PartialEq)]
+struct WayKey {
+    via: Via,
+    how: How,
+    allow_private: bool,
+    /// A tunnel leads to one server.
+    to: Option<(String, u16)>,
+}
+
+impl WayKey {
+    fn new(exit: &Exit, how: &How, url: &Url) -> WayKey {
+        WayKey {
+            via: exit.via.clone(),
+            how: how.clone(),
+            allow_private: exit.allow_private,
+            to: (*how == How::Tunnel).then(|| {
+                (
+                    url.host_str().unwrap_or("").to_string(),
+                    url.port_or_known_default().unwrap_or(443),
+                )
+            }),
+        }
+    }
+}
+
 pub(crate) struct Net {
-    /// Follows redirects itself (file downloads).
-    client: RwLock<Client>,
-    /// Never follows redirects, so the caller can check every hop, and refuses names that
-    /// resolve to private addresses (media).
-    manual: RwLock<Client>,
-    /// Like `manual`, without the address check (a media download allowed to use private
-    /// addresses).
-    manual_any: RwLock<Client>,
+    pub(crate) router: Router,
+    /// One client per way out. They never follow redirects (`session` does, and checks
+    /// every hop).
+    clients: Mutex<Vec<(WayKey, Arc<Kept>)>>,
     lookup: Arc<dyn Lookuper>,
-    route: RwLock<ProxyRoute>,
-    /// The manual proxy's login, for FTP and SFTP connections made through it.
-    proxy_login: RwLock<crate::transport::dial::ProxyLogin>,
+    /// Counts the proxy setups, so that connections kept for logins don't outlive theirs.
+    setup: AtomicU64,
     hosts: Mutex<HashMap<String, Arc<HostAuth>>>,
     /// Siler's own list of trusted SSH server keys (next to the database); `None` in tests
     /// that never use SFTP.
     pub(crate) known_hosts: RwLock<Option<std::path::PathBuf>>,
     /// Idle FTP control connections, for the next range from the same server.
     pub(crate) ftp_pool: crate::transport::ftp::Pool,
-}
-
-/// How a client follows redirects and resolves names.
-#[derive(Clone, Copy)]
-enum Kind {
-    /// Follows redirects; the system resolver.
-    Follow,
-    /// Returns redirects; refuses private addresses.
-    Public,
-    /// Returns redirects; any address.
-    Any,
-}
-
-fn build_client(
-    route: &ProxyRoute,
-    login: Option<(&str, &str)>,
-    kind: Kind,
-    lookup: &Arc<dyn Lookuper>,
-) -> Result<Client> {
-    let follow = matches!(kind, Kind::Follow);
-    let mut b = Client::builder()
-        .redirect(if follow {
-            reqwest::redirect::Policy::default()
-        } else {
-            reqwest::redirect::Policy::none()
-        })
-        .connect_timeout(Duration::from_secs(20))
-        .read_timeout(Duration::from_secs(60))
-        .pool_idle_timeout(Duration::from_secs(30))
-        .no_proxy();
-    match kind {
-        Kind::Follow => {}
-        Kind::Public => {
-            let exempt = resolve::proxy_hosts(&[route.http.as_deref(), route.https.as_deref()]);
-            b = b.dns_resolver(PublicOnly::new(lookup.clone(), exempt));
-        }
-        Kind::Any => b = b.dns_resolver(resolve::Any(lookup.clone())),
-    }
-    let no_proxy = || reqwest::NoProxy::from_string(&route.no_proxy);
-    let make = |url: &str, https: bool| {
-        let p = if https {
-            reqwest::Proxy::https(url)
-        } else {
-            reqwest::Proxy::http(url)
-        };
-        let mut p = p
-            .map_err(|e| Error::Protocol(format!("Invalid proxy address {url}: {e}")))?
-            .no_proxy(no_proxy());
-        if let Some((user, pass)) = login {
-            p = p.basic_auth(user, pass);
-        }
-        Ok::<_, Error>(p)
-    };
-    if let Some(u) = &route.http {
-        b = b.proxy(make(u, false)?);
-    }
-    if let Some(u) = &route.https {
-        b = b.proxy(make(u, true)?);
-    }
-    b.build().map_err(|e| Error::Network(e.to_string()))
-}
-
-/// The three clients for one route.
-fn build_all(
-    route: &ProxyRoute,
-    login: Option<(&str, &str)>,
-    lookup: &Arc<dyn Lookuper>,
-) -> Result<(Client, Client, Client)> {
-    Ok((
-        build_client(route, login, Kind::Follow, lookup)?,
-        build_client(route, login, Kind::Public, lookup)?,
-        build_client(route, login, Kind::Any, lookup)?,
-    ))
 }
 
 impl Net {
@@ -252,18 +120,17 @@ impl Net {
         password: Option<&str>,
         lookup: Arc<dyn Lookuper>,
     ) -> Result<Net> {
-        let (client, manual, manual_any) = build_all(&ProxyRoute::default(), None, &lookup)?;
         let net = Net {
-            client: RwLock::new(client),
-            manual: RwLock::new(manual),
-            manual_any: RwLock::new(manual_any),
+            router: Router::default(),
+            clients: Mutex::new(Vec::new()),
             lookup,
-            route: RwLock::new(ProxyRoute::default()),
-            proxy_login: RwLock::new(None),
+            setup: AtomicU64::new(0),
             hosts: Mutex::new(HashMap::new()),
             known_hosts: RwLock::new(None),
             ftp_pool: Default::default(),
         };
+        // A computer that can't make a client at all says so now, not at the first download.
+        net.build(&net.exit(Via::Direct, true), &How::Plain, None, false)?;
         net.configure(proxy, password);
         Ok(net)
     }
@@ -271,72 +138,160 @@ impl Net {
     /// Applies new proxy settings. A broken proxy address falls back to direct connections
     /// with an explanation in the route.
     pub fn configure(&self, proxy: &ProxySettings, password: Option<&str>) {
-        let mut route = proxy::route(proxy);
-        let login = proxy
-            .needs_password()
-            .then(|| (proxy.username.trim(), password.unwrap_or("")));
-        let built = build_all(&route, login, &self.lookup);
-        let (client, manual, manual_any) = match built {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!("{e}");
-                route = ProxyRoute {
-                    source: route.source,
-                    note: Some(format!("{e}; connecting directly")),
-                    ..Default::default()
-                };
-                match build_all(&route, None, &self.lookup) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        tracing::error!("can't create the HTTP client: {e}");
-                        return;
-                    }
-                }
-            }
-        };
-        tracing::info!("proxy: {}", route.summary());
-        *self.proxy_login.write().unwrap() = login.map(|(u, p)| (u.to_string(), p.to_string()));
-        *self.client.write().unwrap() = client;
-        *self.manual.write().unwrap() = manual;
-        *self.manual_any.write().unwrap() = manual_any;
-        *self.route.write().unwrap() = route;
+        self.router.configure(proxy, password);
+        self.setup.fetch_add(1, Relaxed);
+        self.clients.lock().unwrap().clear();
+        self.ftp_pool.clear();
     }
 
-    pub fn client(&self) -> Client {
-        self.client.read().unwrap().clone()
-    }
-
-    /// A client that returns redirects instead of following them. Unless `allow_private`,
-    /// it refuses names that resolve to this computer or the local network.
-    pub fn manual_client(&self, allow_private: bool) -> Client {
-        if allow_private {
-            self.manual_any.read().unwrap().clone()
-        } else {
-            self.manual.read().unwrap().clone()
-        }
+    pub(crate) fn setup(&self) -> u64 {
+        self.setup.load(Relaxed)
     }
 
     pub fn route(&self) -> ProxyRoute {
-        self.route.read().unwrap().clone()
+        self.router.route()
     }
 
-    /// A TCP connection for FTP or SFTP, through the proxy when there is one.
-    pub(crate) async fn dial(
+    /// One way out, with the login for its proxy: the settings' own, else one given for
+    /// exactly that proxy.
+    pub(crate) fn exit(&self, via: Via, allow_private: bool) -> Exit {
+        let (auth, own) = match &via {
+            Via::Direct => (None, false),
+            Via::Proxy(proxy) => match self.router.own_login(proxy) {
+                Some(auth) => (Some(auth), true),
+                None => (Some(self.entry(&proxy.login_key())), false),
+            },
+        };
+        Exit::new(via, allow_private, auth, own, self.lookup.clone())
+    }
+
+    /// The client for one way out to `url`. It returns redirects instead of following
+    /// them, and unless the exit allows private addresses it refuses names that resolve to
+    /// this computer or the local network.
+    pub(crate) fn client(&self, exit: &Exit, how: &How, url: &Url) -> Result<Arc<Kept>> {
+        let key = WayKey::new(exit, how, url);
+        let setup = self.setup();
+        let find = |list: &[(WayKey, Arc<Kept>)]| {
+            list.iter().find(|(k, _)| *k == key).map(|(_, c)| c.clone())
+        };
+        if let Some(found) = find(&self.clients.lock().unwrap()) {
+            return Ok(found);
+        }
+        let made = self.build(exit, how, key.to.as_ref(), false)?;
+        let mut list = self.clients.lock().unwrap();
+        if let Some(found) = find(&list) {
+            return Ok(found);
+        }
+        // Not one from before the settings changed.
+        if setup == self.setup() {
+            if list.len() >= MAX_CLIENTS {
+                list.remove(0);
+            }
+            list.push((key, made.clone()));
+        }
+        Ok(made)
+    }
+
+    /// A new client with a single connection, for a login that belongs to its connection.
+    pub(crate) fn pinned(&self, exit: &Exit, how: &How, url: &Url) -> Result<Arc<Kept>> {
+        let key = WayKey::new(exit, how, url);
+        self.build(exit, how, key.to.as_ref(), true)
+    }
+
+    fn build(
         &self,
-        host: &str,
-        port: u16,
-    ) -> std::io::Result<tokio::net::TcpStream> {
-        let route = self.route();
-        let login = self.proxy_login.read().unwrap().clone();
-        crate::transport::dial::dial(&route, &login, host, port).await
+        exit: &Exit,
+        how: &How,
+        to: Option<&(String, u16)>,
+        pinned: bool,
+    ) -> Result<Arc<Kept>> {
+        let mut b = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_secs(20))
+            .read_timeout(Duration::from_secs(60))
+            .pool_idle_timeout(Duration::from_secs(30))
+            .no_proxy();
+        if pinned {
+            // One connection, whose certificate an NTLM or Kerberos answer names.
+            b = b.http1_only().pool_max_idle_per_host(1).tls_info(true);
+        }
+        b = if exit.allow_private {
+            b.dns_resolver(resolve::Any(self.lookup.clone()))
+        } else {
+            // The proxy's own name may point here: a proxy on this computer still works.
+            let exempt = exit
+                .proxy()
+                .map(|p| p.host.trim_end_matches('.').to_string())
+                .into_iter()
+                .collect();
+            b.dns_resolver(PublicOnly::new(self.lookup.clone(), exempt))
+        };
+        let mut tunnel = None;
+        if let (How::Tunnel, Some((host, port))) = (how, to) {
+            let made = Tunnel::open(exit.clone(), host.clone(), *port)?;
+            b = b.unix_socket(made.path().to_path_buf());
+            tunnel = Some(made);
+        } else if let Some(proxy) = exit.proxy() {
+            let invalid = || Error::Protocol(format!("Invalid proxy address {proxy}"));
+            let mut address = Url::parse(&proxy.to_string()).map_err(|_| invalid())?;
+            if let How::Socks(login) = how {
+                // Encoded here: `Url` leaves a `%` as it is, and reqwest decodes it.
+                use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
+                let encode = |s: &str| utf8_percent_encode(s, NON_ALPHANUMERIC).to_string();
+                address
+                    .set_username(&encode(&login.username))
+                    .map_err(|()| invalid())?;
+                address
+                    .set_password(Some(&encode(&login.password)))
+                    .map_err(|()| invalid())?;
+            }
+            let mut through = reqwest::Proxy::all(address.as_str()).map_err(|_| invalid())?;
+            if let How::Basic(login) = how {
+                // Not `basic_auth`, which goes through the address and the same decoding.
+                through = through.custom_http_auth(crate::session::auth::basic(login)?);
+            }
+            b = b.proxy(through);
+        }
+        let client = b.build().map_err(|e| Error::Network(e.to_string()))?;
+        Ok(Arc::new(Kept { client, tunnel }))
+    }
+
+    /// A connection for FTP or SFTP, routed as `url` is.
+    pub(crate) async fn dial(&self, url: &Url, host: &str, port: u16) -> Result<Stream> {
+        let choice = self.router.choose(url).await?;
+        let mut missed = None;
+        for via in choice.via {
+            let exit = self.exit(via, true);
+            match exit.dial(host, port).await {
+                Ok(stream) => return Ok(stream),
+                Err(Failed::Unreachable(why)) => {
+                    if let Some(proxy) = exit.proxy() {
+                        self.router.mark_failed(proxy);
+                    }
+                    missed = Some(why);
+                }
+                Err(failed) => return Err(exit.error(failed)),
+            }
+        }
+        Err(Error::Network(
+            missed.unwrap_or_else(|| "there is no route".into()),
+        ))
+    }
+
+    /// Straight to `host`, whatever the settings say (an FTP proxy itself).
+    pub(crate) async fn dial_direct(&self, host: &str, port: u16) -> Result<Stream> {
+        let exit = self.exit(Via::Direct, true);
+        exit.dial(host, port)
+            .await
+            .map_err(|failed| exit.error(failed))
     }
 
     pub fn auth_for(&self, url: &Url) -> Option<Arc<HostAuth>> {
-        self.hosts
-            .lock()
-            .unwrap()
-            .get(&crate::transport::login_key(url))
-            .cloned()
+        self.find(&crate::transport::login_key(url))
+    }
+
+    pub(crate) fn find(&self, key: &str) -> Option<Arc<HostAuth>> {
+        self.hosts.lock().unwrap().get(key).cloned()
     }
 
     /// The login known for a server, if any (FTP and SFTP use it directly).
@@ -355,7 +310,7 @@ impl Net {
     }
 
     pub fn set_login(&self, host: &str, login: Option<Login>) {
-        *self.entry(host).login.lock().unwrap() = login;
+        self.entry(host).set(login);
     }
 
     /// Moves `user:password@` out of a URL into the login for its server.
@@ -372,7 +327,18 @@ impl Net {
             username: decode(url.username()),
             password: decode(url.password().unwrap_or("")),
         };
-        self.set_login(&crate::transport::login_key(url), Some(login));
+        let mut keys = vec![crate::transport::login_key(url)];
+        // A login written into a web address is given for exactly that site as well.
+        if crate::transport::kind(url) == crate::transport::Kind::Http && !login.is_ticket() {
+            keys.push(site_key(url));
+        }
+        for key in keys {
+            let entry = self.entry(&key);
+            // The same one again must not undo a refusal.
+            if entry.login.lock().unwrap().as_ref() != Some(&login) {
+                entry.set(Some(login.clone()));
+            }
+        }
         let _ = url.set_username("");
         let _ = url.set_password(None);
     }
@@ -381,50 +347,6 @@ impl Net {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn headers(values: &[&str]) -> HeaderMap {
-        let mut h = HeaderMap::new();
-        for v in values {
-            h.append(WWW_AUTHENTICATE, HeaderValue::from_str(v).unwrap());
-        }
-        h
-    }
-
-    #[test]
-    fn challenges() {
-        assert!(parse_challenge(&HeaderMap::new()).is_none());
-        let c =
-            parse_challenge(&headers(&["Basic realm=\"NAS files\", charset=\"UTF-8\""])).unwrap();
-        assert!(matches!(c.scheme, Scheme::Basic));
-        assert_eq!(c.realm.as_deref(), Some("NAS files"));
-        let c = parse_challenge(&headers(&[
-            "Basic realm=\"x\"",
-            "Digest realm=\"box\", nonce=\"abc\", qop=\"auth\", stale=true",
-        ]))
-        .unwrap();
-        assert!(matches!(c.scheme, Scheme::Digest(_)));
-        assert_eq!(c.realm.as_deref(), Some("box"));
-        assert!(c.stale);
-    }
-
-    #[test]
-    fn basic_header_and_learning() {
-        let a = HostAuth::default();
-        let url = Url::parse("http://h/f").unwrap();
-        assert!(a.header(&Method::GET, &url, None).is_none());
-        let ch = parse_challenge(&headers(&["Basic realm=\"r\""])).unwrap();
-        // No login yet: remember the scheme, nothing to retry with.
-        assert!(!a.learn(ch.clone(), false));
-        *a.login.lock().unwrap() = Some(Login {
-            username: "Aladdin".into(),
-            password: "open sesame".into(),
-        });
-        assert!(a.ready());
-        let v = a.header(&Method::GET, &url, None).unwrap();
-        assert_eq!(v.to_str().unwrap(), "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==");
-        // Sent and refused: the login is wrong.
-        assert!(!a.learn(ch, true));
-    }
 
     #[test]
     fn userinfo_is_moved_out() {

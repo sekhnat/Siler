@@ -2,7 +2,10 @@
 //!
 //! Firefox starts this program and talks to it over stdin/stdout. Each message is
 //! relayed to the running Siler app over its Unix socket; if the app isn't running it is
-//! started in the background first. The reply is relayed back to the browser.
+//! started in the background first. The reply is relayed back to the browser. A port that
+//! subscribes stays open instead ([`stay`]).
+
+mod stay;
 
 use siler_ipc::{Response, log_dir, read_frame, socket_path, write_frame};
 use std::fs::{File, OpenOptions};
@@ -39,9 +42,9 @@ fn log(msg: &str) {
 fn main() {
     // Firefox passes the manifest path and extension id as arguments; nothing to do with them.
     let stdin = io::stdin();
-    let stdout = io::stdout();
     let mut input = BufReader::new(stdin.lock());
-    let mut output = BufWriter::new(stdout.lock());
+    // Not locked for good: a subscribed port is written to from two threads.
+    let mut output = BufWriter::new(io::stdout());
 
     loop {
         let frame = match read_frame(&mut input) {
@@ -52,6 +55,11 @@ fn main() {
                 break;
             }
         };
+        if stay::asked(&frame) {
+            drop(output);
+            stay::run(frame, &mut input);
+            return;
+        }
         let reply = relay(&frame).unwrap_or_else(|e| {
             if !(is_ping(&frame) && e.kind() == io::ErrorKind::NotConnected) {
                 log(&format!("relay failed: {e}"));

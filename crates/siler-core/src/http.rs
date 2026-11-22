@@ -9,8 +9,8 @@
 //! parents), never to the other servers a manifest names.
 
 use futures_util::StreamExt;
-use reqwest::header::{CONTENT_RANGE, CONTENT_TYPE, LOCATION, RANGE};
-use reqwest::{Response, StatusCode, Url};
+use reqwest::header::{CONTENT_RANGE, CONTENT_TYPE};
+use reqwest::{StatusCode, Url};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
@@ -18,15 +18,12 @@ use tokio::io::AsyncWriteExt;
 
 use siler_media::policy;
 
-use crate::error::{MediaError, describe};
-use crate::net::{Net, host_key, parse_challenge};
-use crate::probe::{build_request, busy, parse_content_range};
+use crate::error::MediaError;
+use crate::net::Net;
+use crate::probe::parse_content_range;
 use crate::ratelimit::RateLimiter;
-use crate::resolve;
+use crate::session::{Policy, Reply, Request};
 use crate::{Error, RequestMeta, Result};
-
-/// Redirects followed for one request.
-const MAX_REDIRECTS: usize = 10;
 
 /// The limiters every byte passes through, and the counter it is added to.
 pub(crate) struct Limiters<'a> {
@@ -86,10 +83,9 @@ impl Guard {
 pub(crate) struct Http {
     pub net: Arc<Net>,
     ua: String,
-    /// How the source was requested (method, body, cookies, headers).
+    /// How the source was requested (method, body, cookies, headers), and the site that
+    /// belongs to.
     meta: RequestMeta,
-    /// The source's host: cookies and extra headers go only to it and its relatives.
-    origin: String,
     pub guard: Guard,
 }
 
@@ -114,147 +110,37 @@ impl Http {
         Http {
             net,
             ua: ua.to_string(),
-            meta,
-            origin: source.host_str().unwrap_or("").to_ascii_lowercase(),
+            meta: meta.bound_to(source.as_str()),
             guard: Guard::new(allow_private || policy::is_private_source(source)),
         }
     }
 
-    /// The request details for `url`.
-    fn meta_for(&self, url: &Url, kind: Req) -> RequestMeta {
-        let mut m = RequestMeta {
-            referrer: self.meta.referrer.clone(),
-            user_agent: self.meta.user_agent.clone(),
-            ..Default::default()
-        };
-        if kind == Req::Source {
-            m.method = self.meta.method.clone();
-            m.body = self.meta.body.clone();
-        }
-        if related_hosts(&self.origin, url.host_str().unwrap_or("")) {
-            m.cookies = self.meta.cookies.clone();
-            m.headers = self.meta.headers.clone();
-        }
-        m
+    /// The request details for `url`, as `request` will send them.
+    #[cfg(test)]
+    fn scoped(&self, url: &Url, kind: Req) -> crate::scope::Scoped {
+        crate::scope::Scoped::media(&self.meta, url, kind == Req::Source)
     }
 }
 
-/// Whether cookies for host `a` may go to host `b`: the same host, one a subdomain of the
-/// other, or both on the same site (`www.example.com` and `cdn.example.com`). Addresses only
-/// match themselves.
-fn related_hosts(a: &str, b: &str) -> bool {
-    let a = a.trim_end_matches('.').to_ascii_lowercase();
-    let b = b.trim_end_matches('.').to_ascii_lowercase();
-    if a.is_empty() || b.is_empty() {
-        return false;
-    }
-    if a == b {
-        return true;
-    }
-    let is_ip = |h: &str| {
-        h.trim_matches(['[', ']'])
-            .parse::<std::net::IpAddr>()
-            .is_ok()
-    };
-    if is_ip(&a) || is_ip(&b) {
-        return false;
-    }
-    let under = |h: &str, parent: &str| h.ends_with(&format!(".{parent}"));
-    let site = site_of(&a);
-    under(&b, &a) || under(&a, &b) || (site != a && (b == site || under(&b, site)))
-}
-
-/// The site a host belongs to: the host without its first label, unless that would leave a
-/// public suffix (`example.com` stays; `www.example.com` gives `example.com`;
-/// `example.co.uk` stays, since `co.uk` is shared by unrelated sites).
-pub(crate) fn site_of(host: &str) -> &str {
-    let labels: Vec<&str> = host.split('.').collect();
-    if labels.len() <= 2 {
-        return host;
-    }
-    let parent = &labels[1..];
-    // A short second level under a country code (co.uk, com.au, ne.jp) is a public suffix.
-    let country_suffix = parent.len() == 2 && parent[1].len() == 2 && parent[0].len() <= 3;
-    if country_suffix {
-        return host;
-    }
-    &host[labels[0].len() + 1..]
-}
-
-/// One request, following redirects with every hop checked. A 401 is retried when the
-/// server just said how to log in, or a Digest nonce went stale (as in `probe`).
-async fn request(http: &Http, url: &Url, mut kind: Req, range: Option<String>) -> Result<Response> {
-    let mut target = url.clone();
-    let mut hops = 0;
-    let mut logins = 0;
-    loop {
-        http.guard.check(&target)?;
-        let meta = http.meta_for(&target, kind);
-        let auth = http.net.auth_for(&target);
-        let sent = auth.as_ref().is_some_and(|a| a.ready());
-        let mut rb = build_request(
-            &http.net.manual_client(http.guard.allow_private),
-            target.clone(),
-            &meta,
-            &http.ua,
-            auth.as_deref(),
-        );
-        if let Some(r) = &range {
-            rb = rb.header(RANGE, r.as_str());
-        }
-        let resp = rb.send().await.map_err(|e| match resolve::refused(&e) {
-            Some(why) => Error::Media(MediaError::UrlForbidden(why)),
-            None => Error::Network(describe(&e)),
-        })?;
-        let status = resp.status();
-        if status.is_redirection()
-            && let Some(loc) = resp.headers().get(LOCATION).and_then(|v| v.to_str().ok())
-        {
-            hops += 1;
-            if hops > MAX_REDIRECTS {
-                return Err(Error::Protocol(
-                    "The server redirected too many times".into(),
-                ));
-            }
-            let next = target.join(loc.trim()).map_err(|_| {
-                Error::Protocol("The server redirected to an address that isn't valid".into())
-            })?;
-            // 303, and 301/302 after anything but GET, continue as a plain GET.
-            let not_get = meta
-                .method
-                .as_deref()
-                .is_some_and(|m| !m.eq_ignore_ascii_case("GET"));
-            if status == StatusCode::SEE_OTHER
-                || (not_get && matches!(status, StatusCode::MOVED_PERMANENTLY | StatusCode::FOUND))
-            {
-                kind = Req::Derived;
-            }
-            target = next;
-            continue;
-        }
-        match status {
-            StatusCode::UNAUTHORIZED => {
-                let challenge = parse_challenge(resp.headers());
-                let realm = challenge.as_ref().and_then(|c| c.realm.clone());
-                let host = host_key(&target);
-                let retry = challenge.is_some_and(|c| http.net.entry(&host).learn(c, sent));
-                logins += 1;
-                if retry && logins < 3 {
-                    continue;
-                }
-                return Err(Error::AuthRequired {
-                    host,
-                    realm,
-                    rejected: sent,
-                });
-            }
-            StatusCode::PROXY_AUTHENTICATION_REQUIRED => return Err(Error::ProxyAuth),
-            StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE => {
-                return Err(busy(&resp));
-            }
-            s if s.is_success() => return Ok(resp),
-            s => return Err(Error::Http(s.as_u16())),
-        }
+/// One request, with every hop checked (see [`Net::send`]). Only a success comes back.
+async fn request(http: &Http, url: &Url, kind: Req, range: Option<String>) -> Result<Reply> {
+    let resp = http
+        .net
+        .send(Request {
+            url,
+            meta: &http.meta,
+            user_agent: &http.ua,
+            range: range.as_deref(),
+            policy: Policy::Media {
+                guard: &http.guard,
+                source: kind == Req::Source,
+            },
+        })
+        .await?;
+    match resp.status() {
+        StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE => Err(resp.busy()),
+        s if s.is_success() => Ok(resp),
+        s => Err(Error::Http(s.as_u16())),
     }
 }
 
@@ -299,9 +185,9 @@ pub(crate) async fn fetch_bounded(
     }
     let mut body = Vec::new();
     let mut complete = true;
-    let mut stream = resp.bytes_stream();
+    let mut stream = resp.into_stream();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| Error::Network(describe(&e)))?;
+        let chunk = chunk.map_err(Error::Network)?;
         lim.take(chunk.len() as u64).await;
         let room = max.saturating_sub(body.len() as u64) as usize;
         if chunk.len() > room {
@@ -411,9 +297,9 @@ pub(crate) async fn fetch_object(
         n: 0,
     };
     let mut written = 0u64;
-    let mut stream = resp.bytes_stream();
+    let mut stream = resp.into_stream();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| Error::Network(describe(&e)))?;
+        let chunk = chunk.map_err(Error::Network)?;
         lim.take(chunk.len() as u64).await;
         taken.n += chunk.len() as u64;
         file.write_all(&chunk).await?;
@@ -495,9 +381,9 @@ pub(crate) async fn fetch_whole_chunked(
             (tokio::fs::File::create(&part).await?, None)
         };
         let mut written = 0u64;
-        let mut stream = resp.bytes_stream();
+        let mut stream = resp.into_stream();
         while let Some(bytes) = stream.next().await {
-            let bytes = bytes.map_err(|e| Error::Network(describe(&e)))?;
+            let bytes = bytes.map_err(Error::Network)?;
             lim.take(bytes.len() as u64).await;
             file.write_all(&bytes).await?;
             written += bytes.len() as u64;
@@ -527,6 +413,7 @@ pub(crate) async fn fetch_whole_chunked(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scope::related_hosts;
     use std::sync::Mutex;
 
     #[test]
@@ -550,6 +437,11 @@ mod tests {
         assert!(!related_hosts("example.co.uk", "evil.co.uk"));
         assert!(!related_hosts("127.0.0.1", "1.0.0.1"));
         assert!(!related_hosts("", "example.com"));
+        // Suffixes that unrelated people share are no site.
+        assert!(!related_hosts("alice.github.io", "mallory.github.io"));
+        assert!(!related_hosts("a.s3.amazonaws.com", "b.s3.amazonaws.com"));
+        assert!(!related_hosts("shop.com.br", "evil.com.br"));
+        assert!(related_hosts("www.alice.github.io", "cdn.alice.github.io"));
     }
 
     #[test]
@@ -565,25 +457,25 @@ mod tests {
             ..Default::default()
         };
         let http = Http::new(net, &src, meta, "ua", false);
-        let home = http.meta_for(&src, Req::Source);
-        assert_eq!(home.method.as_deref(), Some("POST"));
-        assert_eq!(home.cookies.as_deref(), Some("session=1"));
-        let seg = http.meta_for(
+        let home = http.scoped(&src, Req::Source);
+        assert_eq!(home.meta().method.as_deref(), Some("POST"));
+        assert_eq!(home.meta().cookies.as_deref(), Some("session=1"));
+        let seg = http.scoped(
             &Url::parse("https://cdn.example.com/s1.ts").expect("URL"),
             Req::Derived,
         );
-        assert_eq!(seg.method, None);
-        assert_eq!(seg.body, None);
-        assert_eq!(seg.cookies.as_deref(), Some("session=1"));
-        let elsewhere = http.meta_for(
+        assert_eq!(seg.meta().method, None);
+        assert_eq!(seg.meta().body, None);
+        assert_eq!(seg.meta().cookies.as_deref(), Some("session=1"));
+        let elsewhere = http.scoped(
             &Url::parse("https://cdn.other.net/s1.ts").expect("URL"),
             Req::Derived,
         );
-        assert_eq!(elsewhere.cookies, None);
-        assert!(elsewhere.headers.is_empty());
+        assert_eq!(elsewhere.meta().cookies, None);
+        assert!(elsewhere.meta().headers.is_empty());
         assert_eq!(
-            elsewhere.referrer.as_deref(),
-            Some("https://www.example.com/watch")
+            elsewhere.meta().referrer.as_deref(),
+            Some("https://www.example.com/")
         );
     }
 

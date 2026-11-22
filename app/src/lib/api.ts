@@ -54,9 +54,12 @@ export interface SoundSettings {
 }
 
 export interface LoginRequest {
+  /** What the login is kept under: `host[:port]`, or `scheme://host[:port]`. */
   host: string;
   realm: string | null;
   rejected: boolean;
+  /** `ticket`: the user's Kerberos ticket would do too. */
+  asked: "password" | "unsaid" | "windows" | "ticket" | "ticket_failed";
 }
 
 /** What `probe` rejects with. */
@@ -73,6 +76,23 @@ export interface UiSettings {
   sort: string;
   sort_reverse: boolean;
   toolbar: string[];
+  /** The skin's id. */
+  skin: string;
+  /** Empty for what the skin says. */
+  toolbar_style: ToolbarStyle | "";
+}
+
+export type ToolbarStyle = "mixed" | "icons" | "text";
+
+/** A skin: colours by the CSS variable they set (without `--`), for light and dark. */
+export interface Skin {
+  id: string;
+  name: string;
+  built_in: boolean;
+  radius: number;
+  toolbar: ToolbarStyle;
+  light: Record<string, string>;
+  dark: Record<string, string>;
 }
 
 export interface ColumnSetting {
@@ -110,8 +130,8 @@ export interface HostKeyRequest {
   key: string;
 }
 
-export type ProxyMode = "none" | "system" | "manual";
-export type ProxyScheme = "http" | "socks5";
+export type ProxyMode = "none" | "system" | "manual" | "script" | "detect";
+export type ProxyScheme = "http" | "https" | "socks4" | "socks4a" | "socks5";
 
 export interface ProxySettings {
   mode: ProxyMode;
@@ -120,6 +140,21 @@ export interface ProxySettings {
   port: number;
   username: string;
   no_proxy: string;
+  /** The proxy script's address or file. */
+  script: string;
+  ftp_host: string;
+  ftp_port: number;
+}
+
+/** Which way an address goes, and why. */
+export interface ProxyCheck {
+  /** In the order they are tried; `DIRECT` is no proxy. */
+  via: string[];
+  why:
+    | { kind: "no_proxy" | "excepted" | "this_computer" }
+    | { kind: "configured"; source: string }
+    | { kind: "script" | "detected"; from: string }
+    | { kind: "nothing_detected"; reason: string };
 }
 
 /** Where connections go under the saved proxy settings. */
@@ -175,6 +210,8 @@ export interface Download {
   error_code: { code: string; args: [string, string][] } | null;
   needs_login: LoginRequest | null;
   needs_host_key: HostKeyRequest | null;
+  /** Its link expired and Siler found no fresh one: the user can fetch one from the page. */
+  needs_link: boolean;
   speed: number;
   active_connections: number;
   segments: Segment[];
@@ -509,6 +546,8 @@ export interface Settings {
   auto_start_browser_downloads: boolean;
   notify_on_complete: boolean;
   close_to_tray: boolean;
+  /** A left click on the tray icon opens the panel (otherwise Siler's window). */
+  tray_opens_panel: boolean;
   confirm_quit: boolean;
   on_conflict: OnConflict;
   categories: CategoryRule[];
@@ -528,6 +567,7 @@ export interface Settings {
   quota: QuotaSettings;
   after_download: AfterDownload;
   open_metalinks: boolean;
+  auto_refresh_links: boolean;
   check_updates: boolean;
   skipped_version: string;
   ui: UiSettings;
@@ -653,7 +693,7 @@ export const api = {
   redownload: (id: number, replace: boolean) => invoke<void>("redownload", { id, replace }),
   refreshUrl: (id: number, url: string, pendingId?: number | null) => invoke<void>("refresh_url", { id, url, pendingId }),
   awaitRefresh: (id: number) => invoke<boolean>("await_refresh", { id }),
-  cancelAwaitRefresh: () => invoke<void>("cancel_await_refresh"),
+  cancelAwaitRefresh: (id: number) => invoke<void>("cancel_await_refresh", { id }),
   setConnections: (id: number, connections: number) => invoke<void>("set_connections", { id, connections }),
   edit: (id: number, filename: string | null, dir: string | null) => invoke<void>("edit_download", { id, filename, dir }),
   setSpeedLimit: (id: number, bytesPerSec: number) => invoke<void>("set_speed_limit", { id, bytesPerSec }),
@@ -669,11 +709,21 @@ export const api = {
   installExtension: () => invoke<void>("install_extension"),
   autostartEnabled: () => invoke<boolean>("autostart_enabled"),
   setAutostart: (on: boolean) => invoke<void>("set_autostart", { on }),
+  skins: () => invoke<Skin[]>("list_skins"),
+  importSkin: (path: string) => invoke<Skin>("import_skin", { path }),
+  exportSkin: (id: string, path: string) => invoke<void>("export_skin", { id, path }),
+  removeSkin: (id: string) => invoke<void>("remove_skin", { id }),
   showMain: () => invoke<void>("show_main_window"),
+  closeTrayPanel: () => invoke<void>("close_tray_panel"),
+  resizeTrayPanel: (height: number) => invoke<void>("resize_tray_panel", { height }),
+  /** Shows a download in the main window, and the login or key it waits for. */
+  showDownload: (id: number) => invoke<void>("show_download", { id }),
+  /** Saves the speed limit for everything and tells the other windows. */
+  setGlobalSpeedLimit: (limit: number) => invoke<Settings>("set_global_speed_limit", { limit }),
   requestQuit: () => invoke<void>("request_quit"),
   quit: (dontAsk: boolean) => invoke<void>("quit_app", { dontAsk }),
-  submitLogin: (host: string, username: string, password: string, remember: boolean) =>
-    invoke<void>("submit_login", { host, username, password, remember }),
+  submitLogin: (host: string, username: string, password: string, remember: boolean, ticket: boolean) =>
+    invoke<void>("submit_login", { host, username, password, remember, ticket }),
   chromiumExtension: () => invoke<{ path: string; browsers: string[] }>("chromium_extension"),
   openChromiumExtensions: (browser: string) => invoke<void>("open_chromium_extensions", { browser }),
   appInfo: () => invoke<AppInfo>("app_info"),
@@ -686,6 +736,7 @@ export const api = {
   forgetSavedLogin: (host: string) => invoke<void>("forget_saved_login", { host }),
   keyringAvailable: () => invoke<boolean>("keyring_available"),
   proxyStatus: () => invoke<ProxyRoute>("proxy_status"),
+  checkProxy: (settings: ProxySettings, url: string) => invoke<ProxyCheck>("check_proxy", { settings, url }),
   setProxyPassword: (password: string | null) => invoke<void>("set_proxy_password", { password }),
   proxyPasswordSaved: () => invoke<boolean>("proxy_password_saved"),
   importList: (path: string) => invoke<number>("import_list", { path }),

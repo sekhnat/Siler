@@ -4,6 +4,7 @@
   import AddWindow from "./AddWindow.svelte";
   import CountdownWindow from "./CountdownWindow.svelte";
   import MainWindow from "./MainWindow.svelte";
+  import TrayPanel from "./TrayPanel.svelte";
   import FatalScreen from "./lib/components/FatalScreen.svelte";
 
   const route = location.hash.replace(/^#/, "");
@@ -16,6 +17,8 @@
     <FatalScreen message={fatal} />
   {:else if route === "add"}
     <AddWindow />
+  {:else if route === "tray"}
+    <TrayPanel />
   {:else if route === "countdown"}
     <CountdownWindow />
   {:else}

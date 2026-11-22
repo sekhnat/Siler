@@ -45,7 +45,10 @@ pub fn meta_of(item: &BrowserItem) -> RequestMeta {
         headers: item.headers.clone(),
         method: item.method.clone().filter(|_| body.is_some()),
         body,
+        origin: None,
     }
+    // Whatever link this ends up on, it was given for this one.
+    .bound_to(&item.url)
 }
 
 pub(crate) fn pending_meta(state: &AppState, pending_id: Option<u64>) -> Option<RequestMeta> {
@@ -71,6 +74,15 @@ pub fn hint_of(m: &siler_ipc::MediaHint) -> Option<SourceHint> {
     serde_json::to_value(m)
         .and_then(serde_json::from_value)
         .ok()
+}
+
+/// Where a pending item's link came from, as long as the dialog still has that link.
+fn pending_link(state: &AppState, pending_id: Option<u64>, url: &str) -> siler_core::LinkSource {
+    let p = state.pending.lock().unwrap();
+    p.iter()
+        .find(|p| Some(p.id) == pending_id && p.item.url == url)
+        .map(|p| crate::links::source_of(&p.item))
+        .unwrap_or_default()
 }
 
 fn forget_pending(state: &AppState, pending_id: Option<u64>) {
@@ -222,8 +234,13 @@ pub async fn submit_login(
     username: String,
     password: String,
     remember: bool,
+    ticket: bool,
 ) -> Res<()> {
-    let login = Login { username, password };
+    let login = if ticket {
+        Login::kerberos_ticket()
+    } else {
+        Login { username, password }
+    };
     if remember {
         // Save first: resuming may need the login again before this returns.
         let saved = logins::save(&host, &login).await;
@@ -264,6 +281,20 @@ pub fn proxy_status(state: State<'_, AppState>) -> ProxyStatus {
         summary: route.summary(),
         note: route.note,
     }
+}
+
+/// "Test with an address": which way it would go under these settings, saved or not.
+#[tauri::command]
+pub async fn check_proxy(
+    state: State<'_, AppState>,
+    settings: siler_core::proxy::ProxySettings,
+    url: String,
+) -> Res<siler_core::proxy::ProxyCheck> {
+    state
+        .engine
+        .check_proxy_with(&settings, &url)
+        .await
+        .map_err(err)
 }
 
 /// Saves the manual proxy's password in the keyring and uses it right away.
@@ -320,6 +351,7 @@ pub fn add_download(state: State<'_, AppState>, args: AddArgs) -> Res<i64> {
     });
     let checksum = crate::tools::checksum_arg(args.checksum.as_deref(), extra.as_ref())?;
     let mirrors = crate::tools::mirrors_arg(args.mirrors.as_deref(), extra.as_ref());
+    let link = pending_link(&state, args.pending_id, &args.url);
     let id = state
         .engine
         .add(NewDownload {
@@ -336,6 +368,7 @@ pub fn add_download(state: State<'_, AppState>, args: AddArgs) -> Res<i64> {
             mirrors,
             pieces: extra.and_then(|e| e.pieces),
             zip_entry: None,
+            link,
         })
         .map_err(err)?;
     forget_pending(&state, args.pending_id);
@@ -389,9 +422,11 @@ pub struct AddMediaArgs {
 pub async fn add_media(state: State<'_, AppState>, args: AddMediaArgs) -> Res<i64> {
     let meta = pending_meta(&state, args.pending_id).unwrap_or_default();
     let hint = pending_hint(&state, args.pending_id, &args.url);
+    let link = pending_link(&state, args.pending_id, &args.url);
     let id = state
         .engine
         .add_media(NewMediaDownload {
+            link,
             url: args.url,
             meta,
             hint,
@@ -633,12 +668,13 @@ pub async fn refresh_url(
     url: String,
     pending_id: Option<u64>,
 ) -> Res<()> {
-    let meta = pending_meta(&state, pending_id);
-    state
-        .engine
-        .refresh_url(id, &url, meta)
-        .await
-        .map_err(err)?;
+    let found = siler_core::FoundLink {
+        meta: pending_meta(&state, pending_id),
+        hint: pending_hint(&state, pending_id, &url),
+        source: Some(pending_link(&state, pending_id, &url)).filter(|s| !s.is_empty()),
+        url,
+    };
+    state.engine.refresh_link(id, found).await.map_err(err)?;
     forget_pending(&state, pending_id);
     Ok(())
 }
@@ -651,8 +687,15 @@ const REFRESH_WAIT: Duration = Duration::from_secs(120);
 /// known.
 #[tauri::command]
 pub fn await_refresh(state: State<'_, AppState>, id: i64) -> Res<bool> {
+    open_page_for_link(&state, id)
+}
+
+/// Also what the expired link's notification and the tray panel's row do.
+pub(crate) fn open_page_for_link(state: &AppState, id: i64) -> Res<bool> {
     let d = state.engine.get(id).ok_or_else(|| tr("error-not-found"))?;
-    *state.awaiting_refresh.lock().unwrap() = Some((id, Instant::now() + REFRESH_WAIT));
+    state
+        .awaiting_refresh
+        .wait(id, Instant::now() + REFRESH_WAIT);
     let page = d.page_url.or(d.referrer);
     if let Some(page) = &page {
         crate::launch::open(page).map_err(err)?;
@@ -661,8 +704,8 @@ pub fn await_refresh(state: State<'_, AppState>, id: i64) -> Res<bool> {
 }
 
 #[tauri::command]
-pub fn cancel_await_refresh(state: State<'_, AppState>) {
-    *state.awaiting_refresh.lock().unwrap() = None;
+pub fn cancel_await_refresh(state: State<'_, AppState>, id: i64) {
+    state.awaiting_refresh.stop(id);
 }
 
 #[tauri::command]
@@ -700,8 +743,17 @@ pub fn get_settings(state: State<'_, AppState>) -> Settings {
 }
 
 #[tauri::command]
-pub fn set_settings(state: State<'_, AppState>, settings: Settings) -> Res<Settings> {
-    state.engine.set_settings(settings).map_err(err)
+pub fn set_settings(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    settings: Settings,
+) -> Res<Settings> {
+    let before = state.engine.settings().ui;
+    let saved = state.engine.set_settings(settings).map_err(err)?;
+    if saved.ui.skin != before.skin || saved.ui.toolbar_style != before.toolbar_style {
+        crate::skins::changed(&app);
+    }
+    Ok(saved)
 }
 
 fn download(app: &AppHandle, id: i64) -> Res<DownloadInfo> {
@@ -816,6 +868,43 @@ pub fn install_extension() -> Res<()> {
 }
 
 #[tauri::command]
+pub fn close_tray_panel(app: AppHandle) {
+    crate::tray::panel::close(&app);
+}
+
+#[tauri::command]
+pub fn resize_tray_panel(app: AppHandle, height: i32) {
+    crate::tray::panel::resize(&app, height);
+}
+
+/// Shows a download in the main window, and what it is waiting for.
+#[tauri::command]
+pub fn show_download(app: AppHandle, id: i64) -> Res<()> {
+    let d = download(&app, id)?;
+    crate::show_main(&app);
+    let _ = app.emit("select-download", id);
+    if d.needs_login.is_some() || d.needs_host_key.is_some() {
+        let _ = app.emit("ask-login", id);
+    } else if d.needs_link {
+        let _ = app.emit("ask-link", id);
+    }
+    Ok(())
+}
+
+/// The speed limit for everything, changed from the panel: the main window follows.
+#[tauri::command]
+pub fn set_global_speed_limit(app: AppHandle, limit: u64) -> Res<Settings> {
+    let state = app
+        .try_state::<AppState>()
+        .ok_or_else(|| tr("command-siler-isnt-running"))?;
+    let mut s = state.engine.settings();
+    s.global_speed_limit = limit;
+    let s = state.engine.set_settings(s).map_err(err)?;
+    let _ = app.emit("settings-changed", s.clone());
+    Ok(s)
+}
+
+#[tauri::command]
 pub fn show_main_window(app: AppHandle) {
     crate::show_main(&app);
 }
@@ -835,4 +924,42 @@ pub fn quit_app(app: AppHandle, dont_ask: bool) -> Res<()> {
     }
     app.exit(0);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+
+    /// The Add window's link can be edited: the first link's cookies don't follow it.
+    #[tokio::test]
+    async fn an_edited_link_doesnt_get_the_first_links_cookies() {
+        let server = std::net::TcpListener::bind("127.0.0.2:0").unwrap();
+        let edited = format!("http://{}/f.bin", server.local_addr().unwrap());
+        let request = std::thread::spawn(move || {
+            let (mut s, _) = server.accept().unwrap();
+            let (mut buf, mut got) = ([0u8; 4096], Vec::new());
+            while !got.windows(4).any(|w| w == b"\r\n\r\n") {
+                match s.read(&mut buf).unwrap() {
+                    0 => break,
+                    n => got.extend_from_slice(&buf[..n]),
+                }
+            }
+            s.write_all(
+                b"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-0/1\r\nContent-Length: 1\r\nConnection: close\r\n\r\nx",
+            )
+            .unwrap();
+            String::from_utf8_lossy(&got).to_ascii_lowercase()
+        });
+        let handed_over = BrowserItem {
+            url: "http://127.0.0.1:9/first.bin".into(),
+            cookies: Some("session=secret".into()),
+            ..Default::default()
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = siler_core::Engine::open(tmp.path().join("data")).unwrap();
+        engine.probe(&edited, &meta_of(&handed_over)).await.unwrap();
+        let request = request.join().unwrap();
+        assert!(!request.contains("session=secret"), "{request}");
+    }
 }

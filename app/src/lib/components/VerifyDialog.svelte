@@ -167,7 +167,7 @@
   }
   .link {
     align-self: flex-start;
-    color: var(--accent);
+    color: var(--accent-text);
     font-weight: 600;
     font-size: 12.5px;
   }

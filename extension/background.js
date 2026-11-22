@@ -99,8 +99,8 @@ function basename(path) {
   return b || null;
 }
 
-async function describe(url, { referrer = null, pageUrl = null, filename = null, size = null, mime = null, storeId = null } = {}) {
-  return {
+async function describe(url, { referrer = null, pageUrl = null, filename = null, size = null, mime = null, storeId = null, from = null } = {}) {
+  const item = {
     url,
     filename,
     referrer,
@@ -111,12 +111,19 @@ async function describe(url, { referrer = null, pageUrl = null, filename = null,
     size,
     mime,
   };
+  // `from`: where the link came from, when that is known (see links.js).
+  if (from) {
+    const link = await Links.source({ url, storeId, name: filename, ...from });
+    if (link) item.link = link;
+  }
+  return item;
 }
 
 async function handOver(items, silent = false) {
   const reply = await silerSend({ type: "add_downloads", items, silent });
   if (reply?.type !== "accepted") throw new Error(reply?.message || silerT("bgRejected"));
   health = { ...health, installed: true, running: true, checkedAt: Date.now() };
+  Links.connect();
   return reply;
 }
 
@@ -267,6 +274,15 @@ if (SILER_GECKO) browser.webRequest.onHeadersReceived.addListener(
     const mime = (h["content-type"] || "").split(";")[0].trim().toLowerCase();
     if (!attachment && displaysInline(mime, d.type)) return {};
 
+    const first = Links.firstOf(d.requestId);
+    const job = Links.jobOf(d.tabId);
+    if (job) {
+      // A tab of ours downloads nothing: what starts in it is at most the link asked for.
+      const size = Number(h["content-length"]);
+      if (d.method === "GET") Links.offer(job, { url: d.url, first, filename: filenameFromDisposition(disposition), size: size > 0 ? size : null });
+      return { cancel: true };
+    }
+
     const cfg = await silerConfig();
     if (!cfg.enabled) return {};
     const size = Number(h["content-length"]);
@@ -278,11 +294,12 @@ if (SILER_GECKO) browser.webRequest.onHeadersReceived.addListener(
       return {};
     }
 
+    const click = d.incognito ? null : Links.clickOn(first, d.url);
     const item = {
       url: d.url,
       filename,
       referrer: sent?.referer || d.originUrl || null,
-      page_url: d.documentUrl || d.originUrl || null,
+      page_url: click?.page || d.documentUrl || d.originUrl || null,
       cookies: sent?.cookie ?? (await cookieHeader(d.url, d.cookieStoreId)),
       user_agent: sent?.ua || navigator.userAgent,
       headers: [],
@@ -294,6 +311,10 @@ if (SILER_GECKO) browser.webRequest.onHeadersReceived.addListener(
       item.body = post.body;
       const ct = sent?.contentType || (post.form ? "application/x-www-form-urlencoded" : null);
       if (ct) item.headers = [["Content-Type", ct]];
+    } else {
+      const name = filename || basename(new URL(d.url).pathname);
+      const link = await Links.source({ url: d.url, first, storeId: d.cookieStoreId, incognito: d.incognito, text: click?.text, name });
+      if (link) item.link = link;
     }
     handOver([item])
       .then(() => closeIfBlank(d.tabId, d.type))
@@ -322,6 +343,12 @@ browser.downloads.onCreated.addListener(async (item) => {
   if (passThrough.delete(item.url)) return;
   if (Date.now() < bypassUntil) return;
   if (item.state && item.state !== "in_progress") return;
+  if (!item.incognito && Links.claim(item)) {
+    // It started in a tab of ours: Siler has it already.
+    await browser.downloads.cancel(item.id).catch(() => {});
+    await browser.downloads.erase({ id: item.id }).catch(() => {});
+    return;
+  }
 
   const cfg = await silerConfig();
   if (!cfg.enabled || !wanted(item, cfg)) return;
@@ -340,15 +367,20 @@ browser.downloads.onCreated.addListener(async (item) => {
   }
 
   try {
-    const desc = await describe(item.finalUrl || item.url, {
+    const final = item.finalUrl || item.url;
+    const post = recentPosts.get(item.url);
+    const click = item.incognito ? null : Links.clickOn(item.url, final);
+    const desc = await describe(final, {
       referrer: item.referrer || null,
+      pageUrl: click?.page || null,
       filename: basename(item.filename),
       size: item.totalBytes > 0 ? item.totalBytes : null,
       mime: item.mime || null,
       storeId: item.cookieStoreId,
+      // A form's address can't be asked again as a link.
+      from: post ? null : { first: item.url, incognito: item.incognito, text: click?.text },
     });
     // Chromium: a form submission's download, with the form sent again.
-    const post = recentPosts.get(item.url);
     if (post) {
       recentPosts.delete(item.url);
       desc.method = "POST";
@@ -432,7 +464,8 @@ browser.contextMenus.onClicked.addListener(async (info, tab) => {
     if (info.menuItemId === "siler-link") {
       const url = info.linkUrl || info.srcUrl;
       if (!url) return;
-      await handOver([await describe(url, { referrer: info.pageUrl, pageUrl: info.pageUrl, storeId })]);
+      const from = tab ? { incognito: tab.incognito, text: info.linkText } : null;
+      await handOver([await describe(url, { referrer: info.pageUrl, pageUrl: info.pageUrl, storeId, from })]);
     } else if (info.menuItemId === "siler-video" && tab) {
       const frameId = info.frameId ?? 0;
       const clues = await browser.tabs.sendMessage(tab.id, { type: "video-clues" }, { frameId }).catch(() => null);
@@ -451,7 +484,8 @@ browser.contextMenus.onClicked.addListener(async (info, tab) => {
       const items = await Promise.all(
         links.slice(0, 2000).map(async ({ url, text }) => {
           const hint = nameFromText(text);
-          const item = await describe(url, { referrer: info.pageUrl, pageUrl: info.pageUrl, storeId, filename: hint });
+          const from = { incognito: tab.incognito, text };
+          const item = await describe(url, { referrer: info.pageUrl, pageUrl: info.pageUrl, storeId, filename: hint, from });
           item.selected = selection || exts.has(extensionOf(hint || url));
           return item;
         }),
@@ -492,6 +526,9 @@ silerOnMessage((msg, sender) => {
           },
         );
     }
+    case "link-click":
+      Links.clicked(msg, sender);
+      return;
     case "bypass":
       bypassUntil = Date.now() + 4000;
       return;

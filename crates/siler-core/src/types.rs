@@ -97,6 +97,9 @@ pub struct RequestMeta {
     /// Request body (form submissions), replayed on every request.
     #[serde(with = "b64")]
     pub body: Option<Vec<u8>>,
+    /// The site all of this was given for (`https://host[:port]`). Cookies, headers and the
+    /// body go nowhere else. When absent, the engine uses the site of the first address.
+    pub origin: Option<String>,
 }
 
 /// Largest request body Siler will store and replay.
@@ -154,6 +157,8 @@ pub struct NewDownload {
     pub pieces: Option<crate::checksum::Pieces>,
     /// Fetch only this file out of the ZIP archive at `url`.
     pub zip_entry: Option<crate::extras::ZipEntry>,
+    /// Where the link came from, to find it again when it expires.
+    pub link: crate::LinkSource,
 }
 
 /// Changes to an existing download.
@@ -211,6 +216,8 @@ pub struct DownloadInfo {
     pub needs_login: Option<LoginRequest>,
     /// Stopped because an SFTP server's key has to be trusted first.
     pub needs_host_key: Option<HostKeyRequest>,
+    /// Stopped because its link expired and no fresh one was found: the user can fetch one.
+    pub needs_link: bool,
     pub speed: u64,
     pub active_connections: u32,
     pub segments: Vec<Segment>,
@@ -244,11 +251,31 @@ pub struct SourceView {
 /// A server wants a login for a download.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LoginRequest {
-    /// `host` or `host:port`; logins are kept per host.
+    /// What the login is kept under: `host[:port]`, or `scheme://host[:port]` for FTP, SFTP
+    /// and Windows logins.
     pub host: String,
     pub realm: Option<String>,
     /// A login was sent and refused.
     pub rejected: bool,
+    /// What kind of login answers it.
+    #[serde(default)]
+    pub asked: Asked,
+}
+
+/// What a login form should ask for.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Asked {
+    #[default]
+    Password,
+    /// The 401 didn't say how to log in (often a link that expired).
+    Unsaid,
+    /// A Windows login (`DOMAIN\user`).
+    Windows,
+    /// A Windows login, or the user's Kerberos ticket.
+    Ticket,
+    /// The ticket was refused, or there is none.
+    TicketFailed,
 }
 
 /// An SFTP server whose key Siler hasn't seen: shown to the user to trust or not.
@@ -319,6 +346,8 @@ pub enum Event {
         error: String,
         /// The error as a code, for the app's language.
         code: Option<crate::extras::ErrorCode>,
+        /// Its link expired: the user can fetch a fresh one from the page.
+        needs_link: bool,
     },
     /// The list of queues changed (added, edited, removed, started or stopped).
     Queues {

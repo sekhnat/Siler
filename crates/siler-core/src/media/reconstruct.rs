@@ -32,9 +32,12 @@ pub(crate) fn init_path(work: &Path, track: &Track, index: usize) -> PathBuf {
     track_dir(work, track).join(format!("init-{index}.bin"))
 }
 
+/// What a track that is one file is called while it downloads, whatever its format.
+pub(crate) const WHOLE_FILE: &str = "whole.bin";
+
 /// The file of a track that is one whole file (DASH `SegmentBase`, a plain URL).
 pub(crate) fn whole_path(work: &Path, track: &Track) -> PathBuf {
-    track_dir(work, track).join("whole.bin")
+    track_dir(work, track).join(WHOLE_FILE)
 }
 
 /// The file a track's pieces are joined into.

@@ -246,7 +246,7 @@
     background: var(--surface-3);
   }
   .days button.on {
-    color: var(--on-accent, #fff);
+    color: var(--on-accent);
     background: var(--accent);
   }
   .days.off button {

@@ -24,7 +24,7 @@
   .fill.downloading,
   .fill.probing {
     background:
-      linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.35), transparent) 0 0 / 200px 100% no-repeat,
+      linear-gradient(90deg, transparent, var(--shine), transparent) 0 0 / 200px 100% no-repeat,
       var(--grad);
     animation: shimmer 1.6s linear infinite;
   }

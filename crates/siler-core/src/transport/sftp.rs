@@ -146,10 +146,10 @@ async fn connect(net: &Net, url: &Url) -> std::result::Result<Session, OpenError
         lists,
         found: found.clone(),
     };
-    let tcp = net
-        .dial(&host, port)
-        .await
-        .map_err(|e| OpenError::Transient(format!("can't connect to {host}: {e}")))?;
+    let tcp = net.dial(url, &host, port).await.map_err(|e| match e {
+        Error::Network(why) => OpenError::Transient(format!("can't connect to {host}: {why}")),
+        e => OpenError::from(e),
+    })?;
     let config = Arc::new(client::Config {
         inactivity_timeout: Some(Duration::from_secs(120)),
         ..Default::default()
@@ -197,6 +197,7 @@ async fn connect(net: &Net, url: &Url) -> std::result::Result<Session, OpenError
             host: key,
             realm: None,
             rejected: login.is_some_and(|l| !l.password.is_empty()),
+            asked: crate::Asked::Password,
         }));
     }
     let channel = ssh.channel_open_session().await.map_err(net_error)?;
@@ -295,6 +296,7 @@ pub(crate) async fn probe(net: &Net, url: &Url) -> Result<ProbeResult> {
         .unwrap_or_else(|| "download".to_string());
     let content_type = mime_guess::from_path(&name).first().map(|m| m.to_string());
     Ok(ProbeResult {
+        final_meta: Default::default(),
         final_url: url.to_string(),
         total_size: meta.size,
         resumable: meta.size.is_some(),

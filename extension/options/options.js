@@ -7,6 +7,7 @@ const SWITCHES = [
   "captureAll",
   "captureByMime",
   "notifyFailures",
+  "refreshLinks",
   "findVideos",
   "videoButton",
   "site_youtube",
@@ -43,7 +44,8 @@ $("save").addEventListener("click", async () => {
 });
 
 $("reset").addEventListener("click", async () => {
-  await browser.storage.local.clear();
+  // Not the browser's id: downloads know this browser by it.
+  await browser.storage.local.remove(Object.keys(SILER_DEFAULTS));
   await load();
 });
 

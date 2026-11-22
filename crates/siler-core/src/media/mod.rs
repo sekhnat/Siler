@@ -8,6 +8,7 @@ mod live;
 mod probe;
 mod reconstruct;
 mod run;
+pub(crate) mod same;
 pub mod stream;
 
 use reqwest::Url;
@@ -82,6 +83,9 @@ pub(crate) struct MediaRecord {
     /// What the browser extension said about the video, when it came from there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hint: Option<SourceHint>,
+    /// What the chosen tracks are, to find them again when fresh links change their ids.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub picked: Vec<same::Picked>,
     /// A live stream, recorded until the user presses Finish or the stream ends.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub live: bool,
@@ -333,9 +337,11 @@ pub struct NewMediaDownload {
     pub on_conflict: Option<OnConflict>,
     pub queue_id: Option<i64>,
     /// What the browser extension found out about the video.
+    /// What the browser extension found out about the video.
     pub hint: Option<SourceHint>,
+    /// Where the link came from, to find it again when it expires.
+    pub link: crate::LinkSource,
 }
-
 /// A track's view for the UI.
 fn track_view(t: &Track) -> TrackView {
     TrackView {

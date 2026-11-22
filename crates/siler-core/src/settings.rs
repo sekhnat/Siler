@@ -97,6 +97,8 @@ pub struct Settings {
     pub auto_start_browser_downloads: bool,
     pub notify_on_complete: bool,
     pub close_to_tray: bool,
+    /// A left click on the tray icon opens the panel (otherwise Siler's window).
+    pub tray_opens_panel: bool,
     /// Ask before quitting while downloads are running.
     pub confirm_quit: bool,
     /// What to do when the target file already exists.
@@ -130,6 +132,9 @@ pub struct Settings {
     pub after_download: AfterDownload,
     /// A download that turns out to be a metalink is replaced by the files it lists.
     pub open_metalinks: bool,
+    /// When a link expires, get a fresh one: from the address it came from, or by the browser
+    /// looking at its page in a background tab.
+    pub auto_refresh_links: bool,
     /// Ask GitHub once a day whether a newer Siler is out.
     pub check_updates: bool,
     /// A version the user chose to skip (not announced again).
@@ -154,6 +159,10 @@ pub struct UiSettings {
     pub sort_reverse: bool,
     /// The toolbar's buttons, in order.
     pub toolbar: Vec<String>,
+    /// The skin's id.
+    pub skin: String,
+    /// `mixed`, `icons` or `text`; empty for what the skin says.
+    pub toolbar_style: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -194,6 +203,8 @@ impl Default for UiSettings {
             sort: "added".into(),
             sort_reverse: false,
             toolbar: DEFAULT_TOOLBAR.iter().map(|s| s.to_string()).collect(),
+            skin: "siler".into(),
+            toolbar_style: String::new(),
         }
     }
 }
@@ -227,6 +238,12 @@ impl UiSettings {
         self.toolbar
             .retain(|t| !t.is_empty() && t.len() <= 32 && seen.insert(t.clone()));
         self.toolbar.truncate(24);
+        if self.skin.is_empty() || self.skin.len() > 64 {
+            self.skin = "siler".into();
+        }
+        if !matches!(self.toolbar_style.as_str(), "mixed" | "icons" | "text") {
+            self.toolbar_style.clear();
+        }
         if self.sort.is_empty() || self.sort.len() > 32 {
             self.sort = "added".into();
         }
@@ -277,6 +294,7 @@ impl Default for Settings {
             auto_start_browser_downloads: false,
             notify_on_complete: true,
             close_to_tray: true,
+            tray_opens_panel: true,
             confirm_quit: true,
             on_conflict: OnConflict::Ask,
             categories: default_categories(),
@@ -296,6 +314,7 @@ impl Default for Settings {
             quota: crate::quota::QuotaSettings::default(),
             after_download: AfterDownload::default(),
             open_metalinks: true,
+            auto_refresh_links: true,
             check_updates: true,
             skipped_version: String::new(),
             ui: UiSettings::default(),

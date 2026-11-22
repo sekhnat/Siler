@@ -59,7 +59,7 @@
   }
 
   function close() {
-    if (waiting) api.cancelAwaitRefresh();
+    if (waiting) api.cancelAwaitRefresh(d.id);
     onclose();
   }
 </script>
@@ -144,7 +144,7 @@
   }
   .catch > :global(svg:first-child) {
     flex: none;
-    color: var(--accent);
+    color: var(--accent-text);
   }
   .min {
     flex: 1;

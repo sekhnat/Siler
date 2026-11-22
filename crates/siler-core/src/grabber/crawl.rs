@@ -44,7 +44,7 @@ struct ScopeRule {
 impl ScopeRule {
     fn new(start: &Url, scope: Scope) -> ScopeRule {
         let host = bare_host(start);
-        let site = crate::http::site_of(&host).to_string();
+        let site = crate::scope::site_of(&host).to_string();
         let path = start.path();
         let folder = path[..path.rfind('/').map_or(0, |i| i + 1)].to_string();
         ScopeRule {

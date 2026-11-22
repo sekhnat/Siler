@@ -7,17 +7,17 @@ use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 use tokio::io::{
     AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, ReadBuf,
 };
-use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
-use tokio_rustls::rustls::{self, ClientConfig, pki_types::ServerName};
+use tokio_rustls::rustls::pki_types::ServerName;
 use url::Url;
 
+use super::dial::Stream;
 use super::{ByteStream, OpenError, decoded_path, login_key};
 use crate::net::Net;
 use crate::probe::ProbeResult;
@@ -26,8 +26,8 @@ use crate::{Category, Error, Result, filename};
 /// A control or data connection: plain TCP or TLS over it. `Closed` stands in for a
 /// connection that was dropped (reads end, writes fail).
 pub(crate) enum Conn {
-    Plain(TcpStream),
-    Tls(Box<tokio_rustls::client::TlsStream<TcpStream>>),
+    Plain(Stream),
+    Tls(Box<tokio_rustls::client::TlsStream<Stream>>),
     Closed,
 }
 
@@ -95,6 +95,11 @@ impl Pool {
         None
     }
 
+    /// Forgets them all: they were made the way the old proxy settings said.
+    pub(crate) fn clear(&self) {
+        self.0.lock().unwrap().clear();
+    }
+
     fn put(&self, c: Control) {
         let mut map = self.0.lock().unwrap();
         let list = map.entry(c.key.clone()).or_default();
@@ -119,7 +124,10 @@ struct Features {
 pub(crate) struct Control {
     io: BufReader<Conn>,
     key: String,
+    /// Where data connections go too: the server, or the FTP proxy.
     host: String,
+    /// What the route is chosen for; `None` through an FTP proxy, which is reached directly.
+    route: Option<Url>,
     tls: bool,
     features: Features,
 }
@@ -211,7 +219,7 @@ impl Control {
     }
 
     /// Opens a passive data connection.
-    async fn data(&mut self, net: &Net) -> std::result::Result<TcpStream, OpenError> {
+    async fn data(&mut self, net: &Net) -> std::result::Result<Stream, OpenError> {
         let port = loop {
             if !self.features.no_epsv {
                 let r = self.cmd("EPSV").await.map_err(transient)?;
@@ -235,7 +243,11 @@ impl Control {
                 ))
             })?;
         };
-        net.dial(&self.host, port).await.map_err(transient)
+        let data = match &self.route {
+            Some(url) => net.dial(url, &self.host, port).await,
+            None => net.dial_direct(&self.host, port).await,
+        };
+        data.map_err(OpenError::from)
     }
 }
 
@@ -299,24 +311,8 @@ fn parse_mdtm(r: &Reply) -> Option<String> {
     (digits.len() == 14).then_some(digits)
 }
 
-fn tls_config() -> std::result::Result<Arc<ClientConfig>, Error> {
-    static CONFIG: OnceLock<std::result::Result<Arc<ClientConfig>, String>> = OnceLock::new();
-    CONFIG
-        .get_or_init(|| {
-            use rustls_platform_verifier::BuilderVerifierExt;
-            let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-            ClientConfig::builder_with_provider(provider)
-                .with_safe_default_protocol_versions()
-                .and_then(|b| b.with_platform_verifier())
-                .map(|b| Arc::new(b.with_no_client_auth()))
-                .map_err(|e| e.to_string())
-        })
-        .clone()
-        .map_err(|e| Error::Protocol(format!("TLS can't be set up: {e}")))
-}
-
-async fn tls_wrap(host: &str, s: TcpStream) -> std::result::Result<Conn, OpenError> {
-    let config = tls_config().map_err(OpenError::Fatal)?;
+async fn tls_wrap(host: &str, s: Stream) -> std::result::Result<Conn, OpenError> {
+    let config = super::dial::tls_config().map_err(OpenError::Fatal)?;
     let name = ServerName::try_from(host.to_string()).map_err(|e| {
         OpenError::Fatal(Error::Protocol(format!("Invalid server name for TLS: {e}")))
     })?;
@@ -363,14 +359,20 @@ async fn connect(net: &Net, url: &Url) -> std::result::Result<Control, OpenError
         login_key(url),
         login.as_ref().map(|l| l.username.as_str()).unwrap_or("")
     );
-    let tcp = net
-        .dial(&host, port_of(url))
-        .await
-        .map_err(|e| OpenError::Transient(format!("can't connect to {host}: {e}")))?;
+    let proxy = net.router.ftp_proxy(url);
+    let tcp = match &proxy {
+        Some((at, port)) => net.dial_direct(at, *port).await,
+        None => net.dial(url, &host, port_of(url)).await,
+    }
+    .map_err(|e| match e {
+        Error::Network(why) => OpenError::Transient(format!("can't connect to {host}: {why}")),
+        e => OpenError::from(e),
+    })?;
     let mut c = Control {
         io: BufReader::new(Conn::Plain(tcp)),
         key,
-        host: host.clone(),
+        host: proxy.as_ref().map_or(&host, |(at, _)| at).clone(),
+        route: proxy.is_none().then(|| url.clone()),
         tls,
         features: Features::default(),
     };
@@ -410,7 +412,19 @@ async fn connect(net: &Net, url: &Url) -> std::result::Result<Control, OpenError
             host: login_key(url),
             realm: Some(r.message()).filter(|m| !m.is_empty()),
             rejected: login.is_some(),
+            asked: crate::Asked::Password,
         })
+    };
+    let user = match &proxy {
+        // An FTP proxy takes the server's name with the user's.
+        Some(_) => {
+            let at = url.host_str().unwrap_or_default();
+            match port_of(url) {
+                21 => format!("{user}@{at}"),
+                port => format!("{user}@{at}:{port}"),
+            }
+        }
+        None => user.to_string(),
     };
     let mut r = c.cmd(&format!("USER {user}")).await.map_err(transient)?;
     if r.code == 331 {
@@ -513,6 +527,7 @@ pub(crate) async fn probe(net: &Net, url: &Url) -> Result<ProbeResult> {
         .unwrap_or_else(|| "download".to_string());
     let content_type = mime_guess::from_path(&name).first().map(|m| m.to_string());
     Ok(ProbeResult {
+        final_meta: Default::default(),
         final_url: url.to_string(),
         total_size,
         resumable: resumable && total_size.is_some(),

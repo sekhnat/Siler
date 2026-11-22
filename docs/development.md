@@ -9,6 +9,7 @@
   sudo apt install build-essential curl file libwebkit2gtk-4.1-dev \
     libayatana-appindicator3-dev librsvg2-dev libssl-dev libxdo-dev
   ```
+- At run time, optionally: gtk-layer-shell (`libgtk-layer-shell0`) for the tray panel on Wayland, and the MIT Kerberos library (`libgssapi-krb5-2`) for Kerberos logins. Both are loaded when needed, so they aren't build dependencies.
 - For building the bundled FFmpeg: `gcc`, `make`, `tar`, `xz`, `curl` and `sha256sum`. `scripts/build-ffmpeg.sh` downloads the pinned release, checks its SHA-256 and builds it into `app/src-tauri/resources/`.
 
 ## Everyday commands
@@ -39,7 +40,13 @@ node app/locales/check.mjs
 ./scripts/install-dev.sh
 ```
 
-`install-dev.sh` leaves `siler`, `siler-nmhost`, `ffmpeg` and `ffprobe` together in `target/release/`.
+`install-dev.sh` leaves `siler`, `siler-nmhost`, `siler-pac`, `ffmpeg` and `ffprobe` together in `target/release/`.
+
+## Login, proxy and tray tests
+
+- The proxy tests (`crates/siler-core/tests/proxies.rs`) run proxy scripts with the `siler-pac` helper from `target/debug/`. `cargo test --workspace` builds it; `cargo test -p siler-core` on its own needs `cargo build -p siler-pac` first. `crates/siler-pac/tests/` checks the helper itself, including scripts that loop forever or eat memory.
+- NTLM is checked against the test vectors of Microsoft's MS-NLMP specification and against a test server in `crates/siler-core/tests/windows_login.rs` that verifies each answer: 32 connections, a wrong password sent once, POST bodies, logins kept to their scheme, server and port. Kerberos needs a KDC, so the tests only cover what happens around it (approval, a ticket where NTLM is asked, the order of schemes). Channel binding and Kerberos were tried by hand against pyspnego and an MIT KDC.
+- The tray's placement, icon and menu have unit tests in `app/src-tauri/src/tray/`. The panel itself was tried in a nested `kwin_wayland --virtual` and under Xvfb.
 
 ## Media tests
 
@@ -66,15 +73,15 @@ node app/locales/check.mjs
 
 Every release carries:
 
-- **The AppImage** (`Siler-<version>-x86_64.AppImage`) with its `.zsync` and `.sha256`. The `AppImage` workflow (`.github/workflows/appimage.yml`) builds it when a release is published and attaches it. It builds on the oldest supported Ubuntu, runs the tests with the bundled FFmpeg, the extension tests, the UI type check and the catalog check, and puts the native host, FFmpeg, the signed Firefox extension and the Chromium extension inside. The Firefox extension is downloaded from the release itself, so publish the release with its `.xpi` attached. The workflow can also be run by hand for an existing tag; the tag must match the app's version.
-- **A tarball** (`siler-<version>-linux-x86_64.tar.gz`), made by the same workflow with `scripts/make-tarball.sh`: `siler`, `siler-nmhost`, `ffmpeg`, `ffprobe`, the signed `siler-integration.xpi`, the `chromium-extension/` folder, `INSTALL.txt`, the FFmpeg license and the README, plus `share/` (menu entry, icons) and `native-messaging/` (host manifests pointing at `/usr/bin/siler-nmhost`) for packages.
+- **The AppImage** (`Siler-<version>-x86_64.AppImage`) with its `.zsync` and `.sha256`. The `AppImage` workflow (`.github/workflows/appimage.yml`) builds it when a release is published and attaches it. It builds on the oldest supported Ubuntu, runs the tests with the bundled FFmpeg, the extension tests, the UI type check and the catalog check, and puts the native host, the proxy script helper, gtk-layer-shell, FFmpeg, the signed Firefox extension and the Chromium extension inside. The Firefox extension is downloaded from the release itself, so publish the release with its `.xpi` attached. The workflow can also be run by hand for an existing tag; the tag must match the app's version.
+- **A tarball** (`siler-<version>-linux-x86_64.tar.gz`), made by the same workflow with `scripts/make-tarball.sh`: `siler`, `siler-nmhost`, `siler-pac`, `ffmpeg`, `ffprobe`, the signed `siler-integration.xpi`, the `chromium-extension/` folder, `INSTALL.txt`, the FFmpeg license and the README, plus `share/` (menu entry, icons) and `native-messaging/` (host manifests pointing at `/usr/bin/siler-nmhost`) for packages.
 - **The Chromium extension** (`siler-chromium-<version>.zip`), ready for the Chrome Web Store ([checklist](chrome-web-store.md)).
 - **The signed Firefox extension** (`siler-integration-<version>.xpi`), signed by Mozilla as unlisted.
 - **`SHA256SUMS`** for the AppImage, the tarball and the Chromium extension.
 
 **Updates:** Siler itself checks for a newer release once a day and updates an AppImage in place (see [Using Siler → Desktop](usage.md#desktop)); `SILER_UPDATE_API` points the check at another address, for testing. The AppImage also carries zsync update information (`gh-releases-zsync|sekhnat|Siler|latest|Siler-*-x86_64.AppImage.zsync`), so AppImage updaters (AppImageUpdate, AppImageLauncher, Gear Lever, AppManager) fetch only the parts that changed. `scripts/appimage-zsync.sh` writes the information and makes the `.zsync` file.
 
-**AUR:** `packaging/aur/siler-bin/` holds the PKGBUILD (built from the release tarball) and its `.SRCINFO`. After a release, `scripts/aur-update.sh <version>` sets the version and the tarball's checksum and regenerates `.SRCINFO`; push the two files to the AUR's `siler-bin` repository. Packaged installs are told apart by running from `/usr`: they don't write a menu entry of their own, and update through the package manager.
+**AUR:** `packaging/aur/siler-bin/` holds the PKGBUILD (built from the release tarball, depending on gtk-layer-shell, with krb5 optional; `siler-pac` goes to `/usr/lib/siler/`) and its `.SRCINFO`. After a release, `scripts/aur-update.sh <version>` sets the version and the tarball's checksum and regenerates `.SRCINFO`; push the two files to the AUR's `siler-bin` repository. Packaged installs are told apart by running from `/usr`: they don't write a menu entry of their own, and update through the package manager.
 
 To cut a release:
 
