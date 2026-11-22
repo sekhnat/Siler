@@ -4,15 +4,16 @@
 
 # Siler
 
-**A fast, beautiful download manager for Linux, with a Firefox extension that hands it your downloads and videos.**
+**A fast, beautiful download manager for Linux, with browser extensions for Firefox and Chromium that hand it your downloads and videos.**
 
 [![Latest release](https://img.shields.io/github/v/release/sekhnat/Siler?style=flat-square&color=7c5cff&label=release)](https://github.com/sekhnat/Siler/releases/latest)
 [![Linux x86_64](https://img.shields.io/badge/Linux-x86__64-5b6cff?style=flat-square&logo=linux&logoColor=white)](#install)
 [![Firefox extension](https://img.shields.io/badge/Firefox-extension-ff7139?style=flat-square&logo=firefoxbrowser&logoColor=white)](docs/browser-extension.md)
+[![Chromium extension](https://img.shields.io/badge/Chromium-extension-4285f4?style=flat-square&logo=googlechrome&logoColor=white)](docs/browser-extension.md#chrome-chromium-brave-vivaldi-edge-opera)
 [![Rust](https://img.shields.io/badge/Rust-engine-b7410e?style=flat-square&logo=rust&logoColor=white)](docs/architecture.md)
 [![Tauri 2 + Svelte 5](https://img.shields.io/badge/Tauri_2-Svelte_5-22d3ee?style=flat-square&logo=tauri&logoColor=white)](docs/architecture.md)
 
-[**Download**](https://github.com/sekhnat/Siler/releases/latest) · [**Firefox extension**](docs/browser-extension.md) · [**Documentation**](#documentation)
+[**Download**](https://github.com/sekhnat/Siler/releases/latest) · [**Browser extension**](docs/browser-extension.md) · [**Documentation**](#documentation)
 
 <br>
 
@@ -30,15 +31,17 @@
 - Segmented downloads over many connections, with dynamic splitting: a free connection takes over half of the largest remaining piece. The connection count can change while a download runs.
 - Pause and resume across restarts and crashes; passing network failures are retried, honouring `Retry-After`.
 - Mirrors and multi-source downloads, metalinks with piece hashes, and **Refresh link** for expired addresses without losing progress.
+- HTTP(S), **FTP, FTPS and SFTP**, through the same proxy; SFTP checks the server's key the way `ssh` does.
 
 **Video and audio**
-- HLS and DASH streams with a picker for quality, audio languages and subtitles, muxed into MP4 or MKV by a bundled FFmpeg, with no re-encoding.
+- HLS, DASH and Adobe HDS streams with a picker for quality, audio languages and subtitles, muxed into MP4 or MKV by a bundled FFmpeg, with no re-encoding.
+- **Live streams are recorded** (HLS, DASH, RTMP and MMS) until you press **Finish**; plain M3U, PLS and ASX playlists open as lists of links.
 - AES-128 streams and WebVTT/TTML subtitles, timed to the video. DRM-protected streams are refused.
 - From the browser: YouTube, Vimeo, Facebook, Instagram, TikTok and any page that plays HLS, DASH or a video file.
 
 **Browser integration**
-- Firefox, LibreWolf, Waterfox, Floorp and Zen. Downloads are taken before Firefox's own dialog appears, with their cookies, referrer and form data.
-- A **Download** button over videos, **Download all links**, a per-site switch, and a clear message whenever a download stays in Firefox.
+- Firefox, LibreWolf, Waterfox, Floorp and Zen, and Chrome, Chromium, Brave, Vivaldi, Edge and Opera. Downloads come with their cookies, referrer and form data; in Firefox they are taken before its own dialog appears.
+- A **Download** button over videos, **Download all links**, a per-site switch, and a clear message whenever a download stays in the browser.
 
 **Organised and automated**
 - Named queues with schedules, and an action when they finish: quit, sleep, hibernate or shut down.
@@ -49,6 +52,11 @@
 - Global and per-download speed limits, per-server connection limits and a data quota (so many MB every so many hours).
 - Checksums (MD5 to SHA-512, and the server's `Digest` header), **Verify checksum…** for any file, and ZIP preview to fetch just the files you need from an archive.
 - Proxies (system, HTTP, SOCKS5), and logins saved in the desktop keyring.
+
+**Your way**
+- Cards or a **Details** table with the columns you choose, resizable and in your order, sorted either way; a toolbar you arrange.
+- Checks for a new version once a day (you can turn it off); the AppImage updates itself after checking the release's checksum.
+- Ready for translation: every word is in a catalog ([Translating Siler](docs/translating.md)).
 
 **At home on Linux**
 - Starts with your session if you like, waiting in the tray; live status, notifications and sounds; keeps the computer awake while downloads run; drag finished files out of the list. Wayland and X11.
@@ -71,18 +79,22 @@ chmod +x Siler-*-x86_64.AppImage
 ./Siler-*-x86_64.AppImage --install-integration   # menu entry, icons and the Firefox host
 ```
 
-Keep the file where it is: the menu entry and the browser host point at it. To have Siler start when you log in, turn on Settings → General → **Start when you log in**. To update, use an AppImage updater (AppImageUpdate, Gear Lever, AppImageLauncher, AppManager): only the changed parts are downloaded. If you replace or move the file by hand, start it once.
+Keep the file where it is: the menu entry and the browser host point at it. To have Siler start when you log in, turn on Settings → General → **Start when you log in**. Siler tells you when a new version is out and updates the AppImage itself (**Update and restart**); AppImage updaters (AppImageUpdate, Gear Lever, AppImageLauncher, AppManager) work too, downloading only the changed parts. If you replace or move the file by hand, start it once.
+
+**Arch Linux (AUR)** — `siler-bin`, built from the release tarball: `yay -S siler-bin` (or your AUR helper). It installs Siler, its FFmpeg, both browser extensions and the browser hosts system-wide; updates come with your system's.
 
 **Tarball** — the same programs in a folder (`siler-<version>-linux-x86_64.tar.gz`). Unpack it where it will stay and run `./siler --install-integration`. It needs WebKitGTK 4.1, plus libayatana-appindicator for the tray.
 
-## Firefox extension
+## Browser extension
 
 <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/extension-popup-dark.png"><source media="(prefers-color-scheme: light)" srcset="docs/images/extension-popup-light.png"><img src="docs/images/extension-popup-light.png" alt="The extension's toolbar popup: connected to Siler, with active downloads, speed and the capture switch" width="300" align="right"></picture>
 
 1. In Siler, open Settings → Browser and click **Add to Firefox**. The AppImage and the tarball include the extension, signed by Mozilla. You can also download `siler-integration-<version>.xpi` from the [latest release](https://github.com/sekhnat/Siler/releases/latest) and open it with Firefox.
 2. On the welcome page, grant access to all sites.
 
-That's it: matching downloads now go to Siler. Hold **Alt** while clicking a link to let Firefox handle it, or turn capture off for a site from the toolbar popup. More in [Browser extension](docs/browser-extension.md).
+That's it: matching downloads now go to Siler. Hold **Alt** while clicking a link to let Firefox handle it, or turn capture off for a site from the toolbar popup.
+
+**Chrome, Chromium, Brave, Vivaldi, Edge, Opera:** in Siler, open Settings → Browser and click **Set up** under the Chromium browsers. Siler copies the extension to a folder; open the browser's extensions page, turn on **Developer mode**, click **Load unpacked** and choose that folder. (It will be in the Chrome Web Store, too.) More in [Browser extension](docs/browser-extension.md).
 
 <br clear="right">
 
@@ -103,10 +115,11 @@ When Siler is already running, the command line goes to it. See [Using Siler](do
 | Guide | What's in it |
 | --- | --- |
 | [Using Siler](docs/usage.md) | Adding downloads, the command line, queues and scheduling, keyboard shortcuts, logs and troubleshooting |
-| [Video and audio streams](docs/media.md) | HLS and DASH, the picker, FFmpeg, output formats, subtitles and safety checks |
+| [Video and audio streams](docs/media.md) | HLS, DASH and HDS, live recording, RTMP and MMS, playlists, the picker, FFmpeg, output formats, subtitles and safety checks |
 | [Browser extension](docs/browser-extension.md) | Installing, how capture works, videos on pages, site recognisers and signing your own build |
 | [Architecture](docs/architecture.md) | How the pieces fit, the download engine, security and privacy, files on disk |
 | [Development](docs/development.md) | Building from source, tests and the release process |
+| [Translating Siler](docs/translating.md) | Adding a language to the app and the extension |
 
 ## Building from source
 
@@ -121,11 +134,10 @@ cd .. && ./scripts/install-dev.sh          # release build + desktop and Firefox
 
 ## Roadmap
 
-- FTP and SFTP
-- A Chromium extension
-- Flatpak and AUR packages
-- Start with the desktop session
 - NTLM/Kerberos logins and proxy auto-config (PAC)
+- Translations (the catalogs are ready: see [Translating Siler](docs/translating.md))
+- The Chromium extension in the Chrome Web Store
+- FTP folder listings, recording live streams from the start of their time-shift window
 
 ## License
 

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from "../i18n";
   import { KeyRound, TriangleAlert } from "@lucide/svelte";
   import { onMount } from "svelte";
   import { api, type LoginRequest } from "../api";
@@ -49,31 +50,31 @@
   <div class="who">
     <KeyRound size={18} />
     <div class="min">
-      <div class="t"><b>{request.host}</b> asks for a username and password</div>
+      <div class="t"><b>{request.host}</b> {t("login-form-asks-for-a-username-and-password")}</div>
       {#if request.realm}<div class="hint truncate" title={request.realm}>“{request.realm}”</div>{/if}
     </div>
   </div>
   {#if request.rejected}
-    <div class="refused"><TriangleAlert size={14} /> The server didn't accept the last username or password.</div>
+    <div class="refused"><TriangleAlert size={14} /> {t("login-form-the-server-didn-t-accept-the")}</div>
   {/if}
   <div class="grid">
     <label class="field">
-      <span class="label">Username</span>
+      <span class="label">{t("login-form-username")}</span>
       <input bind:this={userInput} class="input" bind:value={username} autocomplete="username" spellcheck="false" />
     </label>
     <label class="field">
-      <span class="label">Password</span>
+      <span class="label">{t("login-form-password")}</span>
       <input class="input" type="password" bind:value={password} autocomplete="current-password" />
     </label>
   </div>
-  <label class="check" title={keyring ? "" : "No keyring service (KWallet, GNOME Keyring…) is running; the login lasts until Siler quits"}>
+  <label class="check" title={keyring ? "" : t("login-form-no-keyring-service")}>
     <input type="checkbox" bind:checked={remember} disabled={!keyring} />
-    Remember in the keyring
+    {t("login-form-remember-in-the-keyring")}
   </label>
   <div class="actions">
-    {#if oncancel}<button type="button" class="btn btn-ghost" onclick={oncancel}>Cancel</button>{/if}
+    {#if oncancel}<button type="button" class="btn btn-ghost" onclick={oncancel}>{t("login-form-cancel")}</button>{/if}
     <span class="grow"></span>
-    <button type="submit" class="btn btn-primary" disabled={!username.trim() || busy}>Log in</button>
+    <button type="submit" class="btn btn-primary" disabled={!username.trim() || busy}>{t("login-form-log-in")}</button>
   </div>
 </form>
 

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from "../i18n";
   import { api, type Download } from "../api";
   import { nameFromUrl } from "../format";
   import { toasts } from "../store.svelte";
@@ -9,7 +10,7 @@
   let deleteFiles = $state(false);
   const anyCompleted = $derived(items.some((d) => d.status === "completed"));
   const anyUnfinished = $derived(items.some((d) => d.status !== "completed"));
-  const label = $derived(items.length === 1 ? `“${items[0].filename ?? nameFromUrl(items[0].url)}”` : `${items.length} downloads`);
+  const label = $derived(items.length === 1 ? t("confirm-remove-quoted-name", { name: items[0].filename ?? nameFromUrl(items[0].url) }) : t("confirm-remove-n-downloads", { count: items.length }));
 
   async function confirm() {
     for (const d of items) {
@@ -23,17 +24,17 @@
   }
 </script>
 
-<Modal title="Remove {label}?" width={440} {onclose}>
-  <p>The download will be removed from the list.{#if anyUnfinished} Unfinished data is discarded.{/if}</p>
+<Modal title={t("confirm-remove-remove", { label })} width={440} {onclose}>
+  <p>{t("confirm-remove-the-download-will-be-removed-from")}{#if anyUnfinished}{" "}{t("confirm-remove-unfinished-data-is-discarded")}{/if}</p>
   {#if anyCompleted}
     <button class="toggle" onclick={() => (deleteFiles = !deleteFiles)}>
       <span class="switch" class:on={deleteFiles}></span>
-      Also delete the downloaded {items.length === 1 ? "file" : "files"} from disk
+      {t("confirm-remove-also-delete-the-downloaded-from-disk", { count: items.length })}
     </button>
   {/if}
   {#snippet footer()}
-    <button class="btn btn-ghost" onclick={onclose}>Cancel</button>
-    <button class="btn btn-danger" onclick={confirm}>Remove</button>
+    <button class="btn btn-ghost" onclick={onclose}>{t("confirm-remove-cancel")}</button>
+    <button class="btn btn-danger" onclick={confirm}>{t("confirm-remove-remove-2")}</button>
   {/snippet}
 </Modal>
 

@@ -73,6 +73,7 @@ jobs:
           path: |
             app/src-tauri/resources/ffmpeg
             app/src-tauri/resources/ffprobe
+            app/src-tauri/resources/ffmpeg-LICENSE.txt
           key: ffmpeg-ubuntu-22.04-${{ hashFiles('scripts/build-ffmpeg.sh') }}
 
       - name: Build the bundled FFmpeg
@@ -89,6 +90,14 @@ jobs:
         run: |
           export SILER_FFMPEG="$PWD/app/src-tauri/resources/ffmpeg"
           cargo test --workspace --locked
+
+      - name: Extension and interface checks
+        run: |
+          node --test extension/tests/
+          (cd app && pnpm check && node locales/check.mjs)
+
+      - name: The Chromium extension
+        run: node scripts/build-extension.mjs chromium
 
       - name: Native messaging host and FFmpeg beside the app
         run: |
@@ -120,6 +129,14 @@ jobs:
           cp "$src" "out/$name"
           scripts/appimage-zsync.sh "out/$name"
           (cd out && sha256sum "$name" > "$name.sha256")
+
+      - name: The tarball (also what the AUR package installs)
+        run: |
+          cargo build --release --locked -p siler-nmhost
+          tarball=$(scripts/make-tarball.sh app/src-tauri/resources/siler-integration.xpi | tail -n 1)
+          cp "$tarball" "$tarball.sha256" out/
+          cp "dist/siler-chromium-$(python3 -c 'import json; print(json.load(open("extension/manifest.json"))["version"])').zip" out/
+          (cd out && sha256sum siler-*.tar.gz siler-chromium-*.zip Siler-*.AppImage > SHA256SUMS)
           ls -l out
 
       - name: Attach to the release

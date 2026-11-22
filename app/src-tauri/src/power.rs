@@ -12,6 +12,7 @@ use tauri_plugin_notification::NotificationExt;
 use tokio_util::sync::CancellationToken;
 
 use crate::AppState;
+use crate::i18n::{tr, tr_args};
 
 /// Seconds between the announcement and the action.
 pub const COUNTDOWN: u64 = 60;
@@ -148,13 +149,14 @@ impl PowerState {
     }
 }
 
+/// The action, as the catalog's messages select on it (and as the log says it).
 fn verb(action: AfterDone) -> &'static str {
     match action {
-        AfterDone::Sleep => "go to sleep",
+        AfterDone::Sleep => "sleep",
         AfterDone::Hibernate => "hibernate",
-        AfterDone::PowerOff => "shut down",
+        AfterDone::PowerOff => "power_off",
         AfterDone::Quit => "quit",
-        AfterDone::Nothing => "",
+        AfterDone::Nothing => "nothing",
     }
 }
 
@@ -212,8 +214,14 @@ pub fn schedule(app: &AppHandle, action: AfterDone, reason: String) {
     let _ = app
         .notification()
         .builder()
-        .title(format!("Siler will {} in a minute", verb(action)))
-        .body(format!("{reason}. Open Siler to cancel."))
+        .title(tr_args(
+            "power-will-in-a-minute",
+            vec![("action", verb(action).into())],
+        ))
+        .body(tr_args(
+            "power-open-siler-to-cancel",
+            vec![("reason", reason.as_str().into())],
+        ))
         .show();
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -243,7 +251,10 @@ pub async fn run_now(app: &AppHandle) {
         let _ = app
             .notification()
             .builder()
-            .title(format!("Siler couldn't {}", verb(p.action)))
+            .title(tr_args(
+                "power-couldnt",
+                vec![("action", verb(p.action).into())],
+            ))
             .body(e)
             .show();
     }
@@ -269,7 +280,7 @@ pub fn check_all_done(app: &AppHandle) {
     let action = std::mem::take(&mut *state.power.when_done.lock().unwrap());
     let _ = app.emit("when-done-changed", AfterDone::Nothing);
     crate::tray::refresh();
-    schedule(app, action, "All downloads have finished".into());
+    schedule(app, action, tr("power-all-downloads-finished"));
 }
 
 #[cfg(test)]

@@ -38,6 +38,17 @@ pub enum Error {
     },
     #[error("The proxy needs a username and password")]
     ProxyAuth,
+    /// An FTP server refused a command (a 5xx reply), with its words.
+    #[error("{}", ftp_message(*.0, .1))]
+    Ftp(u16, String),
+    /// An SFTP server's key isn't known yet: the user has to trust it first.
+    #[error("{} hasn't been connected to before. Check its key and trust it to continue.", .0.server)]
+    HostKeyUnknown(Box<crate::HostKeyRequest>),
+    /// An SFTP server's key differs from the one recorded for it.
+    #[error(
+        "The key of {0} changed since the last connection. This can mean someone is intercepting the connection; Siler won't connect. If the server was reinstalled, remove its old key from ~/.ssh/known_hosts."
+    )]
+    HostKeyChanged(String),
     /// A media download could not continue (see [`MediaError`]).
     #[error("{0}")]
     Media(MediaError),
@@ -96,9 +107,22 @@ pub enum MediaError {
     #[error("There isn't enough free disk space for this stream.")]
     DiskSpace,
     #[error(
-        "The links from the page have expired. Open the page in Firefox and send the video to Siler again."
+        "The links from the page have expired. Open the page in the browser and send the video to Siler again."
     )]
     LinksExpired,
+}
+
+fn ftp_message(code: u16, text: &str) -> String {
+    let what = match code {
+        550 => "The file isn't on the FTP server, or can't be read",
+        553 => "The FTP server doesn't allow this file name",
+        _ => "The FTP server refused",
+    };
+    if text.is_empty() {
+        format!("{what} (FTP {code})")
+    } else {
+        format!("{what}: {text} (FTP {code})")
+    }
 }
 
 fn auth_message(host: &str, rejected: bool) -> String {
@@ -109,12 +133,101 @@ fn auth_message(host: &str, rejected: bool) -> String {
     }
 }
 
+/// What an error says, as a stable code and its details, for an app that shows it in the
+/// user's language (`error-<code>` in its catalog); `Display` stays the English text.
+pub type ErrorArgs = Vec<(&'static str, String)>;
+
+impl MediaError {
+    pub fn code_args(&self) -> (&'static str, ErrorArgs) {
+        use MediaError::*;
+        match self {
+            NotMedia => ("media-not-media", vec![]),
+            LiveUnsupported => ("media-live-unsupported", vec![]),
+            Drm => ("media-drm", vec![]),
+            Unsupported(what) => ("media-unsupported", vec![("what", what.clone())]),
+            Invalid(why) => ("media-invalid", vec![("why", why.clone())]),
+            BodyTooLarge(n) => ("media-body-too-large", vec![("limit", n.to_string())]),
+            SelectionUnavailable => ("media-selection-unavailable", vec![]),
+            ManifestChanged => ("media-manifest-changed", vec![]),
+            RefreshExhausted => ("media-refresh-exhausted", vec![]),
+            SegmentInvalid => ("media-segment-invalid", vec![]),
+            KeyFetch(why) => ("media-key-fetch", vec![("why", why.clone())]),
+            Decrypt => ("media-decrypt", vec![]),
+            FfmpegMissing => ("media-ffmpeg-missing", vec![]),
+            FfmpegFailed(why) => ("media-ffmpeg-failed", vec![("why", why.clone())]),
+            DiscontinuityIncompatible(why) => (
+                "media-discontinuity-incompatible",
+                vec![("why", why.clone())],
+            ),
+            UrlForbidden(why) => ("media-url-forbidden", vec![("why", why.clone())]),
+            DiskSpace => ("media-disk-space", vec![]),
+            LinksExpired => ("media-links-expired", vec![]),
+        }
+    }
+}
+
+impl Error {
+    /// The error as a code and its details; see [`ErrorArgs`]. Messages that come from deep
+    /// inside (a server's words, a protocol detail) are passed as they are, in English.
+    pub fn code_args(&self) -> (&'static str, ErrorArgs) {
+        match self {
+            Error::InvalidUrl(why) => ("invalid-url", vec![("why", why.clone())]),
+            Error::Network(why) => ("network", vec![("why", why.clone())]),
+            Error::Http(code) | Error::Busy(code, _) => (
+                "http",
+                vec![
+                    ("code", code.to_string()),
+                    (
+                        "reason",
+                        reqwest::StatusCode::from_u16(*code)
+                            .ok()
+                            .and_then(|s| s.canonical_reason())
+                            .unwrap_or("")
+                            .to_string(),
+                    ),
+                ],
+            ),
+            Error::Protocol(text) => ("text", vec![("text", text.clone())]),
+            Error::DiskFull => ("disk-full", vec![]),
+            Error::Io(e) => ("io", vec![("why", e.to_string())]),
+            Error::Db(e) => ("db", vec![("why", e.to_string())]),
+            Error::NotFound => ("not-found", vec![]),
+            Error::LinkMismatch(text) => ("text", vec![("text", text.clone())]),
+            Error::Exists(name) => ("exists", vec![("name", name.clone())]),
+            Error::FileMissing => ("file-missing", vec![]),
+            Error::AuthRequired { host, rejected, .. } => (
+                if *rejected {
+                    "auth-rejected"
+                } else {
+                    "auth-required"
+                },
+                vec![("host", host.clone())],
+            ),
+            Error::ProxyAuth => ("proxy-auth", vec![]),
+            Error::Ftp(code, text) if text.is_empty() => {
+                ("ftp-bare", vec![("code", code.to_string())])
+            }
+            Error::Ftp(code, text) => (
+                "ftp",
+                vec![("code", code.to_string()), ("text", text.clone())],
+            ),
+            Error::HostKeyUnknown(r) => ("host-key-unknown", vec![("server", r.server.clone())]),
+            Error::HostKeyChanged(host) => ("host-key-changed", vec![("host", host.clone())]),
+            Error::Media(m) => m.code_args(),
+            Error::ChecksumMismatch { algo, .. } => {
+                ("checksum-mismatch", vec![("algo", algo.to_string())])
+            }
+        }
+    }
+}
+
 impl Error {
     /// Failures that may go away by themselves, so retrying is worthwhile.
     pub fn is_transient(&self) -> bool {
         match self {
             Error::Network(_) | Error::Busy(..) => true,
             Error::Http(code) => *code >= 500 || *code == 408,
+            Error::Ftp(code, _) => (400..500).contains(code),
             _ => false,
         }
     }

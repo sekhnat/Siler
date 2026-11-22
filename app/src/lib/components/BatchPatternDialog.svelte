@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from "../i18n";
   import { ListOrdered, TriangleAlert } from "@lucide/svelte";
   import { api, errorText } from "../api";
   import Modal from "./Modal.svelte";
@@ -37,7 +38,7 @@
     result = null;
     if (!p) return;
     let stale = false;
-    const t = setTimeout(() => {
+    const timer = setTimeout(() => {
       api
         .expandBatch(p)
         .then((r) => !stale && (result = r))
@@ -45,7 +46,7 @@
     }, 200);
     return () => {
       stale = true;
-      clearTimeout(t);
+      clearTimeout(timer);
     };
   });
 
@@ -54,14 +55,14 @@
   }
 </script>
 
-<Modal title="Numbered batch download" width={560} {onclose}>
+<Modal title={t("batch-pattern-numbered-batch-download")} width={560} {onclose}>
   <div class="body">
     <p class="hint intro">
-      Write the address with a range where the number or letter changes, like <code>https://example.com/photos/img[001-120].jpg</code>.
-      <code>[a-z]</code> goes through letters, <code>[0-100:5]</code> counts in fives, and <code>{"{jpg,png}"}</code> tries each word.
+      {t("batch-pattern-write-the-address-with-a-range")} <code>https://example.com/photos/img[001-120].jpg</code>.
+      <code>[a-z]</code> {t("batch-pattern-goes-through-letters")} <code>[0-100:5]</code> {t("batch-pattern-counts-in-fives-and")} <code>{"{jpg,png}"}</code> {t("batch-pattern-tries-each-word")}
     </p>
     <label class="field">
-      <span class="label">Address pattern</span>
+      <span class="label">{t("batch-pattern-address-pattern")}</span>
       <!-- svelte-ignore a11y_autofocus -->
       <input
         class="input mono"
@@ -74,19 +75,19 @@
     </label>
 
     <div class="helper">
-      <span class="label">Or build a range</span>
+      <span class="label">{t("batch-pattern-or-build-a-range")}</span>
       <div class="helper-row">
         <select class="input" bind:value={kind}>
-          <option value="numbers">Numbers</option>
-          <option value="letters">Letters</option>
+          <option value="numbers">{t("batch-pattern-numbers")}</option>
+          <option value="letters">{t("batch-pattern-letters")}</option>
         </select>
-        <input class="input small" bind:value={from} aria-label="From" />
-        <span class="hint">to</span>
-        <input class="input small" bind:value={to} aria-label="To" />
+        <input class="input small" bind:value={from} aria-label={t("batch-pattern-from")} />
+        <span class="hint">{t("batch-pattern-to")}</span>
+        <input class="input small" bind:value={to} aria-label={t("batch-pattern-to-2")} />
         {#if kind === "numbers"}
-          <label class="hint pad">Digits <input class="input tiny" type="number" min="0" max="9" bind:value={width} /></label>
+          <label class="hint pad">{t("batch-pattern-digits")} <input class="input tiny" type="number" min="0" max="9" bind:value={width} /></label>
         {/if}
-        <button class="btn btn-sm" onclick={insert} disabled={!pattern.trim()} title="Put {range} into the address (where * is, or before the extension)">Insert {range}</button>
+        <button class="btn btn-sm" onclick={insert} disabled={!pattern.trim()} title={t("batch-pattern-put-into-the-address-where-is", { range })}>{t("batch-pattern-insert", { range })}</button>
       </div>
     </div>
 
@@ -99,14 +100,14 @@
         {#if result.count > 2}<div class="hint dots">…</div>{/if}
         {#if result.count > 1}<div class="mono ends truncate" title={result.urls[result.count - 1]}>{result.urls[result.count - 1]}</div>{/if}
       {:else}
-        <div class="hint">The first and last address appear here.</div>
+        <div class="hint">{t("batch-pattern-the-first-and-last-address-appear")}</div>
       {/if}
     </div>
   </div>
   {#snippet footer()}
     <span class="grow"></span>
-    <button class="btn btn-ghost" onclick={onclose}>Cancel</button>
-    <button class="btn btn-primary" disabled={!result?.count} onclick={submit}>Review {result?.count ?? ""} files</button>
+    <button class="btn btn-ghost" onclick={onclose}>{t("batch-pattern-cancel")}</button>
+    <button class="btn btn-primary" disabled={!result?.count} onclick={submit}>{t("batch-pattern-review-files", { v: result?.count ?? "" })}</button>
   {/snippet}
 </Modal>
 

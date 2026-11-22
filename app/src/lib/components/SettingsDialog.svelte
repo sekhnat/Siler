@@ -1,8 +1,9 @@
 <script lang="ts">
+  import { LANGUAGES, setChosenLanguage, t } from "../i18n";
   import { CircleCheck, CircleX, FileText, FolderOpen, KeyRound, Monitor, Moon, Play, Plus, Puzzle, Sun, TriangleAlert, X } from "@lucide/svelte";
   import { open } from "@tauri-apps/plugin-dialog";
   import { onMount } from "svelte";
-  import { api, type Category, type CommandResult, type IntegrationStatus, type ProxyMode, type ProxyRoute, type SavedLogin, type Settings, type SoundEvent, type FfmpegStatus } from "../api";
+  import { api, type AppInfo, type Category, type CommandResult, type FfmpegStatus, type IntegrationStatus, type ProxyMode, type ProxyRoute, type SavedLogin, type Settings, type SoundEvent, type UpdateInfo } from "../api";
   import { SPEED_PRESETS, limitLabel, relativeTime } from "../format";
   import { CATEGORIES } from "../categories";
   import { toasts } from "../store.svelte";
@@ -69,18 +70,18 @@
       api
         .mediaDiagnostics()
         .then((f) => (ffmpeg = f))
-        .catch(() => (ffmpeg = { path: null, version: null, ok: false, missing: ["Siler couldn't check it"] }));
+        .catch(() => (ffmpeg = { path: null, version: null, ok: false, missing: [t("settings-siler-couldn-t-check-it")] }));
   });
 
   async function browse() {
-    const picked = await open({ directory: true, defaultPath: s.download_dir, title: "Download folder" });
+    const picked = await open({ directory: true, defaultPath: s.download_dir, title: t("settings-download-folder") });
     if (typeof picked === "string") s.download_dir = picked;
   }
 
   async function install() {
     try {
       integration = await api.installIntegration();
-      toasts.show("Browser integration installed", "success");
+      toasts.show(t("settings-browser-integration-installed"), "success");
     } catch (e) {
       toasts.error(e);
     }
@@ -89,7 +90,7 @@
   async function installExtension() {
     try {
       await api.installExtension();
-      toasts.show("Firefox will ask to add the extension", "success");
+      toasts.show(t("settings-firefox-will-ask-to-add-the"), "success");
     } catch (e) {
       toasts.error(e);
     }
@@ -97,17 +98,55 @@
 
   const RELEASES = "https://github.com/sekhnat/Siler/releases/latest";
 
+  /** A language's own name ("Deutsch"), or its tag when the browser engine doesn't know it. */
+  function languageName(tag: string): string {
+    if (tag === "en-XA") return "Pseudo (en-XA, finds text not in the catalog)";
+    try {
+      return new Intl.DisplayNames([tag], { type: "language" }).of(tag) ?? tag;
+    } catch {
+      return tag;
+    }
+  }
+
+  let chromium = $state<{ path: string; browsers: string[] } | null>(null);
+  async function prepareChromium() {
+    try {
+      chromium = await api.chromiumExtension();
+    } catch (e) {
+      toasts.error(e);
+    }
+  }
+
+  let appInfo = $state<AppInfo | null>(null);
+  let checked = $state<UpdateInfo | null>(null);
+  let checking = $state(false);
+  api.appInfo().then((a) => (appInfo = a)).catch(() => {});
+  api.updateStatus().then((u) => (checked = u)).catch(() => {});
+
+  async function checkNow() {
+    checking = true;
+    try {
+      checked = await api.checkUpdatesNow();
+      if (!checked.newer) toasts.show(t("settings-latest-version", { version: checked.current }), "success");
+    } catch (e) {
+      toasts.error(e);
+    } finally {
+      checking = false;
+    }
+  }
+
   // The extension and the app speak protocol versions; tell the user which one is behind.
   const mismatch = $derived.by(() => {
     const i = integration;
     if (!i || i.extension_protocol == null || i.extension_protocol === i.protocol) return null;
-    return i.extension_protocol < i.protocol ? "Update the Firefox extension" : "Update Siler";
+    return i.extension_protocol < i.protocol ? t("settings-update-the-browser-extension") : t("settings-update-siler");
   });
 
   async function save() {
     saving = true;
     try {
       const saved = await api.setSettings(s);
+      setChosenLanguage(saved.language);
       if (proxyPassword && saved.proxy.mode === "manual" && saved.proxy.username.trim()) {
         await api.setProxyPassword(proxyPassword);
       }
@@ -122,29 +161,29 @@
   }
 
   const tabs: { key: Tab; label: string }[] = [
-    { key: "general", label: "General" },
-    { key: "transfers", label: "Transfers" },
-    { key: "media", label: "Media" },
-    { key: "network", label: "Network" },
-    { key: "categories", label: "Categories" },
-    { key: "browser", label: "Browser" },
-    { key: "appearance", label: "Appearance" },
+    { key: "general", label: t("settings-general") },
+    { key: "transfers", label: t("settings-transfers") },
+    { key: "media", label: t("settings-media") },
+    { key: "network", label: t("settings-network") },
+    { key: "categories", label: t("settings-categories") },
+    { key: "browser", label: t("settings-browser") },
+    { key: "appearance", label: t("settings-appearance") },
   ];
   const themes: { key: ThemePref; label: string; icon: typeof Sun }[] = [
-    { key: "system", label: "System", icon: Monitor },
-    { key: "light", label: "Light", icon: Sun },
-    { key: "dark", label: "Dark", icon: Moon },
+    { key: "system", label: t("settings-system"), icon: Monitor },
+    { key: "light", label: t("settings-light"), icon: Sun },
+    { key: "dark", label: t("settings-dark"), icon: Moon },
   ];
   const soundRows: { event: SoundEvent; label: string; on: "on_complete" | "on_failed" | "on_queue_done"; file: "complete_file" | "failed_file" | "queue_done_file" }[] = [
-    { event: "complete", label: "A download finished", on: "on_complete", file: "complete_file" },
-    { event: "failed", label: "A download failed", on: "on_failed", file: "failed_file" },
-    { event: "queue_done", label: "A queue finished", on: "on_queue_done", file: "queue_done_file" },
+    { event: "complete", label: t("settings-a-download-finished"), on: "on_complete", file: "complete_file" },
+    { event: "failed", label: t("settings-a-download-failed"), on: "on_failed", file: "failed_file" },
+    { event: "queue_done", label: t("settings-a-queue-finished"), on: "on_queue_done", file: "queue_done_file" },
   ];
 
   async function pickSound(file: "complete_file" | "failed_file" | "queue_done_file") {
     const picked = await open({
-      title: "Choose a sound",
-      filters: [{ name: "Sounds", extensions: ["oga", "ogg", "wav", "mp3", "flac", "opus"] }],
+      title: t("settings-choose-a-sound"),
+      filters: [{ name: t("settings-sounds"), extensions: ["oga", "ogg", "wav", "mp3", "flac", "opus"] }],
     });
     if (typeof picked === "string") s.sounds[file] = picked;
   }
@@ -154,7 +193,7 @@
   let testing = $state(false);
   let testResult = $state<CommandResult | null>(null);
   async function testCommand() {
-    const path = await open({ title: "Try the command on a file" });
+    const path = await open({ title: t("settings-try-the-command-on-a-file") });
     if (typeof path !== "string") return;
     testing = true;
     testResult = null;
@@ -172,9 +211,9 @@
   }
   const customLimit = $derived(!SPEED_PRESETS.includes(s.global_speed_limit));
   const proxyModes: { key: ProxyMode; label: string }[] = [
-    { key: "none", label: "No proxy" },
-    { key: "system", label: "System" },
-    { key: "manual", label: "Manual" },
+    { key: "none", label: t("settings-no-proxy") },
+    { key: "system", label: t("settings-system") },
+    { key: "manual", label: t("settings-manual") },
   ];
   // The status line describes the saved settings; say so while they're being edited.
   const proxyEdited = $derived(JSON.stringify(s.proxy) !== JSON.stringify(settings.proxy));
@@ -190,7 +229,7 @@
   </button>
 {/snippet}
 
-<Modal title="Settings" width={660} {onclose}>
+<Modal title={t("settings-settings")} width={660} {onclose}>
   <div class="tabs">
     {#each tabs as t (t.key)}
       <button class:on={tab === t.key} onclick={() => (tab = t.key)}>{t.label}</button>
@@ -200,70 +239,96 @@
   <div class="pane">
     {#if tab === "general"}
       <div class="field">
-        <span class="label">Download folder</span>
+        <span class="label">{t("settings-download-folder")}</span>
         <div class="folder">
           <input class="input" bind:value={s.download_dir} spellcheck="false" />
-          <button class="btn" onclick={browse}><FolderOpen size={15} /> Browse</button>
+          <button class="btn" onclick={browse}><FolderOpen size={15} /> {t("settings-browse")}</button>
         </div>
       </div>
-      {@render toggle("Sort into category folders", "Video, Music, Documents… inside the download folder", s.use_category_folders, (v) => (s.use_category_folders = v))}
+      {@render toggle(t("settings-sort-into-category-folders"), t("settings-video-music-documents-inside-the-download"), s.use_category_folders, (v) => (s.use_category_folders = v))}
       <div class="field">
-        <span class="label">When a file with the same name exists</span>
+        <span class="label">{t("settings-when-a-file-with-the-same")}</span>
         <select class="input" bind:value={s.on_conflict}>
-          <option value="ask">Ask me</option>
-          <option value="rename">Keep both (add a number)</option>
-          <option value="overwrite">Replace the old file</option>
-          <option value="skip">Skip the download</option>
+          <option value="ask">{t("settings-ask-me")}</option>
+          <option value="rename">{t("settings-keep-both-add-a-number")}</option>
+          <option value="overwrite">{t("settings-replace-the-old-file")}</option>
+          <option value="skip">{t("settings-skip-the-download")}</option>
         </select>
       </div>
       {@render toggle(
-        "Keep running in the tray",
-        integration && !integration.tray_available ? "No system tray was found, so closing the window quits Siler" : "Closing the window keeps downloads going",
+        t("settings-keep-running-in-the-tray"),
+        integration && !integration.tray_available ? t("settings-no-system-tray-was-found-so") : t("settings-closing-the-window-keeps-downloads-going"),
         s.close_to_tray,
         (v) => (s.close_to_tray = v),
       )}
       {@render toggle(
-        "Start when you log in",
-        integration && !integration.tray_available ? "Opens the window when you log in" : "Opens in the tray, ready for downloads",
+        t("settings-start-when-you-log-in"),
+        integration && !integration.tray_available ? t("settings-opens-the-window-when-you-log") : t("settings-opens-in-the-tray-ready-for"),
         autostart,
         (v) => (autostart = v),
       )}
-      {@render toggle("Ask before quitting", "Confirm when quitting would pause running downloads", s.confirm_quit, (v) => (s.confirm_quit = v))}
-      {@render toggle("Notifications", "Notify when a download finishes or fails", s.notify_on_complete, (v) => (s.notify_on_complete = v))}
-      {@render toggle("Resume on startup", "Continue unfinished downloads when Siler starts", s.resume_on_startup, (v) => (s.resume_on_startup = v))}
-      {@render toggle("Keep the computer awake", "Don't let it go to sleep while downloads are running", s.prevent_sleep, (v) => (s.prevent_sleep = v))}
+      {@render toggle(t("settings-ask-before-quitting"), t("settings-confirm-when-quitting-would-pause-running"), s.confirm_quit, (v) => (s.confirm_quit = v))}
+      {@render toggle(t("settings-notifications"), t("settings-notify-when-a-download-finishes-or"), s.notify_on_complete, (v) => (s.notify_on_complete = v))}
+      {@render toggle(t("settings-resume-on-startup"), t("settings-continue-unfinished-downloads-when-siler-starts"), s.resume_on_startup, (v) => (s.resume_on_startup = v))}
+      {@render toggle(t("settings-keep-the-computer-awake"), t("settings-don-t-let-it-go-to"), s.prevent_sleep, (v) => (s.prevent_sleep = v))}
       {@render toggle(
-        "Watch the clipboard for links",
-        "Copying a link to a file (one of the types in Categories) offers to download it",
+        t("settings-watch-the-clipboard-for-links"),
+        t("settings-copying-a-link-to-a-file"),
         s.clipboard_monitor,
         (v) => (s.clipboard_monitor = v),
       )}
+      <div class="field">
+        <span class="label">{t("settings-language")}</span>
+        <select class="input" bind:value={s.language}>
+          <option value="">{t("settings-language-system")}</option>
+          {#each LANGUAGES as lang (lang)}
+            <option value={lang}>{languageName(lang)}</option>
+          {/each}
+        </select>
+        {#if s.language !== settings.language}<div class="hint">{t("settings-language-restart")}</div>{/if}
+      </div>
+      <div class="field updates">
+        <span class="label">{t("settings-updates")}</span>
+        <div class="upd-row">
+          <span class="hint grow">
+            {(appInfo?.install === "packaged" ? t("settings-siler-packaged", { version: appInfo?.version ?? "" }) : t("settings-siler", { version: appInfo?.version ?? "" }))}
+            {#if checked}· {checked.newer ? t("settings-is-available", { version: checked.latest }) : t("settings-up-to-date")}{/if}
+          </span>
+          <button class="btn btn-sm" disabled={checking} onclick={checkNow}>{checking ? t("settings-checking") : t("settings-check-now")}</button>
+        </div>
+      </div>
+      {@render toggle(
+        t("settings-check-for-updates-every-day"),
+        t("settings-asks-github-whether-a-newer-siler"),
+        s.check_updates,
+        (v) => (s.check_updates = v),
+      )}
       <div class="logs">
         <FileText size={15} />
-        <span class="hint grow truncate" title={integration?.log_dir}>Logs: {integration?.log_dir ?? "~/.local/state/siler/logs"}</span>
-        <button class="btn btn-sm" onclick={() => api.openLogFolder().catch(toasts.error.bind(toasts))}>Open log folder</button>
+        <span class="hint grow truncate" title={integration?.log_dir}>{t("settings-logs", { dir: integration?.log_dir ?? "~/.local/state/siler/logs" })}</span>
+        <button class="btn btn-sm" onclick={() => api.openLogFolder().catch(toasts.error.bind(toasts))}>{t("settings-open-log-folder")}</button>
       </div>
     {:else if tab === "media"}
       <div class="field">
-        <span class="label">FFmpeg</span>
+        <span class="label">{t("settings-ffmpeg")}</span>
         {#if ffmpeg === null}
-          <div class="hint">Checking…</div>
+          <div class="hint">{t("settings-checking")}</div>
         {:else if ffmpeg.ok}
-          <div class="hint"><CircleCheck size={13} /> {ffmpeg.version ? `Version ${ffmpeg.version}` : "Found"} at {ffmpeg.path}</div>
+          <div class="hint"><CircleCheck size={13} /> {(ffmpeg.version ? t("settings-version-at", { version: ffmpeg.version, path: ffmpeg.path }) : t("settings-at", { path: ffmpeg.path }))}</div>
         {:else}
-          <div class="hint warn"><TriangleAlert size={13} /> FFmpeg isn't usable: {ffmpeg.missing.join(", ") || "not found"}. Single-track downloads still work; combining video and audio needs it.</div>
-          <div class="hint">Build the bundled copy with <code>scripts/build-ffmpeg.sh</code>.</div>
+          <div class="hint warn"><TriangleAlert size={13} /> {(ffmpeg.missing.length ? t("settings-ffmpeg-isn-t-usable-single-track", { missing: ffmpeg.missing.join(", ") }) : t("settings-ffmpeg-not-found"))}</div>
+          <div class="hint">{t("settings-build-the-bundled-copy-with")} <code>scripts/build-ffmpeg.sh</code>.</div>
         {/if}
       </div>
       <div class="field">
-        <span class="label">Pieces fetched at once <b>{s.media_segment_concurrency}</b></span>
+        <span class="label">{t("settings-pieces-fetched-at-once")} <b>{s.media_segment_concurrency}</b></span>
         <input type="range" min="1" max="16" bind:value={s.media_segment_concurrency} />
-        <div class="hint">Segments of one stream downloaded in parallel. The connection limits still apply.</div>
+        <div class="hint">{t("settings-segments-of-one-stream-downloaded-in")}</div>
       </div>
       <label class="field">
-        <span class="label">Highest video quality by default</span>
+        <span class="label">{t("settings-highest-video-quality-by-default")}</span>
         <select class="input" bind:value={s.preferred_max_height}>
-          <option value={0}>No limit</option>
+          <option value={0}>{t("settings-no-limit")}</option>
           <option value={1080}>1080p</option>
           <option value={720}>720p</option>
           <option value={480}>480p</option>
@@ -272,62 +337,62 @@
       </label>
       <div class="grid2">
         <label class="field">
-          <span class="label">Preferred audio language</span>
-          <input class="input" bind:value={s.preferred_audio_language} placeholder="en" spellcheck="false" />
+          <span class="label">{t("settings-preferred-audio-language")}</span>
+          <input class="input" bind:value={s.preferred_audio_language} placeholder={t("settings-en")} spellcheck="false" />
         </label>
         <label class="field">
-          <span class="label">Preferred subtitle language</span>
-          <input class="input" bind:value={s.preferred_subtitle_language} placeholder="none" spellcheck="false" />
+          <span class="label">{t("settings-preferred-subtitle-language")}</span>
+          <input class="input" bind:value={s.preferred_subtitle_language} placeholder={t("settings-none")} spellcheck="false" />
         </label>
       </div>
       <label class="field">
-        <span class="label">Default container</span>
+        <span class="label">{t("settings-default-container")}</span>
         <select class="input" bind:value={s.default_media_container}>
-          <option value="auto">Automatic (MP4, or MKV when needed)</option>
-          <option value="mp4">MP4</option>
-          <option value="mkv">MKV</option>
+          <option value="auto">{t("settings-automatic-mp4-or-mkv-when-needed")}</option>
+          <option value="mp4">{t("settings-mp4")}</option>
+          <option value="mkv">{t("settings-mkv")}</option>
         </select>
       </label>
       <label class="field">
-        <span class="label">Subtitles by default</span>
+        <span class="label">{t("settings-subtitles-by-default")}</span>
         <select class="input" bind:value={s.default_subtitle_mode}>
-          <option value="embed">Inside the video</option>
-          <option value="sidecar">As a separate file</option>
-          <option value="none">Leave out</option>
+          <option value="embed">{t("settings-inside-the-video")}</option>
+          <option value="sidecar">{t("settings-as-a-separate-file")}</option>
+          <option value="none">{t("settings-leave-out")}</option>
         </select>
       </label>
       {@render toggle(
-        "Allow streams from this computer or the local network",
-        "Off by default, so a playlist can't make Siler contact other machines. Turn it on for a media server at home.",
+        t("settings-allow-streams-from-this-computer-or"),
+        t("settings-off-by-default-so-a-playlist"),
         s.allow_private_media_addresses,
         (v) => (s.allow_private_media_addresses = v),
       )}
     {:else if tab === "transfers"}
       <div class="field">
-        <span class="label">Connections per download <b>{s.connections}</b></span>
+        <span class="label">{t("settings-connections-per-download")} <b>{s.connections}</b></span>
         <input type="range" min="1" max="32" bind:value={s.connections} />
-        <div class="hint">More connections help on fast links and slow servers. 8 is a good default.</div>
+        <div class="hint">{t("settings-more-connections-help-on-fast-links")}</div>
       </div>
       <div class="field">
-        <span class="label">Simultaneous downloads <b>{s.max_concurrent}</b></span>
+        <span class="label">{t("settings-simultaneous-downloads")} <b>{s.max_concurrent}</b></span>
         <input type="range" min="1" max="10" bind:value={s.max_concurrent} />
       </div>
       <div class="field">
-        <span class="label">Connections per server <b>{s.max_connections_per_server || "No limit"}</b></span>
+        <span class="label">{t("settings-connections-per-server")} <b>{s.max_connections_per_server || t("settings-no-limit")}</b></span>
         <input type="range" min="0" max="64" bind:value={s.max_connections_per_server} />
-        <div class="hint">Shared by all downloads from one server, so busy servers don't refuse or ban you.</div>
+        <div class="hint">{t("settings-shared-by-all-downloads-from-one")}</div>
         {#each s.server_limits as limit, i (i)}
           <div class="limit">
-            <input class="input" bind:value={limit.host} placeholder="example.com" spellcheck="false" />
-            <input class="input num" type="number" min="1" max="128" bind:value={limit.connections} title="Connections" />
-            <button class="icon-btn sm" title="Remove" onclick={() => (s.server_limits = s.server_limits.filter((_, j) => j !== i))}><X size={15} /></button>
+            <input class="input" bind:value={limit.host} placeholder={t("settings-example-com")} spellcheck="false" />
+            <input class="input num" type="number" min="1" max="128" bind:value={limit.connections} title={t("settings-connections")} />
+            <button class="icon-btn sm" title={t("settings-remove")} onclick={() => (s.server_limits = s.server_limits.filter((_, j) => j !== i))}><X size={15} /></button>
           </div>
         {/each}
-        <button class="btn btn-sm add-limit" onclick={addLimit}><Plus size={14} /> Different limit for a server</button>
+        <button class="btn btn-sm add-limit" onclick={addLimit}><Plus size={14} /> {t("settings-different-limit-for-a-server")}</button>
       </div>
       <div class="row2">
         <div class="field">
-          <span class="label">Global speed limit</span>
+          <span class="label">{t("settings-global-speed-limit")}</span>
           <select class="input" value={customLimit ? -1 : s.global_speed_limit} onchange={(e) => {
             const v = +e.currentTarget.value;
             if (v >= 0) s.global_speed_limit = v;
@@ -337,59 +402,59 @@
           </select>
         </div>
         <div class="field">
-          <span class="label">Retries per connection</span>
+          <span class="label">{t("settings-retries-per-connection")}</span>
           <input class="input" type="number" min="0" max="100" bind:value={s.max_retries} />
         </div>
       </div>
       <div class="field">
-        <span class="label">User agent</span>
+        <span class="label">{t("settings-user-agent")}</span>
         <input class="input mono" bind:value={s.user_agent} spellcheck="false" />
-        <div class="hint">Used for links added by hand. Browser downloads use the browser's own user agent.</div>
+        <div class="hint">{t("settings-used-for-links-added-by-hand")}</div>
       </div>
-      {@render toggle("Data quota", "Download at most so much in each period; downloads wait for the next one. Useful on metered connections.", s.quota.enabled, (v) => (s.quota.enabled = v))}
+      {@render toggle(t("settings-data-quota"), t("settings-download-at-most-so-much-in"), s.quota.enabled, (v) => (s.quota.enabled = v))}
       {#if s.quota.enabled}
         <div class="quota">
-          <span class="hint">At most</span>
+          <span class="hint">{t("settings-at-most")}</span>
           <input class="input num" type="number" min="1" bind:value={s.quota.megabytes} />
-          <span class="hint">MB every</span>
+          <span class="hint">{t("settings-mb-every")}</span>
           <input class="input num" type="number" min="1" max="744" bind:value={s.quota.hours} />
           <span class="hint">{s.quota.hours === 1 ? "hour" : "hours"}</span>
         </div>
       {/if}
-      {@render toggle("Run a command after each download", "For example to unpack, scan or move files. It runs without a shell, one download at a time.", s.after_download.enabled, (v) => (s.after_download.enabled = v))}
+      {@render toggle(t("settings-run-a-command-after-each-download"), t("settings-for-example-to-unpack-scan-or"), s.after_download.enabled, (v) => (s.after_download.enabled = v))}
       {#if s.after_download.enabled}
         <div class="command">
           <input class="input mono" bind:value={s.after_download.command} placeholder={"my-tool --file {path}"} spellcheck="false" />
           <div class="hint">
-            <code>{"{path}"}</code> the file · <code>{"{dir}"}</code> its folder · <code>{"{name}"}</code> its name · <code>{"{url}"}</code> its address ·
-            <code>{"{size}"}</code> bytes. Quote words with spaces; use <code>sh -c '…' _ {"{path}"}</code> for a shell.
+            <code>{"{path}"}</code> {t("settings-the-file")} <code>{"{dir}"}</code> {t("settings-its-folder")} <code>{"{name}"}</code> {t("settings-its-name")} <code>{"{url}"}</code> {t("settings-its-address")}
+            <code>{"{size}"}</code> {t("settings-bytes-quote-words-with-spaces-use")} <code>sh -c '…' _ {"{path}"}</code> {t("settings-for-a-shell")}
           </div>
           <div class="chips">
-            <span class="hint">Only for</span>
+            <span class="hint">{t("settings-only-for")}</span>
             {#each CATEGORIES as c (c.key)}
               <button class="chip" class:on={s.after_download.categories.includes(c.key)} style:--c={c.color} onclick={() => toggleCommandCategory(c.key)}>{c.label}</button>
             {/each}
-            {#if !s.after_download.categories.length}<span class="hint">(every download)</span>{/if}
+            {#if !s.after_download.categories.length}<span class="hint">{t("settings-every-download")}</span>{/if}
           </div>
           <div class="cmd-row">
             <button class="toggle small-toggle" onclick={() => (s.after_download.notify_on_failure = !s.after_download.notify_on_failure)}>
-              <span class="switch" class:on={s.after_download.notify_on_failure}></span> Notify when it fails
+              <span class="switch" class:on={s.after_download.notify_on_failure}></span> {t("settings-notify-when-it-fails")}
             </button>
             <span class="grow"></span>
-            <button class="btn btn-sm" onclick={testCommand} disabled={!s.after_download.command.trim() || testing}><Play size={13} /> {testing ? "Running…" : "Try it on a file…"}</button>
+            <button class="btn btn-sm" onclick={testCommand} disabled={!s.after_download.command.trim() || testing}><Play size={13} /> {testing ? t("settings-running") : t("settings-try-it-on-a-file")}</button>
           </div>
           {#if testResult}
             <div class="test" class:bad={testResult.error != null || testResult.exit_code !== 0}>
-              {testResult.error ?? `Exited with ${testResult.exit_code}`}
+              {testResult.error ?? t("settings-exited-with", { code: testResult.exit_code ?? "" })}
               {#if testResult.output}<pre>{testResult.output}</pre>{/if}
             </div>
           {/if}
         </div>
       {/if}
-      {@render toggle("Open metalinks", "A downloaded .meta4 or .metalink file is replaced by the files it lists, with their mirrors and checksums.", s.open_metalinks, (v) => (s.open_metalinks = v))}
+      {@render toggle(t("settings-open-metalinks"), t("settings-a-downloaded-meta4-or-metalink-file"), s.open_metalinks, (v) => (s.open_metalinks = v))}
     {:else if tab === "network"}
       <div class="field">
-        <span class="label">Proxy</span>
+        <span class="label">{t("settings-proxy")}</span>
         <div class="seg">
           {#each proxyModes as m (m.key)}
             <button class:on={s.proxy.mode === m.key} onclick={() => (s.proxy.mode = m.key)}>{m.label}</button>
@@ -399,65 +464,65 @@
       {#if s.proxy.mode === "manual"}
         <div class="proxy">
           <label class="field">
-            <span class="label">Type</span>
+            <span class="label">{t("settings-type")}</span>
             <select class="input" bind:value={s.proxy.scheme}>
-              <option value="http">HTTP</option>
-              <option value="socks5">SOCKS5</option>
+              <option value="http">{t("settings-http")}</option>
+              <option value="socks5">{t("settings-socks5")}</option>
             </select>
           </label>
           <label class="field">
-            <span class="label">Address</span>
-            <input class="input" bind:value={s.proxy.host} placeholder="proxy.example.com" spellcheck="false" />
+            <span class="label">{t("settings-address")}</span>
+            <input class="input" bind:value={s.proxy.host} placeholder={t("settings-proxy-example-com")} spellcheck="false" />
           </label>
           <label class="field">
-            <span class="label">Port</span>
+            <span class="label">{t("settings-port")}</span>
             <input class="input" type="number" min="1" max="65535" bind:value={s.proxy.port} />
           </label>
         </div>
         <div class="row2">
           <label class="field">
-            <span class="label">Username <span class="hint">(optional)</span></span>
+            <span class="label">{t("settings-username")} <span class="hint">{t("settings-optional")}</span></span>
             <input class="input" bind:value={s.proxy.username} autocomplete="off" spellcheck="false" />
           </label>
           <label class="field">
-            <span class="label">Password</span>
+            <span class="label">{t("settings-password")}</span>
             <input
               class="input"
               type="password"
               bind:value={proxyPassword}
               disabled={!s.proxy.username.trim() || !keyring}
-              placeholder={!keyring ? "No keyring available" : proxyPasswordSaved ? "Saved in the keyring" : ""}
+              placeholder={!keyring ? t("settings-no-keyring-available") : proxyPasswordSaved ? t("settings-saved-in-the-keyring") : ""}
               autocomplete="new-password"
             />
           </label>
         </div>
         <label class="field">
-          <span class="label">Connect directly to</span>
-          <input class="input" bind:value={s.proxy.no_proxy} placeholder="localhost, 127.0.0.1, .lan" spellcheck="false" />
+          <span class="label">{t("settings-connect-directly-to")}</span>
+          <input class="input" bind:value={s.proxy.no_proxy} placeholder={t("settings-localhost-127-0-0-1-lan")} spellcheck="false" />
         </label>
       {/if}
       {#if route && !proxyEdited}
         <div class="route hint">
-          <span>Now: {route.summary}</span>
+          <span>{t("settings-now", { summary: route.summary })}</span>
           {#if route.note}<span class="warn"><TriangleAlert size={13} /> {route.note}</span>{/if}
         </div>
       {:else if proxyEdited}
-        <div class="route hint">Applies when you save.</div>
+        <div class="route hint">{t("settings-applies-when-you-save")}</div>
       {/if}
 
       <div class="field">
-        <span class="label">Saved logins</span>
+        <span class="label">{t("settings-saved-logins")}</span>
         {#if !keyring}
-          <div class="hint">No keyring service (KWallet, GNOME Keyring…) is running, so logins last until Siler quits.</div>
+          <div class="hint">{t("settings-no-keyring-service-kwallet-gnome-keyring")}</div>
         {:else if logins.length === 0}
-          <div class="hint">When a server asks for a username and password, you can save it here.</div>
+          <div class="hint">{t("settings-when-a-server-asks-for-a")}</div>
         {:else}
           <div class="logins">
             {#each logins as l (l.host)}
               <div class="login-row">
                 <KeyRound size={14} />
                 <span class="grow truncate"><b>{l.host}</b> <span class="hint">{l.username}</span></span>
-                <button class="btn btn-sm btn-ghost" onclick={() => forgetLogin(l.host)}>Forget</button>
+                <button class="btn btn-sm btn-ghost" onclick={() => forgetLogin(l.host)}>{t("settings-forget")}</button>
               </div>
             {/each}
           </div>
@@ -472,29 +537,29 @@
           <div>
             <div class="t-label">{mismatch}</div>
             <div class="hint">
-              The extension ({integration?.extension_version}) and Siler ({integration?.app_version}) are from different versions and may not work together.
+              {t("settings-the-extension-and-siler-are-from", { extension_version: integration?.extension_version, app_version: integration?.app_version })}
             </div>
           </div>
         {:else if integration?.manifest_installed && integration.host_exists}
           <CircleCheck size={20} />
           <div>
-            <div class="t-label">Firefox integration is installed</div>
+            <div class="t-label">{t("settings-browser-integration-is-installed")}</div>
             <div class="hint">
               {#if integration.last_contact}
-                Extension {integration.extension_version ?? ""} last seen {relativeTime(integration.last_contact)}
+                {t("settings-extension-last-seen", { v: integration.extension_version ?? "", v2: relativeTime(integration.last_contact) })}
               {:else}
-                Waiting for the extension to connect
+                {t("settings-waiting-for-the-extension-to-connect")}
               {/if}
             </div>
           </div>
         {:else}
           <TriangleAlert size={20} />
           <div>
-            <div class="t-label">Firefox integration is not set up</div>
-            <div class="hint">Install the native messaging host so the extension can talk to Siler.</div>
+            <div class="t-label">{t("settings-browser-integration-is-not-set-up")}</div>
+            <div class="hint">{t("settings-install-the-native-messaging-host-so")}</div>
           </div>
         {/if}
-        <button class="btn btn-sm" onclick={install}>{integration?.manifest_installed ? "Repair" : "Install"}</button>
+        <button class="btn btn-sm" onclick={install}>{integration?.manifest_installed ? t("settings-repair") : t("settings-install")}</button>
       </div>
       {#if integration}
         <div class="checks">
@@ -504,42 +569,67 @@
               {b.name}
             </span>
           {/each}
-          <span class="check" class:ok={integration.desktop_entry} title="Application menu entry and icon">
+          <span class="check" class:ok={integration.desktop_entry} title={t("settings-application-menu-entry-and-icon")}>
             {#if integration.desktop_entry}<CircleCheck size={13} />{:else}<CircleX size={13} />{/if}
-            App menu &amp; icon
+            {t("settings-app-menu-icon")}
           </span>
         </div>
       {/if}
-      {@render toggle("Start browser downloads immediately", "Skip the confirmation window for files captured from Firefox", s.auto_start_browser_downloads, (v) => (s.auto_start_browser_downloads = v))}
+      {@render toggle(t("settings-start-browser-downloads-immediately"), t("settings-skip-the-confirmation-window-for-files"), s.auto_start_browser_downloads, (v) => (s.auto_start_browser_downloads = v))}
       <div class="steps">
-        <div class="t-label"><Puzzle size={15} /> Installing the extension</div>
+        <div class="t-label"><Puzzle size={15} /> {t("settings-firefox-librewolf-waterfox-floorp-zen")}</div>
         {#if integration?.signed_xpi}
           <div class="xpi">
-            <span class="hint grow">The signed Siler extension is ready to add. Then allow it to access all websites when Firefox asks.</span>
-            <button class="btn btn-primary btn-sm" onclick={installExtension}>Add to Firefox</button>
+            <span class="hint grow">{t("settings-the-signed-siler-extension-is-ready")}</span>
+            <button class="btn btn-primary btn-sm" onclick={installExtension}>{t("settings-add-to-firefox")}</button>
           </div>
         {:else}
           <ol>
-            <li>Click <b>Install</b> above to register Siler with Firefox.</li>
+            <li>{t("settings-click")} <b>{t("settings-install")}</b> {t("settings-above-to-register-siler-with-firefox")}</li>
             <li>
-              Download <span class="mono">siler-integration.xpi</span> from the latest release
-              <button class="btn btn-sm" onclick={() => api.openUrl(RELEASES).catch((e) => toasts.error(e))}>Open releases</button>
+              {t("settings-download")} <span class="mono">{t("settings-siler-integration-xpi")}</span> {t("settings-from-the-latest-release")}
+              <button class="btn btn-sm" onclick={() => api.openUrl(RELEASES).catch((e) => toasts.error(e))}>{t("settings-open-releases")}</button>
             </li>
-            <li>Open the file with Firefox, and allow the extension to access all websites when Firefox asks.</li>
+            <li>{t("settings-open-the-file-with-firefox-and")}</li>
           </ol>
-          <div class="hint">Building from source? See <span class="mono">docs/browser-extension.md</span>.</div>
+          <div class="hint">{t("settings-building-from-source-see")} <span class="mono">{t("settings-docs-browser-extension-md")}</span>.</div>
+        {/if}
+      </div>
+      <div class="steps">
+        <div class="t-label"><Puzzle size={15} /> {t("settings-chrome-chromium-brave-vivaldi-edge-opera")}</div>
+        {#if chromium}
+          <ol>
+            <li>{t("settings-click")} <b>{t("settings-install")}</b> {t("settings-above-again-if-the-browser-was")}</li>
+            <li>
+              {t("settings-open-the-browser-s-extensions-page")} <b>{t("settings-developer-mode")}</b>.
+              {#each chromium.browsers as b (b)}
+                <button class="btn btn-sm" onclick={() => api.openChromiumExtensions(b).catch((e) => toasts.error(e))}>{t("settings-open-in", { b })}</button>
+              {/each}
+            </li>
+            <li>
+              {t("settings-click")} <b>{t("settings-load-unpacked")}</b> {t("settings-and-choose-this-folder")}
+              <span class="mono selectable">{chromium.path}</span>
+              <button class="btn btn-sm" onclick={() => navigator.clipboard.writeText(chromium!.path).then(() => toasts.show(t("settings-copied"), "success"))}>{t("settings-copy")}</button>
+            </li>
+          </ol>
+          <div class="hint">{t("settings-siler-s-extension-isn-t-in")}</div>
+        {:else}
+          <div class="xpi">
+            <span class="hint grow">{t("settings-siler-s-extension-for-chromium-based")}</span>
+            <button class="btn btn-sm" onclick={prepareChromium}>{t("settings-set-up")}</button>
+          </div>
         {/if}
       </div>
     {:else}
       <div class="field">
-        <span class="label">Theme</span>
+        <span class="label">{t("settings-theme")}</span>
         <div class="seg">
           {#each themes as t (t.key)}
             <button class:on={theme.pref === t.key} onclick={() => theme.set(t.key)}><t.icon size={15} /> {t.label}</button>
           {/each}
         </div>
       </div>
-      {@render toggle("Sounds", "Play the desktop's sounds for download events", s.sounds.enabled, (v) => (s.sounds.enabled = v))}
+      {@render toggle(t("settings-sounds"), t("settings-play-the-desktop-s-sounds-for"), s.sounds.enabled, (v) => (s.sounds.enabled = v))}
       {#if s.sounds.enabled}
         <div class="sounds">
           {#each soundRows as r (r.event)}
@@ -548,12 +638,12 @@
                 <input type="checkbox" bind:checked={s.sounds[r.on]} />
                 {r.label}
               </label>
-              <span class="hint grow truncate" title={s.sounds[r.file] ?? ""}>{s.sounds[r.file] ? baseName(s.sounds[r.file] ?? "") : "Theme sound"}</span>
+              <span class="hint grow truncate" title={s.sounds[r.file] ?? ""}>{s.sounds[r.file] ? baseName(s.sounds[r.file] ?? "") : t("settings-theme-sound")}</span>
               {#if s.sounds[r.file]}
-                <button class="icon-btn sm" title="Use the theme sound" onclick={() => (s.sounds[r.file] = null)}><X size={14} /></button>
+                <button class="icon-btn sm" title={t("settings-use-the-theme-sound")} onclick={() => (s.sounds[r.file] = null)}><X size={14} /></button>
               {/if}
-              <button class="btn btn-sm" onclick={() => pickSound(r.file)}>Choose…</button>
-              <button class="icon-btn sm" title="Play" onclick={() => api.testSound(r.event, $state.snapshot(s.sounds))}><Play size={14} /></button>
+              <button class="btn btn-sm" onclick={() => pickSound(r.file)}>{t("settings-choose")}</button>
+              <button class="icon-btn sm" title={t("settings-play")} onclick={() => api.testSound(r.event, $state.snapshot(s.sounds))}><Play size={14} /></button>
             </div>
           {/each}
         </div>
@@ -562,12 +652,17 @@
   </div>
 
   {#snippet footer()}
-    <button class="btn btn-ghost" onclick={onclose}>Cancel</button>
-    <button class="btn btn-primary" onclick={save} disabled={saving}>Save</button>
+    <button class="btn btn-ghost" onclick={onclose}>{t("settings-cancel")}</button>
+    <button class="btn btn-primary" onclick={save} disabled={saving}>{t("settings-save")}</button>
   {/snippet}
 </Modal>
 
 <style>
+  .upd-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
   .tabs {
     display: flex;
     gap: 4px;

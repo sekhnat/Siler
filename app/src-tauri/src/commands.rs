@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
 
+use crate::i18n::{tr, tr_args};
 use crate::integration::{self, IntegrationStatus};
 use crate::logins::{self, SavedLogin};
 use crate::{AppState, PendingView, StartupError};
@@ -20,8 +21,13 @@ use crate::{power, sound};
 
 type Res<T> = Result<T, String>;
 
-fn err(e: impl Display) -> String {
-    e.to_string()
+/// An error for the interface: an engine error in the interface's language, anything else
+/// as it says itself.
+fn err<E: Display + 'static>(e: E) -> String {
+    match (&e as &dyn std::any::Any).downcast_ref::<siler_core::Error>() {
+        Some(core) => crate::i18n::error(core),
+        None => e.to_string(),
+    }
 }
 
 /// The request context to replay for a download handed over by the browser.
@@ -88,6 +94,8 @@ pub fn list_downloads(state: State<'_, AppState>) -> Vec<DownloadInfo> {
 pub struct ProbeError {
     message: String,
     login: Option<LoginRequest>,
+    /// An SFTP server whose key has to be trusted first.
+    host_key: Option<Box<siler_core::HostKeyRequest>>,
 }
 
 #[tauri::command]
@@ -110,7 +118,100 @@ pub async fn probe_url(
     result.map_err(|e| ProbeError {
         message: e.to_string(),
         login: e.login_request(),
+        host_key: match &e {
+            siler_core::Error::HostKeyUnknown(r) => Some(r.clone()),
+            _ => None,
+        },
     })
+}
+
+/// Trusts an SFTP server's key (Siler's own known_hosts), resuming the downloads waiting for it.
+/// The version and how Siler was installed.
+#[derive(Serialize)]
+pub struct AppInfo {
+    version: &'static str,
+    install: crate::updates::InstallKind,
+}
+
+/// The interface's language as the app resolved it (Settings, else the system's), so the
+/// window shows the same one as the tray and notifications.
+#[tauri::command]
+pub fn ui_language() -> String {
+    crate::i18n::language().to_string()
+}
+
+#[tauri::command]
+pub fn app_info() -> AppInfo {
+    AppInfo {
+        version: env!("CARGO_PKG_VERSION"),
+        install: crate::updates::install_kind(),
+    }
+}
+
+/// What the last update check found (this session), if anything.
+#[tauri::command]
+pub fn update_status() -> Option<crate::updates::UpdateInfo> {
+    crate::updates::LAST.lock().unwrap().clone()
+}
+
+#[tauri::command]
+pub async fn check_updates_now(app: AppHandle) -> Res<crate::updates::UpdateInfo> {
+    crate::updates::check(&app).await
+}
+
+/// Updates an AppImage in place and restarts it.
+#[tauri::command]
+pub async fn install_update(app: AppHandle) -> Res<()> {
+    crate::updates::install(&app).await
+}
+
+/// The Chromium extension, copied where it stays put for "Load unpacked", and the
+/// Chromium-based browsers found.
+#[derive(Serialize)]
+pub struct ChromiumExtension {
+    path: String,
+    browsers: Vec<&'static str>,
+}
+
+#[tauri::command]
+pub fn chromium_extension() -> Res<ChromiumExtension> {
+    let path = crate::integration::chromium_extension().map_err(err)?;
+    Ok(ChromiumExtension {
+        path: path.to_string_lossy().into_owned(),
+        browsers: crate::integration::chromium_browsers()
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect(),
+    })
+}
+
+/// Opens a Chromium browser's extensions page (to turn on developer mode and load the
+/// extension). Web links can't open `chrome://` pages, so the browser is started with it.
+#[tauri::command]
+pub fn open_chromium_extensions(browser: String) -> Res<()> {
+    let (_, prog) = crate::integration::chromium_browsers()
+        .into_iter()
+        .find(|(n, _)| *n == browser)
+        .ok_or_else(|| format!("{browser} wasn't found"))?;
+    let page = match browser.as_str() {
+        "Edge" => "edge://extensions/",
+        "Brave" => "brave://extensions/",
+        "Vivaldi" => "vivaldi://extensions/",
+        "Opera" => "opera://extensions/",
+        _ => "chrome://extensions/",
+    };
+    crate::launch::start(prog, &[std::ffi::OsStr::new(page)]).map_err(err)
+}
+
+/// Ends a recording and keeps what was recorded.
+#[tauri::command]
+pub fn finish_download(state: State<'_, AppState>, id: i64) -> Res<()> {
+    state.engine.finish(id).map_err(err)
+}
+
+#[tauri::command]
+pub fn trust_host_key(state: State<'_, AppState>, request: siler_core::HostKeyRequest) -> Res<()> {
+    state.engine.trust_host_key(&request).map_err(err)
 }
 
 /// Uses a login for a server (resuming its downloads), optionally saving it in the keyring.
@@ -263,6 +364,7 @@ pub async fn probe_media(
     result.map_err(|e| ProbeError {
         message: e.to_string(),
         login: e.login_request(),
+        host_key: None,
     })
 }
 
@@ -549,7 +651,7 @@ const REFRESH_WAIT: Duration = Duration::from_secs(120);
 /// known.
 #[tauri::command]
 pub fn await_refresh(state: State<'_, AppState>, id: i64) -> Res<bool> {
-    let d = state.engine.get(id).ok_or("Download not found")?;
+    let d = state.engine.get(id).ok_or_else(|| tr("error-not-found"))?;
     *state.awaiting_refresh.lock().unwrap() = Some((id, Instant::now() + REFRESH_WAIT));
     let page = d.page_url.or(d.referrer);
     if let Some(page) = &page {
@@ -604,25 +706,27 @@ pub fn set_settings(state: State<'_, AppState>, settings: Settings) -> Res<Setti
 
 fn download(app: &AppHandle, id: i64) -> Res<DownloadInfo> {
     app.try_state::<AppState>()
-        .ok_or("Siler isn't running")?
+        .ok_or_else(|| tr("command-siler-isnt-running"))?
         .engine
         .get(id)
-        .ok_or_else(|| "Download not found".to_string())
+        .ok_or_else(|| tr("error-not-found"))
 }
 
 fn path_of(app: &AppHandle, id: i64) -> Res<PathBuf> {
-    let state = app.try_state::<AppState>().ok_or("Siler isn't running")?;
+    let state = app
+        .try_state::<AppState>()
+        .ok_or_else(|| tr("command-siler-isnt-running"))?;
     state
         .engine
         .file_path(id)
-        .ok_or_else(|| "This download has no file yet".to_string())
+        .ok_or_else(|| tr("command-no-file-yet"))
 }
 
 /// Opens a finished file with its default application.
 pub fn open_path(app: &AppHandle, id: i64) -> Res<()> {
     let d = download(app, id)?;
     if d.status != Status::Completed {
-        return Err("The download hasn't finished yet".into());
+        return Err(tr("command-not-finished-yet"));
     }
     let path = path_of(app, id)?;
     if !path.exists() {
@@ -639,7 +743,7 @@ pub fn reveal(app: &AppHandle, id: i64) -> Res<()> {
     }
     match path.parent().filter(|d| d.exists()) {
         Some(dir) => crate::launch::open(dir).map_err(err),
-        None => Err("The folder no longer exists".into()),
+        None => Err(tr("command-folder-gone")),
     }
 }
 
@@ -656,7 +760,7 @@ pub fn show_in_folder(app: AppHandle, id: i64) -> Res<()> {
 #[tauri::command]
 pub fn open_url(url: String) -> Res<()> {
     if !(url.starts_with("http://") || url.starts_with("https://")) {
-        return Err("Only web links can be opened".into());
+        return Err(tr("command-only-web-links"));
     }
     crate::launch::open(&url).map_err(err)
 }
@@ -703,8 +807,12 @@ pub fn set_autostart(on: bool) -> Res<()> {
 #[tauri::command]
 pub fn install_extension() -> Res<()> {
     let xpi = integration::xpi_for_firefox().map_err(err)?;
-    crate::launch::start("firefox", &[xpi.as_os_str()])
-        .map_err(|e| format!("Couldn't start Firefox: {e}"))
+    crate::launch::start("firefox", &[xpi.as_os_str()]).map_err(|e| {
+        tr_args(
+            "command-couldnt-start-firefox",
+            vec![("why", e.to_string().into())],
+        )
+    })
 }
 
 #[tauri::command]

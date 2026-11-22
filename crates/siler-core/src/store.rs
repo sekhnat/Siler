@@ -41,6 +41,8 @@ pub(crate) struct Record {
     pub sync_checked_at: Option<i64>,
     /// Not saved: the server wanted a login the last time this download ran.
     pub needs_login: Option<crate::LoginRequest>,
+    /// Not saved: the SFTP server's key has to be trusted first.
+    pub needs_host_key: Option<crate::HostKeyRequest>,
     pub kind: JobKind,
     /// The media details of a media download.
     pub media: Option<MediaRecord>,
@@ -464,6 +466,7 @@ fn row_to_record(row: &Row) -> rusqlite::Result<Record> {
         sync_every: row.get("sync_every")?,
         sync_checked_at: row.get("sync_checked_at")?,
         needs_login: None,
+        needs_host_key: None,
         kind: JobKind::parse(&row.get::<_, String>("kind")?),
         media: row
             .get::<_, Option<String>>("media")?

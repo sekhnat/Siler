@@ -1,25 +1,61 @@
-//! Registers the native messaging host with Firefox and the Firefox-based browsers.
+//! Registers the native messaging host with Firefox, the Firefox-based browsers, and the
+//! Chromium-based ones (Chrome, Chromium, Brave, Vivaldi, Edge, Opera).
 
+use crate::i18n::tr;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
 pub const HOST_NAME: &str = "com.siler.nmhost";
 pub const EXTENSION_ID: &str = "siler@siler.app";
+/// The Chromium extension's IDs: the unpacked build's (pinned by the `key` in
+/// extension/manifest.chromium.json). The Chrome Web Store gives its copy an ID of its own,
+/// which goes here once it is published.
+pub const CHROMIUM_IDS: &[&str] = &["legjbaodpdlommbgpdfcmogjedfgpjae"];
+
+/// How a browser family names the allowed extensions in a host manifest, and the folder
+/// the manifests go in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Family {
+    Firefox,
+    Chromium,
+}
 
 /// Browsers and the folder under `$HOME` they read native host manifests from.
 /// Firefox's folder is always written: Zen and Floorp read it too. The others get a copy
 /// when they are installed (their folder exists); LibreWolf needs its own.
-const BROWSERS: &[(&str, &str)] = &[
-    ("Firefox", ".mozilla"),
-    ("LibreWolf", ".librewolf"),
-    ("Waterfox", ".waterfox"),
-    ("Floorp", ".floorp"),
-    ("Zen", ".zen"),
+const BROWSERS: &[(&str, &str, Family)] = &[
+    ("Firefox", ".mozilla", Family::Firefox),
+    ("LibreWolf", ".librewolf", Family::Firefox),
+    ("Waterfox", ".waterfox", Family::Firefox),
+    ("Floorp", ".floorp", Family::Firefox),
+    ("Zen", ".zen", Family::Firefox),
+    ("Chrome", ".config/google-chrome", Family::Chromium),
+    (
+        "Chrome Beta",
+        ".config/google-chrome-beta",
+        Family::Chromium,
+    ),
+    (
+        "Chrome Dev",
+        ".config/google-chrome-unstable",
+        Family::Chromium,
+    ),
+    ("Chromium", ".config/chromium", Family::Chromium),
+    (
+        "Brave",
+        ".config/BraveSoftware/Brave-Browser",
+        Family::Chromium,
+    ),
+    ("Vivaldi", ".config/vivaldi", Family::Chromium),
+    ("Edge", ".config/microsoft-edge", Family::Chromium),
+    ("Opera", ".config/opera", Family::Chromium),
 ];
 
 #[derive(Debug, Serialize)]
 pub struct BrowserStatus {
     pub name: &'static str,
+    pub family: Family,
     pub manifest_path: String,
     pub installed: bool,
 }
@@ -52,17 +88,55 @@ fn home() -> PathBuf {
 }
 
 fn manifest_in(base: &Path) -> PathBuf {
-    base.join("native-messaging-hosts")
-        .join(format!("{HOST_NAME}.json"))
+    manifest_for(base, Family::Firefox)
+}
+
+fn manifest_for(base: &Path, family: Family) -> PathBuf {
+    let dir = match family {
+        Family::Firefox => "native-messaging-hosts",
+        Family::Chromium => "NativeMessagingHosts",
+    };
+    base.join(dir).join(format!("{HOST_NAME}.json"))
+}
+
+/// The manifest for `firefox` or `chromium`, as text (for packages, which install them
+/// system-wide).
+pub fn host_manifest(family: &str, host: &Path) -> Option<String> {
+    let family = match family {
+        "firefox" => Family::Firefox,
+        "chromium" => Family::Chromium,
+        _ => return None,
+    };
+    serde_json::to_string_pretty(&manifest_json(host, family)).ok()
+}
+
+/// The manifest for one family, pointing at `host`.
+fn manifest_json(host: &Path, family: Family) -> serde_json::Value {
+    let mut m = serde_json::json!({
+        "name": HOST_NAME,
+        "description": "Siler download manager",
+        "path": host,
+        "type": "stdio",
+    });
+    match family {
+        Family::Firefox => m["allowed_extensions"] = serde_json::json!([EXTENSION_ID]),
+        Family::Chromium => {
+            m["allowed_origins"] = CHROMIUM_IDS
+                .iter()
+                .map(|id| format!("chrome-extension://{id}/"))
+                .collect()
+        }
+    }
+    m
 }
 
 /// (name, manifest path) of every browser to register with.
-fn targets() -> Vec<(&'static str, PathBuf)> {
+fn targets() -> Vec<(&'static str, Family, PathBuf)> {
     let home = home();
     BROWSERS
         .iter()
-        .filter(|(name, dir)| *name == "Firefox" || home.join(dir).is_dir())
-        .map(|(name, dir)| (*name, manifest_in(&home.join(dir))))
+        .filter(|(name, dir, _)| *name == "Firefox" || home.join(dir).is_dir())
+        .map(|(name, dir, family)| (*name, *family, manifest_for(&home.join(dir), *family)))
         .collect()
 }
 
@@ -91,10 +165,93 @@ pub fn signed_xpi() -> Option<PathBuf> {
     let beside = std::env::current_exe()
         .ok()
         .and_then(|e| Some(e.parent()?.join(XPI)));
-    [own, bundled, beside]
+    let packaged = Some(PathBuf::from("/usr/share/siler").join(XPI));
+    [own, bundled, beside, packaged]
         .into_iter()
         .flatten()
         .find(|p| p.is_file())
+}
+
+const CHROMIUM_DIR: &str = "chromium-extension";
+
+/// The unpacked Chromium extension shipped with Siler: in the AppImage's resources, beside
+/// the executable (tarball), in a package's share folder, or (development) the one
+/// `scripts/build-extension.mjs chromium` made.
+fn bundled_chromium() -> Option<PathBuf> {
+    let bundled = RESOURCE_DIR.get().map(|d| d.join(CHROMIUM_DIR));
+    let beside = std::env::current_exe()
+        .ok()
+        .and_then(|e| Some(e.parent()?.join(CHROMIUM_DIR)));
+    let packaged = Some(PathBuf::from("/usr/share/siler").join(CHROMIUM_DIR));
+    let dev = cfg!(debug_assertions)
+        .then(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../dist/extension-chromium"));
+    [bundled, beside, packaged, dev]
+        .into_iter()
+        .flatten()
+        .find(|p| p.join("manifest.json").is_file())
+}
+
+/// Copies the Chromium extension where it stays put (Chromium loads an unpacked extension
+/// from its folder every time it starts), and returns that folder.
+pub fn chromium_extension() -> std::io::Result<PathBuf> {
+    let from = bundled_chromium().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            tr("integration-no-chromium-extension"),
+        )
+    })?;
+    let dest = dirs::data_dir()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no data folder"))?
+        .join("siler")
+        .join(CHROMIUM_DIR);
+    if dest.exists() {
+        std::fs::remove_dir_all(&dest)?;
+    }
+    copy_dir(&from, &dest)?;
+    Ok(dest)
+}
+
+fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
+/// Chromium-based browsers found on PATH, by the program that starts them.
+pub fn chromium_browsers() -> Vec<(&'static str, &'static str)> {
+    const PROGRAMS: &[(&str, &str)] = &[
+        ("Chrome", "google-chrome-stable"),
+        ("Chrome", "google-chrome"),
+        ("Chromium", "chromium"),
+        ("Chromium", "chromium-browser"),
+        ("Brave", "brave"),
+        ("Brave", "brave-browser"),
+        ("Vivaldi", "vivaldi-stable"),
+        ("Vivaldi", "vivaldi"),
+        ("Edge", "microsoft-edge-stable"),
+        ("Edge", "microsoft-edge"),
+        ("Opera", "opera"),
+    ];
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
+    let mut found: Vec<(&str, &str)> = Vec::new();
+    for (name, prog) in PROGRAMS {
+        if found.iter().any(|(n, _)| n == name) {
+            continue;
+        }
+        if dirs.iter().any(|d| d.join(prog).is_file()) {
+            found.push((name, prog));
+        }
+    }
+    found
 }
 
 /// A copy of the signed extension that stays put while Firefox installs it: the AppImage's
@@ -103,7 +260,7 @@ pub fn xpi_for_firefox() -> std::io::Result<PathBuf> {
     let xpi = signed_xpi().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::NotFound,
-            "No signed extension found. Download siler-integration.xpi from the latest release and open it with Firefox.",
+            tr("integration-no-signed-extension"),
         )
     })?;
     let dir = dirs::cache_dir()
@@ -129,8 +286,9 @@ pub fn status(
 ) -> IntegrationStatus {
     let browsers: Vec<BrowserStatus> = targets()
         .into_iter()
-        .map(|(name, path)| BrowserStatus {
+        .map(|(name, family, path)| BrowserStatus {
             name,
+            family,
             installed: host_of(&path).is_some(),
             manifest_path: path.to_string_lossy().into_owned(),
         })
@@ -198,8 +356,11 @@ pub fn refresh_appimage() {
     let (Some(app), Some(dir)) = (appimage(), stable_host_dir()) else {
         return;
     };
-    let firefox = manifest_in(&home().join(".mozilla"));
-    if host_of(&firefox).as_deref() != Some(dir.join("siler-nmhost").to_string_lossy().as_ref()) {
+    let ours = dir.join("siler-nmhost").to_string_lossy().into_owned();
+    let used = targets()
+        .iter()
+        .any(|(_, _, path)| host_of(path).as_deref() == Some(ours.as_str()));
+    if !used {
         return;
     }
     let current = std::fs::read(dir.join("siler-app")).ok();
@@ -228,19 +389,35 @@ pub fn install() -> std::io::Result<Vec<PathBuf>> {
             )
         })?,
     };
-    let manifest = serde_json::json!({
-        "name": HOST_NAME,
-        "description": "Siler download manager",
-        "path": host,
-        "type": "stdio",
-        "allowed_extensions": [EXTENSION_ID],
-    });
-    let bytes = serde_json::to_vec_pretty(&manifest)?;
     let mut written = Vec::new();
-    for (_, path) in targets() {
+    for (_, family, path) in targets() {
+        let bytes = serde_json::to_vec_pretty(&manifest_json(&host, family))?;
         std::fs::create_dir_all(path.parent().expect("has parent"))?;
         std::fs::write(&path, &bytes)?;
         written.push(path);
     }
     Ok(written)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn manifests_per_family() {
+        let host = Path::new("/usr/bin/siler-nmhost");
+        let f = manifest_json(host, Family::Firefox);
+        assert_eq!(f["allowed_extensions"][0], EXTENSION_ID);
+        assert!(f.get("allowed_origins").is_none());
+        let c = manifest_json(host, Family::Chromium);
+        assert_eq!(
+            c["allowed_origins"][0],
+            "chrome-extension://legjbaodpdlommbgpdfcmogjedfgpjae/"
+        );
+        assert_eq!(c["path"], "/usr/bin/siler-nmhost");
+        assert!(
+            manifest_for(Path::new("/h/.config/chromium"), Family::Chromium)
+                .ends_with("NativeMessagingHosts/com.siler.nmhost.json")
+        );
+    }
 }

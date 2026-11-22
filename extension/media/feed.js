@@ -208,12 +208,48 @@ const Feed = (() => {
     filter.onerror = () => done(null);
   }
 
+  /**
+   * The start of a manifest's body: read as it passes in Firefox; in Chromium, which can't,
+   * fetched once more with the page's cookies.
+   */
+  function readManifest(d, done) {
+    if (SILER_GECKO) return peek(d.requestId, MANIFEST_PEEK, done);
+    fetch(d.url, { credentials: "include", cache: "force-cache" })
+      .then(async (r) => {
+        if (!r.ok || !r.body) return done(null);
+        const reader = r.body.getReader();
+        const parts = [];
+        let kept = 0;
+        for (;;) {
+          const { value, done: end } = await reader.read();
+          if (end) break;
+          kept += value.length;
+          if (kept > MANIFEST_PEEK) {
+            reader.cancel().catch(() => {});
+            return done(null);
+          }
+          parts.push(value);
+        }
+        const all = new Uint8Array(kept);
+        let at = 0;
+        for (const p of parts) {
+          all.set(p, at);
+          at += p.length;
+        }
+        done(new TextDecoder("utf-8").decode(all));
+      })
+      .catch(() => done(null));
+  }
+
+  /** The page a request belongs to (Chromium only says its origin). */
+  const pageOf = (d) => d.documentUrl || d.originUrl || d.initiator || "";
+
   const MEDIA_REQUESTS = { urls: ["<all_urls>"], types: ["xmlhttprequest", "media", "object", "other"] };
 
   browser.webRequest.onHeadersReceived.addListener(
     (d) => {
       if (d.tabId < 0) return {};
-      const page = d.documentUrl || d.originUrl || "";
+      const page = pageOf(d);
       if (!watching(page)) return {};
       const h = headerMap(d.responseHeaders);
       const c = classify({
@@ -238,7 +274,7 @@ const Feed = (() => {
         add(d.tabId, [{ ...base, kind: "file", size: c.size, mime: c.mime }]);
         return {};
       }
-      peek(d.requestId, MANIFEST_PEEK, (text) => {
+      readManifest(d, (text) => {
         const info = text == null ? null : inspectManifest(c.kind, text);
         if (text != null && !info) return; // not a manifest after all
         const children = (info?.children || []).map((u) => {
@@ -248,33 +284,38 @@ const Feed = (() => {
             return null;
           }
         });
-        addStream(d.tabId, { ...base, kind: c.kind, master: info?.master ?? true, height: info?.height ?? null, children: children.filter(Boolean) });
+        addStream(d.tabId, { ...base, kind: c.kind, master: info?.master ?? true, height: info?.height ?? null, live: !!info?.live, children: children.filter(Boolean) });
       });
       return {};
     },
     MEDIA_REQUESTS,
-    ["blocking", "responseHeaders"],
+    SILER_GECKO ? ["blocking", "responseHeaders"] : ["responseHeaders"],
   );
 
+  /** Videos in the answer of a site's API (`url`), seen in a tab's frame. */
+  function fromSiteAnswer(tabId, frameId, url, text, page, storeId) {
+    const site = siteOf(url);
+    if (!text || !recogniserOn(site?.id) || !watching(page)) return;
+    browser.tabs
+      .get(tabId)
+      .then((tab) => {
+        const pageUrl = site.id === "vimeo" ? page : tab.url;
+        const found = fromBody(url, text, pageUrl).map((c) => ({ ...c, frameId, storeId: storeId || null }));
+        add(tabId, found);
+      })
+      .catch(() => {});
+  }
+
   // Site APIs whose answers carry the videos (Vimeo's player config, Facebook's and
-  // Instagram's GraphQL, TikTok's item lists).
-  browser.webRequest.onBeforeRequest.addListener(
+  // Instagram's GraphQL, TikTok's item lists). Firefox reads them as they pass; Chromium
+  // gets them from hook.js in the page (see `fromPage`).
+  if (SILER_GECKO) browser.webRequest.onBeforeRequest.addListener(
     (d) => {
       if (d.tabId < 0) return {};
       const site = siteOf(d.url);
       const page = d.documentUrl || d.originUrl || "";
       if (!recogniserOn(site?.id) || !watching(page)) return {};
-      peek(d.requestId, BODY_MAX, (text) => {
-        if (!text) return;
-        browser.tabs
-          .get(d.tabId)
-          .then((tab) => {
-            const pageUrl = site.id === "vimeo" ? page : tab.url;
-            const found = fromBody(d.url, text, pageUrl).map((c) => ({ ...c, frameId: d.frameId, storeId: d.cookieStoreId || null }));
-            add(d.tabId, found);
-          })
-          .catch(() => {});
-      });
+      peek(d.requestId, BODY_MAX, (text) => fromSiteAnswer(d.tabId, d.frameId, d.url, text, page, d.cookieStoreId));
       return {};
     },
     { urls: BODY_URLS, types: ["xmlhttprequest", "other", "sub_frame"] },
@@ -351,7 +392,7 @@ const Feed = (() => {
 
   async function youtubeItem(tab, cand) {
     const id = cand.ids?.[0];
-    if (!id) throw new Error("This YouTube page has no video");
+    if (!id) throw new Error(silerT("feedNoYouTubeVideo"));
     const libs = await youtubeLibs();
     const { ytPlayer = null } = await browser.storage.local.get("ytPlayer").catch(() => ({}));
     const [res] = await browser.scripting.executeScript({
@@ -361,7 +402,7 @@ const Feed = (() => {
       args: [{ videoId: id, clients: Siler.youtube.clients(), libs, cached: ytPlayer }],
     });
     const r = res?.result;
-    if (!r?.ok) throw new Error(r?.error || "YouTube didn't answer");
+    if (!r?.ok) throw new Error(r?.error || silerT("feedYouTubeNoAnswer"));
     if (r.preprocessed) browser.storage.local.set({ ytPlayer: r.preprocessed }).catch(() => {});
     const reasons = [];
     for (const answer of r.clients) {
@@ -392,9 +433,9 @@ const Feed = (() => {
       console.info(`Siler: YouTube ${id} via the ${answer.name} client`);
       return out.item;
     }
-    if (reasons.length) throw new Error(`YouTube says: ${reasons[0]}`);
-    if (r.solverError) throw new Error(`YouTube's player code couldn't be run (${r.solverError})`);
-    throw new Error("YouTube offered no formats Siler can download for this video");
+    if (reasons.length) throw new Error(silerT("feedYouTubeSays", [reasons[0]]));
+    if (r.solverError) throw new Error(silerT("feedSolverFailed", [String(r.solverError)]));
+    throw new Error(silerT("feedNoFormats"));
   }
 
   // ------------------------------------------------------------ hand-over
@@ -415,11 +456,11 @@ const Feed = (() => {
   async function itemFor(tab, c) {
     const hints = await appTakesHints();
     if (c.site === "youtube") {
-      if (!hints) throw new Error("Update Siler to version 0.6.0 or later to download YouTube videos");
+      if (!hints) throw new Error(silerT("feedUpdateForYouTube"));
       return youtubeItem(tab, c);
     }
     if (c.hint?.manifest && !hints) {
-      throw new Error("Update Siler to version 0.6.0 or later to download videos from this site");
+      throw new Error(silerT("feedUpdateForSite"));
     }
     // A recognised video is named by its title, or else by the page's. Facebook's own
     // titles are often internal names, so its page's title comes first for its own video.
@@ -486,7 +527,7 @@ const Feed = (() => {
     const tab = await browser.tabs.get(tabId);
     const items = await list(tabId);
     const chosen = keys.map((k) => items.find((i) => i.key === k)).filter(Boolean);
-    if (!chosen.length) throw new Error("Those videos are gone from the page");
+    if (!chosen.length) throw new Error(silerT("feedVideosGone"));
     const out = [];
     for (const c of chosen) out.push(await itemFor(tab, c));
     return handOver(out);
@@ -522,7 +563,7 @@ const Feed = (() => {
         if (hit) return itemFor(tab, hit);
         // Several videos and nothing says which one was clicked: never send another one.
         if (mine.length > 1) {
-          throw new Error(`Siler couldn't tell which of this page's ${site.name} videos you clicked. Open the post (its date links to it), then try again.`);
+          throw new Error(silerT("feedWhichVideo", [site.name]));
         }
       }
     }
@@ -544,9 +585,17 @@ const Feed = (() => {
       streams[0] ||
       items.find((c) => c.kind === "file" && c.frameId === frameId) ||
       items.find((c) => c.site);
-    if (!hit) throw new Error("No video found here yet. Play it for a moment, then try again.");
+    if (!hit) throw new Error(silerT("feedNoVideoYet"));
     return itemFor(tab, hit);
   }
 
-  return { forPopup, download, forVideo, scan, list, add, clear };
+  /** Chromium: a site API's answer copied from the page by hook.js. */
+  function fromPage(tab, frameId, url, text, pageUrl) {
+    if (!tab?.id || typeof url !== "string" || typeof text !== "string" || text.length > BODY_MAX) return;
+    // Only the addresses Firefox would read too.
+    if (!BODY_URLS.some((p) => new RegExp("^" + p.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") + "$").test(url))) return;
+    fromSiteAnswer(tab.id, frameId ?? 0, url, text, pageUrl || tab.url, tab.cookieStoreId);
+  }
+
+  return { forPopup, download, forVideo, scan, list, add, clear, fromPage };
 })();

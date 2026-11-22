@@ -17,6 +17,10 @@ use crate::error::ParseError;
 pub enum ManifestKind {
     Hls,
     Dash,
+    /// Adobe HTTP Dynamic Streaming (F4M).
+    Hds,
+    /// An RTMP or MMS stream: no manifest, recorded by FFmpeg.
+    Stream,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,6 +53,8 @@ pub enum SegmentContainer {
     Ac3,
     Vtt,
     Ttml,
+    /// Adobe HDS fragments: boxes whose `mdat` holds FLV tags; joined into an FLV file.
+    F4f,
     Unknown,
 }
 
@@ -64,6 +70,7 @@ impl SegmentContainer {
             SegmentContainer::Ac3 => "ac3",
             SegmentContainer::Vtt => "vtt",
             SegmentContainer::Ttml => "ttml",
+            SegmentContainer::F4f => "flv",
             SegmentContainer::Unknown => "bin",
         }
     }

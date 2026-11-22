@@ -31,11 +31,12 @@ mod segment;
 mod settings;
 mod store;
 mod task;
+mod transport;
 mod types;
 pub mod zip;
 
 pub use category::Category;
-pub use error::{Error, MediaError};
+pub use error::{Error, ErrorArgs, MediaError};
 pub use manager::Engine;
 pub use media::{
     FfmpegStatus, HintSubtitle, InlineManifest, JobKind, MediaInfo, MediaKind, MediaProbe,
@@ -47,10 +48,12 @@ pub use queue::{AfterDone, MAIN_QUEUE, Queue};
 pub use scheduler::Schedule;
 pub use segment::Segment;
 pub use settings::{
-    AfterDownload, CategoryRule, ServerLimit, Settings, SoundSettings, default_categories,
+    AfterDownload, CategoryRule, ColumnSetting, ServerLimit, Settings, SoundSettings, UiSettings,
+    default_categories,
 };
 pub use siler_media::select::{ContainerChoice, Selection, SubtitleMode};
 pub use siler_media::{ManifestKind, TrackId};
+pub use transport::login_key;
 pub use types::*;
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;

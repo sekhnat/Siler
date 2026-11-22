@@ -179,7 +179,8 @@ Siler.media = (() => {
   /** A short label for a candidate: "HLS · up to 1080p", "MP4 · 24 MB". */
   function label(c) {
     const parts = [];
-    if (c.kind === "hls") parts.push("HLS stream");
+    if (c.live) parts.push("Live: recorded until you press Finish");
+    else if (c.kind === "hls") parts.push("HLS stream");
     else if (c.kind === "dash") parts.push("DASH stream");
     else if (c.kind === "site") parts.push(c.siteName || "Video");
     else parts.push((c.ext || extOf(c.url) || "file").toUpperCase());

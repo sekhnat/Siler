@@ -93,7 +93,20 @@ pub(crate) fn join_track(work: &Path, track: &Track) -> Result<PathBuf> {
     {
         use std::io::Write;
         let mut file = std::io::BufWriter::new(std::fs::File::create(&part)?);
+        let f4f = track.container == SegmentContainer::F4f;
+        if f4f {
+            // HDS: the FLV tags of every fragment, after an FLV header.
+            file.write_all(&siler_media::hds::FLV_HEADER)?;
+        }
         for p in &files {
+            if f4f {
+                let bytes =
+                    std::fs::read(p).map_err(|_| Error::Media(MediaError::SegmentInvalid))?;
+                let tags = siler_media::hds::flv_tags(&bytes)
+                    .map_err(|_| Error::Media(MediaError::SegmentInvalid))?;
+                file.write_all(&tags)?;
+                continue;
+            }
             let mut src =
                 std::fs::File::open(p).map_err(|_| Error::Media(MediaError::SegmentInvalid))?;
             std::io::copy(&mut src, &mut file)?;
@@ -382,6 +395,8 @@ async fn streamed(
     for (i, s) in tracks.iter().enumerate() {
         let path = match one_file(work, s.track)? {
             Some(p) => p,
+            // HDS fragments are rewritten while they are joined: not through a pipe.
+            None if s.track.container == SegmentContainer::F4f => join_track(work, s.track)?,
             None => {
                 let files = pieces_of(work, s.track)?;
                 if feeds.is_empty() {

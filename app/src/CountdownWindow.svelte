@@ -1,22 +1,16 @@
 <script lang="ts">
+  import { t } from "./lib/i18n";
   import { Moon, Power, LogOut, Snowflake } from "@lucide/svelte";
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { onMount } from "svelte";
-  import { api, type AfterDone, type PendingPower } from "./lib/api";
+  import { api, type PendingPower } from "./lib/api";
 
   /** Counts down before Siler puts the computer to sleep or shuts it down. */
   let pending = $state<PendingPower | null>(null);
   let deadline = 0;
   let left = $state(0);
 
-  const VERB: Record<AfterDone, string> = {
-    nothing: "",
-    quit: "quit",
-    sleep: "go to sleep",
-    hibernate: "hibernate",
-    power_off: "shut down",
-  };
   const ICON = { nothing: Power, quit: LogOut, sleep: Moon, hibernate: Snowflake, power_off: Power };
 
   function set(p: PendingPower | null) {
@@ -32,9 +26,9 @@
   onMount(() => {
     api.powerPending().then(set);
     const unlisten = listen<PendingPower | null>("power-countdown", (e) => set(e.payload));
-    const t = setInterval(() => (left = Math.max(0, Math.ceil((deadline - Date.now()) / 1000))), 250);
+    const timer = setInterval(() => (left = Math.max(0, Math.ceil((deadline - Date.now()) / 1000))), 250);
     return () => {
-      clearInterval(t);
+      clearInterval(timer);
       unlisten.then((f) => f());
     };
   });
@@ -49,16 +43,16 @@
     <div class="top">
       <div class="ring"><Icon size={22} /></div>
       <div class="min">
-        <div class="title">The computer will {VERB[pending.action]} in <b>{left}</b> s</div>
+        <div class="title">{t("countdown-title", { action: pending.action })} <b>{t("countdown-seconds", { s: left })}</b></div>
         <div class="hint">{pending.reason}.</div>
       </div>
     </div>
     <div class="bar"><span style:width="{(left / 60) * 100}%"></span></div>
     <div class="actions">
-      <button class="btn btn-ghost" onclick={() => api.powerNow()}>{VERB[pending.action] ? `${VERB[pending.action][0].toUpperCase()}${VERB[pending.action].slice(1)} now` : "Now"}</button>
+      <button class="btn btn-ghost" onclick={() => api.powerNow()}>{t("countdown-now", { action: pending.action })}</button>
       <span class="grow"></span>
       <!-- svelte-ignore a11y_autofocus -->
-      <button class="btn btn-primary" autofocus onclick={() => api.powerCancel()}>Cancel</button>
+      <button class="btn btn-primary" autofocus onclick={() => api.powerCancel()}>{t("countdown-cancel")}</button>
     </div>
   </div>
 {/if}

@@ -7,14 +7,15 @@
     ],
     "category": "Utility",
     "shortDescription": "Download manager",
-    "longDescription": "A download manager with segmented downloads, queues and schedules, video downloads (HLS, DASH, YouTube and more) and a Firefox extension.",
+    "longDescription": "A download manager with segmented downloads, FTP and SFTP, queues and schedules, video downloads and live recording (HLS, DASH, HDS, RTMP, YouTube and more) and extensions for Firefox and Chromium-based browsers.",
     "externalBin": [
       "binaries/siler-nmhost",
       "binaries/ffmpeg",
       "binaries/ffprobe"
     ],
     "resources": {
-      "resources/siler-integration.xpi": "siler-integration.xpi"
+      "resources/siler-integration.xpi": "siler-integration.xpi",
+      "../../dist/extension-chromium/": "chromium-extension/"
     },
     "linux": {
       "appimage": {

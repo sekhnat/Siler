@@ -8,15 +8,16 @@ use std::sync::OnceLock;
 use tauri::{AppHandle, Manager};
 
 use crate::AppState;
+use crate::i18n::tr;
 
 static HANDLE: OnceLock<Handle<Tray>> = OnceLock::new();
 
 const WHEN_DONE: [(AfterDone, &str); 5] = [
-    (AfterDone::Nothing, "Do nothing"),
-    (AfterDone::Quit, "Quit Siler"),
-    (AfterDone::Sleep, "Sleep"),
-    (AfterDone::Hibernate, "Hibernate"),
-    (AfterDone::PowerOff, "Shut down"),
+    (AfterDone::Nothing, "tray-do-nothing"),
+    (AfterDone::Quit, "tray-quit-siler"),
+    (AfterDone::Sleep, "tray-sleep"),
+    (AfterDone::Hibernate, "tray-hibernate"),
+    (AfterDone::PowerOff, "tray-shut-down"),
 ];
 
 pub struct Tray {
@@ -93,15 +94,19 @@ impl ksni::Tray for Tray {
             .as_ref()
             .is_some_and(|s| s.engine.settings().clipboard_monitor);
         vec![
-            item("Show Siler", crate::show_main),
+            item(&tr("tray-show-siler"), crate::show_main),
             MenuItem::Separator,
-            item("Pause all", move |app| engine(app, |e| e.pause_all())),
-            item("Resume all", move |app| engine(app, |e| e.resume_all())),
-            item("Start queue", move |app| {
+            item(&tr("tray-pause-all"), move |app| {
+                engine(app, |e| e.pause_all())
+            }),
+            item(&tr("tray-resume-all"), move |app| {
+                engine(app, |e| e.resume_all())
+            }),
+            item(&tr("tray-start-queue"), move |app| {
                 engine(app, |e| e.start_queue(MAIN_QUEUE))
             }),
             SubMenu {
-                label: "When downloads finish".into(),
+                label: tr("tray-when-downloads-finish"),
                 submenu: vec![
                     RadioGroup {
                         selected: WHEN_DONE
@@ -114,7 +119,7 @@ impl ksni::Tray for Tray {
                         options: WHEN_DONE
                             .iter()
                             .map(|(_, label)| RadioItem {
-                                label: (*label).into(),
+                                label: tr(label),
                                 ..Default::default()
                             })
                             .collect(),
@@ -125,7 +130,7 @@ impl ksni::Tray for Tray {
             }
             .into(),
             CheckmarkItem {
-                label: "Watch the clipboard for links".into(),
+                label: tr("tray-watch-the-clipboard"),
                 checked: clipboard,
                 activate: Box::new(|t: &mut Tray| {
                     if let Some(state) = t.app.try_state::<AppState>() {
@@ -144,7 +149,7 @@ impl ksni::Tray for Tray {
             }
             .into(),
             MenuItem::Separator,
-            item("Quit", crate::request_quit),
+            item(&tr("tray-quit"), crate::request_quit),
         ]
     }
 }
@@ -162,7 +167,7 @@ pub async fn spawn(app: AppHandle) -> bool {
     let tray = Tray {
         app,
         icon,
-        status: "No active downloads".into(),
+        status: tr("tray-no-active-downloads"),
     };
     match tray.spawn().await {
         Ok(handle) => {

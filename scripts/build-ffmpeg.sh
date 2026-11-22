@@ -33,13 +33,17 @@ if [ ! -d "$src" ]; then
 fi
 
 # What Siler needs (§12.3) and what its fixtures and reconstruction use: H.264, HEVC, AV1 and
-# VP9 video, AAC, AC-3, E-AC-3, MP3 and Opus audio, in MPEG-TS, MP4 and Matroska/WebM. Nothing
-# that needs a library: no network, no zlib, no hardware. Subtitle encoders are for MP4's
-# mov_text. Nothing here needs --enable-gpl, so the build is LGPL-2.1-or-later.
-demuxers="mpegts,mov,matroska,aac,mp3,ac3,eac3,webvtt,srt,concat"
+# VP9 video, AAC, AC-3, E-AC-3, MP3 and Opus audio, in MPEG-TS, MP4 and Matroska/WebM, plus
+# FLV (Adobe HDS fragments and RTMP) and ASF (MMS). Nothing that needs a library: no zlib, no
+# TLS, no hardware. The network is only for recording RTMP and MMS streams (rtmp, rtmpt, mmsh,
+# mmst); Siler resolves the server's name itself and hands FFmpeg an address, so the static
+# binary never needs the system's name service. Subtitle encoders are for MP4's mov_text.
+# Nothing here needs --enable-gpl, so the build is LGPL-2.1-or-later.
+demuxers="mpegts,mov,matroska,aac,mp3,ac3,eac3,webvtt,srt,concat,flv,live_flv,asf"
+protocols="file,pipe,tcp,http,rtmp,rtmpt,mmsh,mmst"
 muxers="mp4,matroska,mpegts,webvtt,srt"
-decoders="h264,hevc,aac,mp3,ac3,eac3,opus,webvtt,subrip,movtext"
-parsers="h264,hevc,av1,vp9,aac,ac3,mpegaudio,opus"
+decoders="h264,hevc,aac,mp3,ac3,eac3,opus,webvtt,subrip,movtext,wmav2,wmv3,vc1,flv"
+parsers="h264,hevc,av1,vp9,aac,ac3,mpegaudio,opus,vc1"
 bsfs="aac_adtstoasc,h264_mp4toannexb,hevc_mp4toannexb,extract_extradata,vp9_superframe,null"
 encoders="movtext,webvtt,srt,subrip"
 
@@ -55,7 +59,7 @@ echo "==> Configuring"
     --disable-autodetect \
     --disable-doc \
     --disable-debug \
-    --disable-network \
+    --enable-network \
     --disable-x86asm \
     --disable-shared \
     --enable-static \
@@ -63,8 +67,7 @@ echo "==> Configuring"
     --enable-ffmpeg \
     --enable-ffprobe \
     --disable-ffplay \
-    --enable-protocol=file \
-    --enable-protocol=pipe \
+    --enable-protocol="$protocols" \
     --enable-demuxer="$demuxers" \
     --enable-muxer="$muxers" \
     --enable-decoder="$decoders" \
@@ -87,6 +90,8 @@ make install >install.log 2>&1
 
 cp "$out/bin/ffmpeg" "$out/bin/ffprobe" "$dest/"
 chmod 755 "$dest/ffmpeg" "$dest/ffprobe"
+# The license that comes with the binaries (LGPL-2.1-or-later).
+cp "$src/COPYING.LGPLv2.1" "$dest/ffmpeg-LICENSE.txt"
 
 echo "==> Built: $("$dest/ffmpeg" -hide_banner -version | head -1)"
 echo "    $(file -b "$dest/ffmpeg" | cut -c1-120)"

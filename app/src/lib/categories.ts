@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import type { Component } from "svelte";
 import { FileArchive, FileText, Film, Image, Music, Package, File } from "@lucide/svelte";
 import type { Category, CategoryRule, Status } from "./api";
@@ -10,26 +11,26 @@ export interface CategoryMeta {
 }
 
 export const CATEGORIES: CategoryMeta[] = [
-  { key: "video", label: "Video", icon: Film, color: "#f472b6" },
-  { key: "music", label: "Music", icon: Music, color: "#a78bfa" },
-  { key: "images", label: "Images", icon: Image, color: "#34d399" },
-  { key: "documents", label: "Documents", icon: FileText, color: "#60a5fa" },
-  { key: "compressed", label: "Compressed", icon: FileArchive, color: "#fbbf24" },
-  { key: "programs", label: "Programs", icon: Package, color: "#22d3ee" },
-  { key: "other", label: "Other", icon: File, color: "#94a3b8" },
+  { key: "video", label: t("categories-video"), icon: Film, color: "#f472b6" },
+  { key: "music", label: t("categories-music"), icon: Music, color: "#a78bfa" },
+  { key: "images", label: t("categories-images"), icon: Image, color: "#34d399" },
+  { key: "documents", label: t("categories-documents"), icon: FileText, color: "#60a5fa" },
+  { key: "compressed", label: t("categories-compressed"), icon: FileArchive, color: "#fbbf24" },
+  { key: "programs", label: t("categories-programs"), icon: Package, color: "#22d3ee" },
+  { key: "other", label: t("categories-other"), icon: File, color: "#94a3b8" },
 ];
 
 export const categoryMeta = (c: Category): CategoryMeta =>
   CATEGORIES.find((x) => x.key === c) ?? CATEGORIES[CATEGORIES.length - 1];
 
 export const STATUS_LABEL: Record<Status, string> = {
-  waiting: "Waiting",
-  queued: "Queued",
-  probing: "Connecting",
-  downloading: "Downloading",
-  paused: "Paused",
-  completed: "Completed",
-  failed: "Failed",
+  waiting: t("categories-waiting"),
+  queued: t("categories-queued"),
+  probing: t("categories-connecting"),
+  downloading: t("categories-downloading"),
+  paused: t("categories-paused"),
+  completed: t("categories-completed"),
+  failed: t("categories-failed"),
 };
 
 export const isActive = (s: Status) => s === "probing" || s === "downloading";

@@ -1,8 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "Siler Integration",
-  "version": "0.3.6",
-  "description": "Send downloads and videos on web pages to the Siler download manager for faster, resumable, multi-connection downloading.",
+  "name": "__MSG_extName__",
+  "version": "0.4.0",
+  "default_locale": "en",
+  "description": "__MSG_extDescription__",
   "browser_specific_settings": {
     "gecko": {
       "id": "siler@siler.app",
@@ -38,6 +39,7 @@
   ],
   "background": {
     "scripts": [
+      "compat.js",
       "shared.js",
       "media/common.js",
       "media/sites.js",
@@ -53,6 +55,7 @@
         "<all_urls>"
       ],
       "js": [
+        "compat.js",
         "content.js"
       ],
       "run_at": "document_start",
@@ -60,7 +63,7 @@
     }
   ],
   "action": {
-    "default_title": "Siler",
+    "default_title": "__MSG_actionTitle__",
     "default_popup": "popup/popup.html",
     "default_icon": {
       "16": "icons/icon-16.png",

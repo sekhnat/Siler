@@ -2,6 +2,7 @@ mod autostart;
 mod clipboard;
 mod commands;
 mod desktop;
+mod i18n;
 mod inhibit;
 mod integration;
 mod ipc_server;
@@ -13,6 +14,7 @@ mod power;
 mod sound;
 mod tools;
 mod tray;
+mod updates;
 
 use serde::Serialize;
 use siler_core::{Engine, Event, MAIN_QUEUE};
@@ -26,6 +28,7 @@ use tauri_plugin_notification::{Action, ActionType, NotificationExt};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::watch;
 
+use crate::i18n::{tr, tr_args};
 use ipc_server::{AddOptions, Origin};
 
 /// A download handed over by the browser that is waiting for the user to confirm it.
@@ -142,7 +145,7 @@ pub fn open_add_window(app: &AppHandle) {
         return;
     }
     let built = WebviewWindowBuilder::new(app, "add", WebviewUrl::App("index.html#add".into()))
-        .title("New download — Siler")
+        .title(tr("window-new-download"))
         .inner_size(640.0, 520.0)
         .min_inner_size(540.0, 440.0)
         .always_on_top(true)
@@ -189,8 +192,8 @@ fn setup_notifications(app: &AppHandle) {
     let _ = n.register_action_types(vec![
         ActionType::builder(COMPLETE_ACTIONS)
             .actions(vec![
-                Action::builder("open", "Open").build(),
-                Action::builder("folder", "Show in folder").build(),
+                Action::builder("open", tr("notify-open")).build(),
+                Action::builder("folder", tr("notify-show-in-folder")).build(),
             ])
             .build(),
     ]);
@@ -268,14 +271,50 @@ async fn login_required(
     if visible {
         let _ = app.emit("ask-login", id);
     } else {
-        let name = filename.as_deref().unwrap_or("A download");
+        let name = filename.clone().unwrap_or_else(|| tr("notify-a-download"));
         let _ = app
             .notification()
             .builder()
-            .title("Login needed")
+            .title(tr("notify-login-needed"))
             .body(format!(
-                "{name}\n{} asks for a username and password",
-                request.host
+                "{name}\n{}",
+                tr_args(
+                    "notify-asks-for-a-login",
+                    vec![("host", request.host.as_str().into())]
+                )
+            ))
+            .extra("download_id", id)
+            .extra("login", true)
+            .show();
+    }
+}
+
+/// An SFTP server's key has to be trusted: asked in the window, or by a notification.
+fn host_key_unknown(
+    app: &AppHandle,
+    id: i64,
+    filename: Option<&str>,
+    request: &siler_core::HostKeyRequest,
+) {
+    let visible = app
+        .try_state::<AppState>()
+        .is_some_and(|s| s.ui_visible.load(Ordering::Relaxed));
+    if visible {
+        let _ = app.emit("ask-login", id);
+    } else {
+        let name = filename
+            .map(String::from)
+            .unwrap_or_else(|| tr("notify-a-download"));
+        let _ = app
+            .notification()
+            .builder()
+            .title(tr("notify-check-the-servers-key"))
+            .body(format!(
+                "{name}\n{}",
+                tr_args(
+                    "notify-not-connected-before",
+                    vec![("server", request.server.as_str().into())]
+                )
             ))
             .extra("download_id", id)
             .extra("login", true)
@@ -285,16 +324,18 @@ async fn login_required(
 
 fn tray_status(items: &[siler_core::ProgressItem], total_speed: u64) -> String {
     if items.is_empty() {
-        return "No active downloads".into();
+        return tr("tray-no-active-downloads");
     }
     let (done, total) = items
         .iter()
         .filter_map(|i| i.total_size.map(|t| (i.downloaded, t)))
         .fold((0u64, 0u64), |(d, t), (a, b)| (d + a, t + b));
-    let mut s = format!(
-        "{} downloading · {}/s",
-        items.len(),
-        human_bytes(total_speed)
+    let mut s = tr_args(
+        "tray-downloading",
+        vec![
+            ("count", items.len().into()),
+            ("speed", human_bytes(total_speed).into()),
+        ],
     );
     if let Some(pct) = (done * 100).checked_div(total) {
         s.push_str(&format!(" · {pct}%"));
@@ -355,7 +396,10 @@ fn forward_engine_events(app: AppHandle, engine: Engine, activity: watch::Sender
                             power::schedule(
                                 &app,
                                 *after_done,
-                                format!("The queue “{name}” has finished"),
+                                tr_args(
+                                    "power-queue-finished",
+                                    vec![("name", name.as_str().into())],
+                                ),
                             );
                             power::check_all_done(&app);
                         }
@@ -364,17 +408,23 @@ fn forward_engine_events(app: AppHandle, engine: Engine, activity: watch::Sender
                     if settings.notify_on_complete {
                         match &ev {
                             Event::Completed { id, filename, .. } => {
-                                notify(&app, "Download complete", filename, *id, false)
+                                notify(&app, &tr("notify-download-complete"), filename, *id, false)
                             }
                             Event::Failed {
                                 id,
                                 filename,
                                 error,
+                                code,
                             } => {
-                                let name = filename.as_deref().unwrap_or("Download");
+                                let name =
+                                    filename.clone().unwrap_or_else(|| tr("notify-download"));
+                                let error = code
+                                    .as_ref()
+                                    .map(|c| i18n::error_code(c, error))
+                                    .unwrap_or_else(|| error.clone());
                                 notify(
                                     &app,
-                                    "Download failed",
+                                    &tr("notify-download-failed"),
                                     &format!("{name}\n{error}"),
                                     *id,
                                     true,
@@ -399,6 +449,15 @@ fn forward_engine_events(app: AppHandle, engine: Engine, activity: watch::Sender
                             filename.clone(),
                             request.clone(),
                         ));
+                        continue;
+                    }
+                    if let Event::HostKeyUnknown {
+                        id,
+                        filename,
+                        request,
+                    } = &ev
+                    {
+                        host_key_unknown(&app, *id, filename.as_deref(), request);
                         continue;
                     }
                     if let Event::Progress { items, total_speed } = &ev {
@@ -516,7 +575,12 @@ fn parse_args(argv: &[String], cwd: &Path) -> Result<Args, String> {
             "--import" => a.imports.push(cwd.join(value("--import")?)),
             "-h" | "--help" => a.help = true,
             "-V" | "--version" => a.version = true,
-            s if s.starts_with("http://") || s.starts_with("https://") => a.urls.push(s.into()),
+            s if ["http://", "https://", "ftp://", "ftps://", "sftp://"]
+                .iter()
+                .any(|p| s.starts_with(p)) =>
+            {
+                a.urls.push(s.into())
+            }
             s if s.starts_with('-') => return Err(format!("unknown option {s}")),
             s if {
                 let l = s.to_ascii_lowercase();
@@ -632,6 +696,20 @@ fn open_engine(app: &tauri::App) -> Result<Engine, String> {
 
 fn main() {
     let argv: Vec<String> = std::env::args().collect();
+    // For packagers (scripts/make-tarball.sh): the native messaging host manifest for a
+    // browser family, with the host at the given path.
+    if let [_, flag, family, host] = argv.as_slice()
+        && flag == "--print-host-manifest"
+    {
+        match integration::host_manifest(family, std::path::Path::new(host)) {
+            Some(json) => println!("{json}"),
+            None => {
+                eprintln!("siler: the family is firefox or chromium");
+                std::process::exit(2);
+            }
+        }
+        return;
+    }
     if argv.iter().any(|a| a == "--install-integration") {
         // Used by scripts/install-dev.sh.
         let browsers = integration::install();
@@ -687,6 +765,7 @@ fn main() {
         .setup(move |app| {
             match open_engine(app) {
                 Ok(engine) => {
+                    i18n::init(&engine.settings().language);
                     let ffmpeg = engine.ffmpeg_status();
                     if ffmpeg.ok {
                         tracing::info!(
@@ -710,7 +789,12 @@ fn main() {
                     if let Ok(dir) = app.path().resource_dir() {
                         integration::set_resource_dir(dir);
                     }
-                    desktop::ensure();
+                    // A packaged install ships its own menu entry and icons.
+                    if updates::install_kind() != updates::InstallKind::Packaged {
+                        desktop::ensure();
+                    }
+                    updates::cleanup();
+                    updates::spawn(app.handle().clone());
                     autostart::ensure();
                     integration::refresh_appimage();
                     setup_notifications(app.handle());
@@ -830,6 +914,15 @@ fn main() {
             commands::request_quit,
             commands::quit_app,
             commands::submit_login,
+            commands::trust_host_key,
+            commands::finish_download,
+            commands::app_info,
+            commands::ui_language,
+            commands::chromium_extension,
+            commands::open_chromium_extensions,
+            commands::update_status,
+            commands::check_updates_now,
+            commands::install_update,
             commands::saved_logins,
             commands::forget_saved_login,
             commands::keyring_available,

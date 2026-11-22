@@ -158,7 +158,14 @@ pub(crate) struct Net {
     manual_any: RwLock<Client>,
     lookup: Arc<dyn Lookuper>,
     route: RwLock<ProxyRoute>,
+    /// The manual proxy's login, for FTP and SFTP connections made through it.
+    proxy_login: RwLock<crate::transport::dial::ProxyLogin>,
     hosts: Mutex<HashMap<String, Arc<HostAuth>>>,
+    /// Siler's own list of trusted SSH server keys (next to the database); `None` in tests
+    /// that never use SFTP.
+    pub(crate) known_hosts: RwLock<Option<std::path::PathBuf>>,
+    /// Idle FTP control connections, for the next range from the same server.
+    pub(crate) ftp_pool: crate::transport::ftp::Pool,
 }
 
 /// How a client follows redirects and resolves names.
@@ -252,7 +259,10 @@ impl Net {
             manual_any: RwLock::new(manual_any),
             lookup,
             route: RwLock::new(ProxyRoute::default()),
+            proxy_login: RwLock::new(None),
             hosts: Mutex::new(HashMap::new()),
+            known_hosts: RwLock::new(None),
+            ftp_pool: Default::default(),
         };
         net.configure(proxy, password);
         Ok(net)
@@ -285,6 +295,7 @@ impl Net {
             }
         };
         tracing::info!("proxy: {}", route.summary());
+        *self.proxy_login.write().unwrap() = login.map(|(u, p)| (u.to_string(), p.to_string()));
         *self.client.write().unwrap() = client;
         *self.manual.write().unwrap() = manual;
         *self.manual_any.write().unwrap() = manual_any;
@@ -309,8 +320,29 @@ impl Net {
         self.route.read().unwrap().clone()
     }
 
+    /// A TCP connection for FTP or SFTP, through the proxy when there is one.
+    pub(crate) async fn dial(
+        &self,
+        host: &str,
+        port: u16,
+    ) -> std::io::Result<tokio::net::TcpStream> {
+        let route = self.route();
+        let login = self.proxy_login.read().unwrap().clone();
+        crate::transport::dial::dial(&route, &login, host, port).await
+    }
+
     pub fn auth_for(&self, url: &Url) -> Option<Arc<HostAuth>> {
-        self.hosts.lock().unwrap().get(&host_key(url)).cloned()
+        self.hosts
+            .lock()
+            .unwrap()
+            .get(&crate::transport::login_key(url))
+            .cloned()
+    }
+
+    /// The login known for a server, if any (FTP and SFTP use it directly).
+    pub(crate) fn login_for(&self, url: &Url) -> Option<Login> {
+        self.auth_for(url)
+            .and_then(|a| a.login.lock().unwrap().clone())
     }
 
     pub fn entry(&self, host: &str) -> Arc<HostAuth> {
@@ -340,7 +372,7 @@ impl Net {
             username: decode(url.username()),
             password: decode(url.password().unwrap_or("")),
         };
-        self.set_login(&host_key(url), Some(login));
+        self.set_login(&crate::transport::login_key(url), Some(login));
         let _ = url.set_username("");
         let _ = url.set_password(None);
     }

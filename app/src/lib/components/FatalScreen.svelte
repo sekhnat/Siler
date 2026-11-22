@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from "../i18n";
   import { FolderOpen, OctagonX, Power } from "@lucide/svelte";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { api } from "../api";
@@ -9,16 +10,16 @@
 
 <div class="screen">
   <div class="card">
-    <div class="brand"><Logo size={28} /> Siler</div>
+    <div class="brand"><Logo size={28} /> {t("fatal-screen-siler")}</div>
     <div class="icon"><OctagonX size={30} /></div>
-    <h1>Siler couldn't start</h1>
+    <h1>{t("fatal-screen-siler-couldn-t-start")}</h1>
     <pre class="selectable">{message}</pre>
     <p class="hint">
-      Your downloads are safe on disk. The log file has more details; check that the folder above exists and that you can write to it, then start Siler again.
+      {t("fatal-screen-your-downloads-are-safe-on-disk")}
     </p>
     <div class="actions">
-      <button class="btn" onclick={() => api.openLogFolder().catch(() => {})}><FolderOpen size={15} /> Open log folder</button>
-      <button class="btn btn-primary" onclick={() => getCurrentWindow().destroy()}><Power size={15} /> Quit</button>
+      <button class="btn" onclick={() => api.openLogFolder().catch(() => {})}><FolderOpen size={15} /> {t("fatal-screen-open-log-folder")}</button>
+      <button class="btn btn-primary" onclick={() => getCurrentWindow().destroy()}><Power size={15} /> {t("fatal-screen-quit")}</button>
     </div>
   </div>
 </div>

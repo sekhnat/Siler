@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>Siler options</title>
+    <title data-i18n="optionsTitle">Siler options</title>
     <link rel="stylesheet" href="../ui.css" />
     <link rel="stylesheet" href="options.css" />
   </head>
@@ -11,22 +11,22 @@
       <header>
         <img src="../icons/icon-96.png" alt="" width="48" height="48" />
         <div>
-          <h1>Siler Integration</h1>
-          <p class="muted">Firefox hands matching downloads to Siler for faster, resumable downloading.</p>
+          <h1 data-i18n="extName">Siler Integration</h1>
+          <p data-i18n="optionsIntro" class="muted">The browser hands matching downloads to Siler for faster, resumable downloading.</p>
         </div>
       </header>
 
       <section id="welcome" class="card highlight" hidden>
-        <h2>Finish setting up</h2>
+        <h2 data-i18n="optionsFinishSettingUp">Finish setting up</h2>
         <ol>
           <li id="step-perm">
-            Allow Siler to read download cookies on all sites, so protected downloads keep working.
-            <button id="grant" class="btn btn-primary">Allow access</button>
-            <span id="perm-ok" class="ok" hidden>✓ Granted</span>
+            <span data-i18n="optionsAllowCookies">Allow Siler to read download cookies on all sites, so protected downloads keep working.</span>
+            <button data-i18n="optionsAllowAccess" id="grant" class="btn btn-primary">Allow access</button>
+            <span data-i18n="optionsGranted" id="perm-ok" class="ok" hidden>✓ Granted</span>
           </li>
           <li id="step-host">
-            Connect to the Siler app. <span id="host-state" class="muted">Checking…</span>
-            <div class="muted small">If it's not installed: open Siler → Settings → Browser → Install.</div>
+            <span data-i18n="optionsConnect">Connect to the Siler app.</span> <span data-i18n="popupChecking" id="host-state" class="muted">Checking…</span>
+            <div data-i18n="optionsIfNotInstalled" class="muted small">If it's not installed: open Siler → Settings → Browser → Install.</div>
           </li>
         </ol>
       </section>
@@ -36,55 +36,55 @@
       <section class="card">
         <div class="row">
           <div>
-            <div class="label">Capture downloads</div>
-            <div class="muted small">Send matching downloads to Siler. Hold Alt while clicking a link to skip.</div>
+            <div data-i18n="popupCaptureDownloads" class="label">Capture downloads</div>
+            <div data-i18n="optionsSendMatching" class="muted small">Send matching downloads to Siler. Hold Alt while clicking a link to skip.</div>
           </div>
           <button id="enabled" class="switch" role="switch"></button>
         </div>
         <div class="row">
           <div>
-            <div class="label">Capture everything</div>
-            <div class="muted small">Ignore the file type rules below.</div>
+            <div data-i18n="optionsCaptureEverything" class="label">Capture everything</div>
+            <div data-i18n="optionsIgnoreRules" class="muted small">Ignore the file type rules below.</div>
           </div>
           <button id="captureAll" class="switch" role="switch"></button>
         </div>
         <div class="row">
           <div>
-            <div class="label">Match by content type</div>
-            <div class="muted small">Also capture video, audio and archive downloads by MIME type.</div>
+            <div data-i18n="optionsMatchByType" class="label">Match by content type</div>
+            <div data-i18n="optionsAlsoByMime" class="muted small">Also capture video, audio and archive downloads by MIME type.</div>
           </div>
           <button id="captureByMime" class="switch" role="switch"></button>
         </div>
         <div class="row">
           <div>
-            <div class="label">Tell me when a download stays in Firefox</div>
-            <div class="muted small">Show a notification when Siler can't take a download, and why.</div>
+            <div data-i18n="optionsTellMe" class="label">Tell me when a download stays in the browser</div>
+            <div data-i18n="optionsShowNotification" class="muted small">Show a notification when Siler can't take a download, and why.</div>
           </div>
           <button id="notifyFailures" class="switch" role="switch"></button>
         </div>
       </section>
 
       <section class="card">
-        <h2>Videos on pages</h2>
+        <h2 data-i18n="optionsVideosOnPages">Videos on pages</h2>
         <div class="row">
           <div>
-            <div class="label">Find videos on pages</div>
-            <div class="muted small">List the videos a page plays in the Siler menu, with their number on the toolbar button.</div>
+            <div data-i18n="optionsFindVideos" class="label">Find videos on pages</div>
+            <div data-i18n="optionsListVideos" class="muted small">List the videos a page plays in the Siler menu, with their number on the toolbar button.</div>
           </div>
           <button id="findVideos" class="switch" role="switch"></button>
         </div>
         <div class="row">
           <div>
-            <div class="label">Download button over videos</div>
-            <div class="muted small">Show a Download button when you point at a video.</div>
+            <div data-i18n="optionsDownloadButton" class="label">Download button over videos</div>
+            <div data-i18n="optionsShowDownloadButton" class="muted small">Show a Download button when you point at a video.</div>
           </div>
           <button id="videoButton" class="switch" role="switch"></button>
         </div>
         <div class="muted small sites-intro">
-          Most sites need nothing more. For these, Siler reads what the site's own player loads:
+          <span data-i18n="optionsMostSites">Most sites need nothing more. For these, Siler reads what the site's own player loads:</span>
         </div>
         <div class="row">
-          <div><div class="label">YouTube</div><div class="muted small">Runs YouTube's own player code in the page to finish the video links.</div></div>
+          <div><div class="label">YouTube</div><div data-i18n="optionsYouTubeHint" class="muted small">Runs YouTube's own player code in the page to finish the video links.</div></div>
           <button id="site_youtube" class="switch" role="switch"></button>
         </div>
         <div class="row">
@@ -107,26 +107,27 @@
 
       <section class="card">
         <label class="field">
-          <span class="label">File extensions</span>
+          <span data-i18n="optionsFileExtensions" class="label">File extensions</span>
           <textarea id="extensions" rows="4" spellcheck="false"></textarea>
         </label>
         <div class="grid">
           <label class="field">
-            <span class="label">Minimum size (MB)</span>
+            <span data-i18n="optionsMinimumSize" class="label">Minimum size (MB)</span>
             <input id="minSizeMB" type="number" min="0" step="1" />
           </label>
           <label class="field">
-            <span class="label">Never capture from these sites</span>
+            <span data-i18n="optionsNeverCapture" class="label">Never capture from these sites</span>
             <input id="blocklist" type="text" placeholder="example.com other.org" spellcheck="false" />
           </label>
         </div>
         <div class="actions">
-          <span id="saved" class="ok" hidden>Saved</span>
-          <button id="reset" class="btn">Reset to defaults</button>
-          <button id="save" class="btn btn-primary">Save</button>
+          <span data-i18n="optionsSaved" id="saved" class="ok" hidden>Saved</span>
+          <button data-i18n="optionsReset" id="reset" class="btn">Reset to defaults</button>
+          <button data-i18n="optionsSave" id="save" class="btn btn-primary">Save</button>
         </div>
       </section>
     </main>
+    <script src="../compat.js"></script>
     <script src="../shared.js"></script>
     <script src="options.js"></script>
   </body>

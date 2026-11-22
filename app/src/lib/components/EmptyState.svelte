@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from "../i18n";
   import { ClipboardPaste, Plus } from "@lucide/svelte";
 
   let { filtered, onadd }: { filtered: boolean; onadd: () => void } = $props();
@@ -35,14 +36,14 @@
     </svg>
   </div>
   {#if filtered}
-    <h3>Nothing here</h3>
-    <p>No downloads match this view.</p>
+    <h3>{t("empty-state-nothing-here")}</h3>
+    <p>{t("empty-state-no-downloads-match-this-view")}</p>
   {:else}
-    <h3>Ready when you are</h3>
-    <p>Add a link, paste one with <kbd>Ctrl</kbd>+<kbd>V</kbd>, or click a download in Firefox with the Siler extension installed.</p>
+    <h3>{t("empty-state-ready-when-you-are")}</h3>
+    <p>{t("empty-state-add-a-link-paste-one-with")} <kbd>{t("empty-state-ctrl")}</kbd>+<kbd>V</kbd>{t("empty-state-or-click-a-download-in-the-browser")}</p>
     <div class="cta">
-      <button class="btn btn-primary" onclick={onadd}><Plus size={16} /> Add URL</button>
-      <span class="hint"><ClipboardPaste size={13} /> Paste anywhere</span>
+      <button class="btn btn-primary" onclick={onadd}><Plus size={16} /> {t("empty-state-add-url")}</button>
+      <span class="hint"><ClipboardPaste size={13} /> {t("empty-state-paste-anywhere")}</span>
     </div>
   {/if}
 </div>

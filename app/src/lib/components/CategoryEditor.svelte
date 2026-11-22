@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from "../i18n";
   import { FolderOpen, RotateCcw, X } from "@lucide/svelte";
   import { open } from "@tauri-apps/plugin-dialog";
   import { api, type CategoryRule, type Settings } from "../api";
@@ -14,7 +15,7 @@
   }
 
   async function browse(rule: CategoryRule) {
-    const picked = await open({ directory: true, defaultPath: rule.folder ?? defaultFolder(rule), title: `${categoryMeta(rule.category).label} folder` });
+    const picked = await open({ directory: true, defaultPath: rule.folder ?? defaultFolder(rule), title: t("category-editor-folder-title", { category: categoryMeta(rule.category).label }) });
     if (typeof picked === "string") rule.folder = picked;
   }
 
@@ -54,8 +55,8 @@
 
 <div class="cats">
   <div class="intro">
-    <span class="hint">Files are sorted by extension. Each category can have its own folder.</span>
-    <button class="btn btn-ghost btn-sm" onclick={reset}><RotateCcw size={13} /> Reset all</button>
+    <span class="hint">{t("category-editor-files-are-sorted-by-extension-each")}</span>
+    <button class="btn btn-ghost btn-sm" onclick={reset}><RotateCcw size={13} /> {t("category-editor-reset-all")}</button>
   </div>
   {#each s.categories as rule (rule.category)}
     {@const meta = categoryMeta(rule.category)}
@@ -71,25 +72,25 @@
             spellcheck="false"
             oninput={(e) => (rule.folder = e.currentTarget.value.trim() || null)}
           />
-          <button class="icon-btn sm" title="Choose folder" onclick={() => browse(rule)}><FolderOpen size={14} /></button>
+          <button class="icon-btn sm" title={t("category-editor-choose-folder")} onclick={() => browse(rule)}><FolderOpen size={14} /></button>
           {#if rule.folder}
-            <button class="icon-btn sm" title="Use the default folder" onclick={() => (rule.folder = null)}><X size={14} /></button>
+            <button class="icon-btn sm" title={t("category-editor-use-the-default-folder")} onclick={() => (rule.folder = null)}><X size={14} /></button>
           {/if}
         </div>
       </div>
       {#if rule.category === "other"}
-        <div class="hint exts">Everything that doesn't match another category.</div>
+        <div class="hint exts">{t("category-editor-everything-that-doesn-t-match-another")}</div>
       {:else}
         <div class="exts chips">
           {#each rule.extensions as ext (ext)}
             <span class="chip">
               .{ext}
-              <button aria-label="Remove .{ext}" onclick={() => (rule.extensions = rule.extensions.filter((x) => x !== ext))}><X size={11} /></button>
+              <button aria-label={t("category-editor-remove", { ext })} onclick={() => (rule.extensions = rule.extensions.filter((x) => x !== ext))}><X size={11} /></button>
             </span>
           {/each}
           <input
             class="add"
-            placeholder="add…"
+            placeholder={t("category-editor-add")}
             spellcheck="false"
             bind:value={drafts[rule.category]}
             onkeydown={(e) => onkeydown(rule, e)}

@@ -1,0 +1,3 @@
+Throwaway SSH keys made for the SFTP tests only (ssh-keygen -t ed25519 -N "").
+host_a/host_b: the test server key, and a second one for the "key changed" test.
+client: accepted by the test server for public-key logins.

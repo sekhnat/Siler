@@ -205,8 +205,12 @@ pub struct DownloadInfo {
     pub sync_checked_at: Option<i64>,
     /// A completed download whose file is no longer there.
     pub file_missing: bool,
+    /// The error as a code, for the app's language (with `error`).
+    pub error_code: Option<crate::extras::ErrorCode>,
     /// Stopped because the server wants a login.
     pub needs_login: Option<LoginRequest>,
+    /// Stopped because an SFTP server's key has to be trusted first.
+    pub needs_host_key: Option<HostKeyRequest>,
     pub speed: u64,
     pub active_connections: u32,
     pub segments: Vec<Segment>,
@@ -245,6 +249,21 @@ pub struct LoginRequest {
     pub realm: Option<String>,
     /// A login was sent and refused.
     pub rejected: bool,
+}
+
+/// An SFTP server whose key Siler hasn't seen: shown to the user to trust or not.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostKeyRequest {
+    /// The login key of the server (`sftp://host[:port]`), as downloads refer to it.
+    pub host: String,
+    pub server: String,
+    pub port: u16,
+    /// e.g. `ssh-ed25519`.
+    pub algorithm: String,
+    /// `SHA256:…`, as `ssh` shows it.
+    pub fingerprint: String,
+    /// The key in OpenSSH form, saved to Siler's known_hosts when trusted.
+    pub key: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -298,6 +317,8 @@ pub enum Event {
         id: i64,
         filename: Option<String>,
         error: String,
+        /// The error as a code, for the app's language.
+        code: Option<crate::extras::ErrorCode>,
     },
     /// The list of queues changed (added, edited, removed, started or stopped).
     Queues {
@@ -316,6 +337,12 @@ pub enum Event {
         id: i64,
         filename: Option<String>,
         request: LoginRequest,
+    },
+    /// A download stopped because its SFTP server's key isn't known yet.
+    HostKeyUnknown {
+        id: i64,
+        filename: Option<String>,
+        request: HostKeyRequest,
     },
     /// A download turned out to be a metalink: it was removed, and these are its files, to
     /// be added instead.

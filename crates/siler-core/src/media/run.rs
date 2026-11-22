@@ -31,10 +31,10 @@ use crate::{Error, Event, OnConflict, Result, Status, filename};
 use super::{MediaProgress, SourceHint, workdir};
 
 /// Everything a piece download needs, shared by its tasks.
-struct Fetch {
+pub(super) struct Fetch {
     http: Http,
     global: Arc<RateLimiter>,
-    run: Arc<Running>,
+    pub(super) run: Arc<Running>,
     /// One cell per key URL: the first piece that needs a key fetches it, and the pieces
     /// that need it meanwhile wait for that fetch instead of starting their own.
     keys: Mutex<HashMap<Url, Arc<OnceCell<Arc<AesKey>>>>>,
@@ -129,19 +129,19 @@ impl Fetch {
 
 /// One object to fetch into the Work Directory.
 #[derive(Clone)]
-struct Job {
-    dest: PathBuf,
-    url: Url,
+pub(super) struct Job {
+    pub(super) dest: PathBuf,
+    pub(super) url: Url,
     /// Inclusive byte range.
-    range: Option<(u64, u64)>,
-    key: Option<Key>,
-    seq: u64,
+    pub(super) range: Option<(u64, u64)>,
+    pub(super) key: Option<Key>,
+    pub(super) seq: u64,
     /// A whole-file track: fetched resumably, not as a piece.
-    whole: bool,
+    pub(super) whole: bool,
     /// An initialisation segment (checked for encryption boxes).
-    init: bool,
+    pub(super) init: bool,
     /// Wait this long before starting (a retry).
-    delay: Duration,
+    pub(super) delay: Duration,
 }
 
 /// The pieces every track needs, for the files that are not already there.
@@ -206,7 +206,7 @@ fn range_of(r: Option<siler_media::ByteRange>) -> Option<(u64, u64)> {
 
 /// Fetches one object. Pieces are checked (not HTML, decryptable, not DRM) before they are
 /// kept; a whole-file track resumes from its `.part` file.
-async fn fetch_job(c: Arc<Fetch>, job: Job) -> Result<()> {
+pub(super) async fn fetch_job(c: Arc<Fetch>, job: Job) -> Result<()> {
     if !job.delay.is_zero() {
         tokio::time::sleep(job.delay).await;
     }
@@ -242,7 +242,7 @@ async fn fetch_job(c: Arc<Fetch>, job: Job) -> Result<()> {
 }
 
 /// Takes `n` bytes back from the download's count.
-fn uncount(run: &Running, n: u64) {
+pub(super) fn uncount(run: &Running, n: u64) {
     let _ = run
         .downloaded
         .try_update(Relaxed, Relaxed, |v| Some(v.saturating_sub(n)));
@@ -310,7 +310,7 @@ async fn key_for(c: &Fetch, url: &Url, io: &Limiters<'_>) -> Result<Arc<AesKey>>
     .cloned()
 }
 
-fn set_media(run: &Running, f: impl FnOnce(&mut MediaProgress)) {
+pub(super) fn set_media(run: &Running, f: impl FnOnce(&mut MediaProgress)) {
     if let Some(m) = run.media.lock().expect("media lock").as_mut() {
         f(m);
     }
@@ -450,11 +450,19 @@ async fn fetch_all(
 async fn refresh(c: &Fetch, url: &Url, lim: &ParseLimits) -> Result<Presentation> {
     let io = c.io_uncounted();
     let src = probe::resolve(&c.http, url, c.hint.as_ref(), lim, &io).await?;
-    super::presentation_or_error(src)
+    super::presentation_or_error(src, false)
+}
+
+/// Re-reads a live stream's playlist for its newest segments. A manifest the page gave as
+/// text can't be read again, so a live stream is always read from its address.
+pub(super) async fn refresh_live(c: &Fetch, url: &Url, lim: &ParseLimits) -> Result<Presentation> {
+    let io = c.io_uncounted();
+    let src = probe::resolve(&c.http, url, None, lim, &io).await?;
+    super::presentation_or_error(src, true)
 }
 
 /// One subtitle track, joined into a WebVTT file.
-struct SubFile {
+pub(super) struct SubFile {
     /// For the sidecar's name: its language, or its number (only letters, digits and `-`).
     label: String,
     lang: Option<String>,
@@ -732,8 +740,14 @@ pub(crate) async fn drive(inner: &Arc<Inner>, id: i64, run: &Arc<Running>) -> Re
         }
     };
     let final_url = src.final_url.clone();
-    let mut pres = super::presentation_or_error(src)?;
+    let mut pres = super::presentation_or_error(src, mr.live)?;
     inner.join_host(id, run, host_key(&final_url));
+    if mr.live {
+        return record_live(
+            inner, id, run, &c, &url, pres, &mr, &dir, &name, &work, &s, &lim,
+        )
+        .await;
+    }
     let resolved = select::resolve(&pres, &mr.selection)
         .map_err(|_| Error::Media(MediaError::SelectionUnavailable))?;
     let fingerprint = select::fingerprint(&resolved);
@@ -799,17 +813,29 @@ pub(crate) async fn drive(inner: &Arc<Inner>, id: i64, run: &Arc<Running>) -> Re
         return Ok(Outcome::Stopped);
     };
 
-    // Publish under the download's name, applying its conflict policy.
+    publish(inner, id, run, out, sidecar_sources, &dir, &name, &work)
+}
+
+/// Moves the rebuilt output (and subtitle files) into place under the download's name,
+/// applying its conflict policy, and marks the download complete.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn publish(
+    inner: &Arc<Inner>,
+    id: i64,
+    run: &Arc<Running>,
+    out: PathBuf,
+    sidecar_sources: Vec<SubFile>,
+    dir: &Path,
+    name: &str,
+    work: &Path,
+) -> Result<Outcome> {
     set_media(run, |m| m.phase = "publishing");
     let ext = out
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("bin")
         .to_string();
-    let stem = name
-        .rsplit_once('.')
-        .map_or(name.as_str(), |(s, _)| s)
-        .to_string();
+    let stem = name.rsplit_once('.').map_or(name, |(s, _)| s).to_string();
     let target_name = format!("{stem}.{ext}");
     let mut st = inner.state();
     let Some(on_conflict) = st.records.get(&id).map(|r| r.on_conflict) else {
@@ -817,8 +843,8 @@ pub(crate) async fn drive(inner: &Arc<Inner>, id: i64, run: &Arc<Running>) -> Re
         return Ok(Outcome::Stopped);
     };
     let final_name = if dir.join(&target_name).exists() && on_conflict != OnConflict::Overwrite {
-        filename::unique_name(&dir, &target_name, |n| {
-            crate::manager::name_claimed(&st, &dir, n, Some(id))
+        filename::unique_name(dir, &target_name, |n| {
+            crate::manager::name_claimed(&st, dir, n, Some(id))
         })
     } else {
         target_name
@@ -833,14 +859,14 @@ pub(crate) async fn drive(inner: &Arc<Inner>, id: i64, run: &Arc<Running>) -> Re
     for sub in &sidecar_sources {
         let wanted = format!("{final_stem}.{}.vtt", sub.label);
         let wanted = if dir.join(&wanted).exists() && on_conflict != OnConflict::Overwrite {
-            filename::unique_name(&dir, &wanted, |_| false)
+            filename::unique_name(dir, &wanted, |_| false)
         } else {
             wanted
         };
         std::fs::copy(&sub.path, dir.join(&wanted))?;
         sidecars.push(wanted);
     }
-    let _ = std::fs::remove_dir_all(&work);
+    let _ = std::fs::remove_dir_all(work);
     *run.part.lock().expect("part lock") = None;
 
     let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
@@ -862,6 +888,77 @@ pub(crate) async fn drive(inner: &Arc<Inner>, id: i64, run: &Arc<Running>) -> Re
         path,
     });
     Ok(Outcome::Done)
+}
+
+/// A live stream: recorded until Finish, then rebuilt and published like any download.
+#[allow(clippy::too_many_arguments)]
+async fn record_live(
+    inner: &Arc<Inner>,
+    id: i64,
+    run: &Arc<Running>,
+    c: &Arc<Fetch>,
+    url: &Url,
+    pres: Presentation,
+    mr: &super::MediaRecord,
+    dir: &Path,
+    name: &str,
+    work: &Path,
+    s: &crate::Settings,
+    lim: &ParseLimits,
+) -> Result<Outcome> {
+    let ffmpeg = inner.ffmpeg();
+    if mr.output != Output::Original && ffmpeg.is_none() {
+        return Err(Error::Media(MediaError::FfmpegMissing));
+    }
+    std::fs::create_dir_all(dir)?;
+    {
+        let mut st = inner.state();
+        if let Some(r) = st.records.get_mut(&id) {
+            r.status = Status::Downloading;
+            r.error = None;
+            inner.persist_and_emit(r, Some(run))?;
+        }
+    }
+    let Some((recorded, sel)) = super::live::record(
+        c,
+        url,
+        pres,
+        &mr.selection,
+        work,
+        lim,
+        s.max_retries,
+        mr.finish,
+    )
+    .await?
+    else {
+        return Ok(Outcome::Stopped);
+    };
+    {
+        // Finished: from now on the download is rebuilt, never recorded again.
+        let mut st = inner.state();
+        if let Some(r) = st.records.get_mut(&id)
+            && let Some(m) = r.media.as_mut()
+            && !m.finish
+        {
+            m.finish = true;
+            inner.persist_and_emit(r, Some(run))?;
+        }
+    }
+    let Some((out, sidecars)) = build(
+        run,
+        &recorded,
+        &sel,
+        mr.output,
+        SubtitleMode::None,
+        work,
+        ffmpeg.as_deref(),
+        lim,
+    )
+    .await?
+    else {
+        return Ok(Outcome::Stopped);
+    };
+    publish(inner, id, run, out, sidecars, dir, name, work)
 }
 
 fn set_media_start(run: &Running) {

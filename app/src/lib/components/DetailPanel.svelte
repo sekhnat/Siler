@@ -1,9 +1,11 @@
 <script lang="ts">
-  import { Copy, ExternalLink, FolderOpen, Gauge, Info, Minus, Pause, Play, Plus, RotateCw, ShieldCheck, ShieldX, SlidersHorizontal, SquareTerminal, Trash2, TriangleAlert, X } from "@lucide/svelte";
+  import { errorOf, isRecording } from "../rowview";
+  import { t } from "../i18n";
+  import { CircleStop, Copy, ExternalLink, FolderOpen, Gauge, Info, Minus, Pause, Play, Plus, RotateCw, ShieldCheck, ShieldX, SlidersHorizontal, SquareTerminal, Trash2, TriangleAlert, X } from "@lucide/svelte";
   import { fly } from "svelte/transition";
   import { ALGO_LABEL, api, type Download } from "../api";
   import { STATUS_LABEL, categoryMeta } from "../categories";
-  import { bytes, dateTime, eta, knownSize, limitLabel, nameFromUrl, percent, relativeTime, speed, syncLabel } from "../format";
+  import { bytes, clock, dateTime, eta, knownSize, limitLabel, nameFromUrl, percent, relativeTime, speed, STREAM_KIND, syncLabel } from "../format";
   import { attempt, store, toasts } from "../store.svelte";
   import FileIcon from "./FileIcon.svelte";
   import SpeedMenu from "./SpeedMenu.svelte";
@@ -30,27 +32,30 @@
   const size = $derived(knownSize(d));
   const pct = $derived(d.status === "completed" ? 100 : percent(size, d.downloaded));
   const running = $derived(d.status === "downloading");
+  const recording = $derived(isRecording(d));
   const history = $derived(store.perHistory[d.id] ?? []);
   const path = $derived(d.dir && d.filename ? `${d.dir}/${d.filename}` : d.dir);
 
   /** What a media download is doing now, in words. */
   function mediaPhase(m: NonNullable<Download["media_progress"]>): string {
     switch (m.phase) {
+      case "recording":
+        return m.gaps ? t("detail-panel-recording-gaps", { time: clock(m.recorded_secs ?? 0), gaps: m.gaps }) : t("detail-panel-recording-so-far", { time: clock(m.recorded_secs ?? 0) });
       case "waiting":
-        return "Waiting for the site to allow the download";
+        return t("detail-panel-waiting-for-the-site-to-allow");
       case "resolving":
-        return "Reading the stream";
+        return t("detail-panel-reading-the-stream");
       case "downloading":
-        return m.bytes_total ? "Downloading" : `Pieces ${m.segments_done} of ${m.segments_total}`;
+        return m.bytes_total ? t("detail-panel-downloading") : t("detail-panel-pieces", { done: m.segments_done, total: m.segments_total });
       case "rebuilding":
-        return `Rebuilding ${(m.permille / 10).toFixed(0)}%`;
+        return t("detail-panel-rebuilding", { pct: (m.permille / 10).toFixed(0) });
       default:
-        return "Saving the file";
+        return t("detail-panel-saving-the-file");
     }
   }
 
   const verified = $derived(d.verify?.expected ? d.verify.expected.toLowerCase() === d.verify.actual.toLowerCase() : null);
-  const ORIGIN: Record<string, string> = { user: "added by you", metalink: "from a list", server: "named by the server" };
+  const ORIGIN: Record<string, string> = { user: t("detail-panel-added-by-you"), metalink: t("detail-panel-from-a-list"), server: t("detail-panel-named-by-the-server") };
 
   async function keepAnyway() {
     await attempt(api.acceptUnverified(d.id));
@@ -59,7 +64,7 @@
   async function copyLink() {
     try {
       await navigator.clipboard.writeText(d.url);
-      toasts.show("Link copied", "success");
+      toasts.show(t("detail-panel-link-copied"), "success");
     } catch (e) {
       toasts.error(e);
     }
@@ -73,45 +78,53 @@
       <div class="fname selectable">{d.filename ?? nameFromUrl(d.url)}</div>
       <div class="sub">{categoryMeta(d.category).label} · {STATUS_LABEL[d.status]}</div>
     </div>
-    <button class="icon-btn sm" onclick={onclose} aria-label="Close details"><X size={16} /></button>
+    <button class="icon-btn sm" onclick={onclose} aria-label={t("detail-panel-close-details")}><X size={16} /></button>
   </header>
 
   <div class="big">
-    <div class="big-pct">{pct.toFixed(pct < 10 && pct > 0 ? 1 : 0)}<span>%</span></div>
-    <div class="big-side">
-      <div>{bytes(d.downloaded)} <span class="of">of {bytes(size)}</span></div>
-      {#if running}<div class="of">{speed(d.speed)} · {eta(size, d.downloaded, d.speed)} left</div>{/if}
-    </div>
+    {#if recording}
+      <div class="big-pct">{clock(d.media_progress?.recorded_secs ?? 0)}</div>
+      <div class="big-side">
+        <div>{bytes(d.downloaded)} <span class="of">{t("detail-panel-recorded")}</span></div>
+        {#if running}<div class="of">{speed(d.speed)}</div>{/if}
+      </div>
+    {:else}
+      <div class="big-pct">{pct.toFixed(pct < 10 && pct > 0 ? 1 : 0)}<span>%</span></div>
+      <div class="big-side">
+        <div>{bytes(d.downloaded)} <span class="of">{t("detail-panel-of", { v: bytes(size) })}</span></div>
+        {#if running}<div class="of">{t("detail-panel-left", { v: speed(d.speed), v2: eta(size, d.downloaded, d.speed) })}</div>{/if}
+      </div>
+    {/if}
   </div>
 
   {#if d.file_missing}
-    <div class="note err"><TriangleAlert size={15} /><span>The file was moved or deleted. Download it again, or remove it from the list.</span></div>
+    <div class="note err"><TriangleAlert size={15} /><span>{t("detail-panel-the-file-was-moved-or-deleted")}</span></div>
   {:else if d.checksum_failed}
     <div class="note err col">
-      <div class="row-note"><ShieldX size={15} /><span>{d.error}</span></div>
+      <div class="row-note"><ShieldX size={15} /><span>{errorOf(d)}</span></div>
       {#if d.verify}
-        <div class="mono small selectable">Expected {d.verify.expected}<br />Got&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{d.verify.actual}</div>
+        <div class="mono small selectable">{t("detail-panel-expected", { expected: d.verify.expected })}<br />{t("detail-panel-got", { actual: d.verify.actual })}</div>
       {/if}
       <div class="note-actions">
-        <button class="btn btn-sm" onclick={() => attempt(api.restart(d.id))}>Download again</button>
-        <button class="btn btn-sm btn-ghost" onclick={keepAnyway}>Keep it anyway</button>
+        <button class="btn btn-sm" onclick={() => attempt(api.restart(d.id))}>{t("detail-panel-download-again")}</button>
+        <button class="btn btn-sm btn-ghost" onclick={keepAnyway}>{t("detail-panel-keep-it-anyway")}</button>
       </div>
     </div>
   {:else if d.status === "failed" && d.error}
-    <div class="note err"><TriangleAlert size={15} /><span class="selectable">{d.error}</span></div>
+    <div class="note err"><TriangleAlert size={15} /><span class="selectable">{errorOf(d)}</span></div>
   {:else if d.notice}
     <div class="note"><Info size={15} /><span>{d.notice}</span></div>
   {/if}
 
   <div class="block">
     <div class="block-head">
-      <span>Connections</span>
+      <span>{t("detail-panel-connections")}</span>
       <span class="muted conn">
-        {#if running}{d.active_connections} active of{:else if d.resumable === false}Single connection{:else if d.status === "completed"}{d.connections}{/if}
+        {#if running}{t("detail-panel-active-of", { active_connections: d.active_connections })}{:else if d.resumable === false}{t("detail-panel-single-connection")}{:else if d.status === "completed"}{d.connections}{/if}
         {#if d.status !== "completed" && d.resumable !== false}
-          <button class="icon-btn xs" onclick={() => setConnections(d.connections - 1)} disabled={d.connections <= 1} aria-label="Fewer connections"><Minus size={12} /></button>
+          <button class="icon-btn xs" onclick={() => setConnections(d.connections - 1)} disabled={d.connections <= 1} aria-label={t("detail-panel-fewer-connections")}><Minus size={12} /></button>
           <b>{d.connections}</b>
-          <button class="icon-btn xs" onclick={() => setConnections(d.connections + 1)} disabled={d.connections >= 32} aria-label="More connections"><Plus size={12} /></button>
+          <button class="icon-btn xs" onclick={() => setConnections(d.connections + 1)} disabled={d.connections >= 32} aria-label={t("detail-panel-more-connections")}><Plus size={12} /></button>
         {/if}
       </span>
     </div>
@@ -120,13 +133,13 @@
 
   {#if d.sources.length > 1}
     <div class="block">
-      <div class="block-head"><span>Sources</span><span class="muted">{d.sources.filter((s) => !s.disabled).length} of {d.sources.length} in use</span></div>
+      <div class="block-head"><span>{t("detail-panel-sources")}</span><span class="muted">{t("detail-panel-of-in-use", { v: d.sources.filter((s) => !s.disabled).length, length: d.sources.length })}</span></div>
       <div class="sources">
         {#each d.sources as s, i (s.url)}
           <div class="source" class:off={!!s.disabled} title={s.disabled ?? s.url}>
             <span class="dot-src" class:live={s.active > 0}></span>
             <span class="truncate src-host">{(() => { try { return new URL(s.url).host; } catch { return s.url; } })()}</span>
-            <span class="muted src-meta">{i === 0 ? "main" : ORIGIN[s.origin]}{s.disabled ? " · not used" : ""}</span>
+            <span class="muted src-meta">{i === 0 ? "main" : ORIGIN[s.origin]}{s.disabled ? t("detail-panel-not-used") : ""}</span>
             <span class="num">{bytes(s.bytes)}</span>
           </div>
         {/each}
@@ -136,27 +149,27 @@
 
   {#if running || history.some((v) => v > 0)}
     <div class="block">
-      <div class="block-head"><span>Speed</span><span class="muted">{speed(d.speed)}</span></div>
+      <div class="block-head"><span>{t("detail-panel-speed")}</span><span class="muted">{speed(d.speed)}</span></div>
       <div class="spark"><Sparkline values={history} height={54} /></div>
     </div>
   {/if}
 
   <dl class="facts">
-    <dt>Address</dt>
+    <dt>{t("detail-panel-address")}</dt>
     <dd class="selectable mono truncate" title={d.url}>{d.url}</dd>
     {#if d.referrer}
-      <dt>Referrer</dt>
+      <dt>{t("detail-panel-referrer")}</dt>
       <dd class="selectable mono truncate" title={d.referrer}>{d.referrer}</dd>
     {/if}
-    <dt>Saved to</dt>
-    <dd class="selectable truncate" title={path ?? ""}>{d.dir ?? "Decided when the download starts"}</dd>
-    <dt>Resume</dt>
+    <dt>{t("detail-panel-saved-to")}</dt>
+    <dd class="selectable truncate" title={path ?? ""}>{d.dir ?? t("detail-panel-decided-when-the-download-starts")}</dd>
+    <dt>{t("detail-panel-resume")}</dt>
     <dd>
-      {#if d.resumable === true}<span class="pill" style:--c="var(--ok)">Supported</span>
-      {:else if d.resumable === false}<span class="pill" style:--c="var(--warn)">Not supported</span>
-      {:else}<span class="muted">Unknown</span>{/if}
+      {#if d.resumable === true}<span class="pill" style:--c="var(--ok)">{t("detail-panel-supported")}</span>
+      {:else if d.resumable === false}<span class="pill" style:--c="var(--warn)">{t("detail-panel-not-supported")}</span>
+      {:else}<span class="muted">{t("detail-panel-unknown")}</span>{/if}
     </dd>
-    <dt>Speed limit</dt>
+    <dt>{t("detail-panel-speed-limit")}</dt>
     <dd class="limit-wrap">
       <button class="limit" onclick={() => (limitMenu = !limitMenu)}><Gauge size={13} /> {limitLabel(d.speed_limit)}</button>
       {#if limitMenu}
@@ -164,88 +177,91 @@
       {/if}
     </dd>
     {#if store.queues.length > 1}
-      <dt>Queue</dt>
+      <dt>{t("detail-panel-queue")}</dt>
       <dd>{store.queueName(d.queue_id)}</dd>
     {/if}
     {#if d.sync_every}
-      <dt>Kept up to date</dt>
-      <dd>Checked {syncLabel(d.sync_every)}{d.sync_checked_at ? `, last ${relativeTime(d.sync_checked_at)}` : ""}</dd>
+      <dt>{t("detail-panel-kept-up-to-date")}</dt>
+      <dd>{(d.sync_checked_at ? t("detail-panel-checked-last", { every: syncLabel(d.sync_every), when: relativeTime(d.sync_checked_at) }) : t("detail-panel-checked", { every: syncLabel(d.sync_every) }))}</dd>
     {/if}
     {#if d.media}
-      <dt>Stream</dt>
-      <dd>{d.media.manifest === "hls" ? "HLS" : "DASH"} · {d.media.output === "original" ? "original format" : d.media.output.toUpperCase()} · {d.media.reason}</dd>
-      <dt>Tracks</dt>
+      <dt>{t("detail-panel-stream")}</dt>
+      <dd>{STREAM_KIND[d.media.manifest] ?? t("detail-panel-stream")}{d.media.live ? t("detail-panel-live") : ""} · {d.media.output === "original" ? t("detail-panel-original-format") : d.media.output.toUpperCase()} · {d.media.reason}</dd>
+      <dt>{t("detail-panel-tracks")}</dt>
       <dd class="selectable">{d.media.labels.join(" · ")}</dd>
       {#if d.media.subtitles !== "none" && d.media.labels.length}
-        <dt>Subtitles</dt>
-        <dd>{d.media.subtitles === "embed" ? "Inside the video" : d.media.subtitles === "sidecar" ? "As a separate file" : "Left out"}</dd>
+        <dt>{t("detail-panel-subtitles")}</dt>
+        <dd>{d.media.subtitles === "embed" ? t("detail-panel-inside-the-video") : d.media.subtitles === "sidecar" ? t("detail-panel-as-a-separate-file") : t("detail-panel-left-out")}</dd>
       {/if}
       {#if d.media.sidecars.length}
-        <dt>Also saved</dt>
+        <dt>{t("detail-panel-also-saved")}</dt>
         <dd class="selectable">{d.media.sidecars.join(", ")}</dd>
       {/if}
       {#if d.media_progress && d.status !== "completed"}
-        <dt>Progress</dt>
+        <dt>{t("detail-panel-progress")}</dt>
         <dd>{mediaPhase(d.media_progress)}</dd>
       {/if}
     {/if}
     {#if d.zip_path}
-      <dt>From archive</dt>
+      <dt>{t("detail-panel-from-archive")}</dt>
       <dd class="selectable mono truncate" title={d.zip_path}>{d.zip_path}</dd>
     {/if}
     {#if d.phase && d.status !== "completed"}
-      <dt>Progress</dt>
-      <dd>{d.phase.name === "verifying" ? "Checking the checksum" : "Unpacking"} {d.phase.total ? `${Math.floor((100 * d.phase.done) / d.phase.total)}%` : ""}</dd>
+      <dt>{t("detail-panel-progress")}</dt>
+      <dd>{d.phase.name === "verifying" ? t("detail-panel-checking-the-checksum") : t("detail-panel-unpacking")} {d.phase.total ? `${Math.floor((100 * d.phase.done) / d.phase.total)}%` : ""}</dd>
     {/if}
     {#if d.checksum || d.verify}
-      <dt>Checksum</dt>
+      <dt>{t("detail-panel-checksum")}</dt>
       <dd>
         {#if verified === true}
-          <span class="pill" style:--c="var(--ok)"><ShieldCheck size={11} /> {ALGO_LABEL[d.verify!.algo]} matches</span>
+          <span class="pill" style:--c="var(--ok)"><ShieldCheck size={11} /> {t("detail-panel-matches", { v: ALGO_LABEL[d.verify!.algo] })}</span>
         {:else if verified === false}
-          <span class="pill" style:--c="var(--err)"><ShieldX size={11} /> {ALGO_LABEL[d.verify!.algo]} doesn't match</span>
+          <span class="pill" style:--c="var(--err)"><ShieldX size={11} /> {t("detail-panel-doesn-t-match", { v: ALGO_LABEL[d.verify!.algo] })}</span>
         {:else if d.checksum}
-          <span class="muted">{ALGO_LABEL[d.checksum.algo]}{d.checksum.source === "server" ? " from the server" : d.checksum.source === "metalink" ? " from the list" : ""}, checked when done</span>
+          <span class="muted">{t("detail-panel-checked-when-done", { algo: ALGO_LABEL[d.checksum.algo], source: d.checksum.source })}</span>
         {:else if d.verify}
           <span class="mono small selectable">{ALGO_LABEL[d.verify.algo]} {d.verify.actual}</span>
         {/if}
       </dd>
     {/if}
     {#if d.command}
-      <dt>Command</dt>
+      <dt>{t("detail-panel-command")}</dt>
       <dd>
-        {#if d.command.running}<span class="muted"><SquareTerminal size={12} /> Running…</span>
+        {#if d.command.running}<span class="muted"><SquareTerminal size={12} /> {t("detail-panel-running")}</span>
         {:else if d.command.error}<span class="err-text">{d.command.error}</span>
-        {:else}<span class:err-text={d.command.exit_code !== 0}>Exited with {d.command.exit_code}</span>{/if}
+        {:else}<span class:err-text={d.command.exit_code !== 0}>{t("detail-panel-exited-with", { exit_code: d.command.exit_code })}</span>{/if}
         {#if d.command.output}<pre class="output selectable">{d.command.output}</pre>{/if}
       </dd>
     {/if}
-    <dt>Added</dt>
+    <dt>{t("detail-panel-added")}</dt>
     <dd>{dateTime(d.created_at)}</dd>
     {#if d.completed_at}
-      <dt>Finished</dt>
+      <dt>{t("detail-panel-finished")}</dt>
       <dd>{dateTime(d.completed_at)}</dd>
     {/if}
   </dl>
 
   <div class="actions">
     {#if d.file_missing}
-      <button class="btn btn-primary" onclick={onredownload}><RotateCw size={15} /> Download again</button>
+      <button class="btn btn-primary" onclick={onredownload}><RotateCw size={15} /> {t("detail-panel-download-again")}</button>
     {:else if d.status === "completed"}
-      <button class="btn btn-primary" onclick={() => attempt(api.openFile(d.id))}><ExternalLink size={15} /> Open</button>
+      <button class="btn btn-primary" onclick={() => attempt(api.openFile(d.id))}><ExternalLink size={15} /> {t("detail-panel-open")}</button>
     {:else if d.status === "waiting"}
-      <button class="btn btn-primary" onclick={() => attempt(api.resume(d.id))}><Play size={15} /> Start</button>
+      <button class="btn btn-primary" onclick={() => attempt(api.resume(d.id))}><Play size={15} /> {t("detail-panel-start")}</button>
     {:else if d.status === "paused"}
-      <button class="btn btn-primary" onclick={() => attempt(api.resume(d.id))}><Play size={15} /> Resume</button>
+      <button class="btn btn-primary" onclick={() => attempt(api.resume(d.id))}><Play size={15} /> {t("detail-panel-resume")}</button>
     {:else if d.status === "failed"}
-      <button class="btn btn-primary" onclick={() => attempt(api.resume(d.id))}><RotateCw size={15} /> Retry</button>
+      <button class="btn btn-primary" onclick={() => attempt(api.resume(d.id))}><RotateCw size={15} /> {t("detail-panel-retry")}</button>
     {:else}
-      <button class="btn" onclick={() => attempt(api.pause(d.id))}><Pause size={15} /> Pause</button>
+      <button class="btn" onclick={() => attempt(api.pause(d.id))}><Pause size={15} /> {t("detail-panel-pause")}</button>
     {/if}
-    <button class="icon-btn" title="Show in folder" disabled={!d.dir} onclick={() => attempt(api.showInFolder(d.id))}><FolderOpen size={17} /></button>
-    <button class="icon-btn" title="Copy link" onclick={copyLink}><Copy size={17} /></button>
-    <button class="icon-btn" title="Properties" onclick={onproperties}><SlidersHorizontal size={17} /></button>
-    <button class="icon-btn danger" title="Remove" onclick={onremove}><Trash2 size={17} /></button>
+    {#if d.media?.live && !d.media.finished && d.status !== "completed" && d.status !== "failed"}
+      <button class="btn" title={t("detail-panel-stop-recording-and-keep-what-was")} onclick={() => attempt(api.finish(d.id))}><CircleStop size={15} /> {t("detail-panel-finish")}</button>
+    {/if}
+    <button class="icon-btn" title={t("detail-panel-show-in-folder")} disabled={!d.dir} onclick={() => attempt(api.showInFolder(d.id))}><FolderOpen size={17} /></button>
+    <button class="icon-btn" title={t("detail-panel-copy-link")} onclick={copyLink}><Copy size={17} /></button>
+    <button class="icon-btn" title={t("detail-panel-properties")} onclick={onproperties}><SlidersHorizontal size={17} /></button>
+    <button class="icon-btn danger" title={t("detail-panel-remove")} onclick={onremove}><Trash2 size={17} /></button>
   </div>
 </section>
 

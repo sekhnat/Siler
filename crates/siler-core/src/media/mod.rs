@@ -4,9 +4,11 @@
 //! paused, resumed, removed and published the same way (media-design.md).
 
 mod ffmpeg;
+mod live;
 mod probe;
 mod reconstruct;
 mod run;
+pub mod stream;
 
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
@@ -31,19 +33,28 @@ pub(crate) use run::drive;
 pub enum JobKind {
     File,
     Media,
+    /// An RTMP or MMS stream, recorded by FFmpeg.
+    Stream,
 }
 
 impl JobKind {
+    /// A stream or a recording: kept in a Work Directory, not a part file.
+    pub fn is_media(self) -> bool {
+        matches!(self, JobKind::Media | JobKind::Stream)
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             JobKind::File => "file",
             JobKind::Media => "media",
+            JobKind::Stream => "stream",
         }
     }
 
     pub fn parse(s: &str) -> JobKind {
         match s {
             "media" => JobKind::Media,
+            "stream" => JobKind::Stream,
             _ => JobKind::File,
         }
     }
@@ -71,6 +82,12 @@ pub(crate) struct MediaRecord {
     /// What the browser extension said about the video, when it came from there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hint: Option<SourceHint>,
+    /// A live stream, recorded until the user presses Finish or the stream ends.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub live: bool,
+    /// A live recording the user finished: it is rebuilt from what was recorded.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub finish: bool,
 }
 
 /// What the browser extension found out about a video on a page: things the app can't see
@@ -178,12 +195,16 @@ pub struct MediaInfo {
     pub subtitles: SubtitleMode,
     pub labels: Vec<String>,
     pub sidecars: Vec<String>,
+    /// A recording (live stream, RTMP/MMS): it can be finished.
+    pub live: bool,
+    /// The recording was finished; what remains is the rebuild.
+    pub finished: bool,
 }
 
 /// Where a media download is, for its progress line.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct MediaProgress {
-    /// `waiting`, `resolving`, `downloading`, `rebuilding` or `publishing`.
+    /// `waiting`, `resolving`, `downloading`, `recording`, `rebuilding` or `publishing`.
     pub phase: &'static str,
     pub segments_done: u64,
     pub segments_total: u64,
@@ -192,6 +213,16 @@ pub struct MediaProgress {
     pub bytes_total: Option<u64>,
     /// Rebuilding progress, in tenths of a percent.
     pub permille: u32,
+    /// A live recording: seconds of the stream recorded so far.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recorded_secs: Option<f64>,
+    /// A live recording: times pieces of the stream were missed (paused, or Siler closed).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub gaps: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 impl Default for MediaProgress {
@@ -202,6 +233,8 @@ impl Default for MediaProgress {
             segments_total: 0,
             bytes_total: None,
             permille: 0,
+            recorded_secs: None,
+            gaps: 0,
         }
     }
 }
@@ -214,12 +247,24 @@ pub enum MediaKind {
     Direct,
     Hls,
     Dash,
+    /// Adobe HDS (F4M).
+    Hds,
+    /// A plain playlist (M3U, PLS, ASX): its links, to add as downloads.
+    Playlist,
+    /// An RTMP or MMS stream, recorded through FFmpeg.
+    Stream,
     /// A web page or something else with no media in it.
     NotMedia,
-    Live,
     Drm,
-    /// Recognised, but not supported yet (HDS, generic playlists).
+    /// Recognised, but not supported.
     Unsupported,
+}
+
+/// One link of a plain playlist.
+#[derive(Debug, Clone, Serialize)]
+pub struct PlaylistEntry {
+    pub url: String,
+    pub title: Option<String>,
 }
 
 /// A track as the picker shows it.
@@ -263,6 +308,10 @@ pub struct MediaProbe {
     pub dropped_drm: usize,
     /// Whether FFmpeg is available to combine several tracks.
     pub ffmpeg: bool,
+    /// A live stream: it is recorded from now until Finish.
+    pub live: bool,
+    /// The links of a playlist (`kind` = playlist).
+    pub entries: Vec<PlaylistEntry>,
 }
 
 /// A media download to add.
@@ -424,18 +473,24 @@ pub(crate) fn preferences(s: &crate::Settings) -> Preferences {
 }
 
 /// The presentation of a source that is a stream Siler can work with; otherwise why not.
-pub(crate) fn presentation_or_error(src: probe::Source) -> Result<Presentation> {
+/// A live stream is refused unless `allow_live` (a recording the user chose).
+pub(crate) fn presentation_or_error(src: probe::Source, allow_live: bool) -> Result<Presentation> {
     let kind = src.kind;
     let Some(pres) = src.presentation else {
         return Err(Error::Media(match kind {
-            Kind::Hds | Kind::Playlist => {
-                MediaError::Unsupported("this playlist format isn't supported yet".into())
+            Kind::Playlist => {
+                MediaError::Unsupported("this is a playlist of links; add its links instead".into())
             }
             _ => MediaError::NotMedia,
         }));
     };
-    if pres.is_live() {
+    if pres.is_live() && !allow_live {
         return Err(Error::Media(MediaError::LiveUnsupported));
+    }
+    if pres.is_live() && pres.kind == siler_media::ManifestKind::Hds {
+        return Err(Error::Media(MediaError::Unsupported(
+            "live HDS streams".into(),
+        )));
     }
     if pres.variants.is_empty() && pres.audio.is_empty() {
         return Err(Error::Media(if pres.dropped_drm > 0 {
@@ -445,6 +500,31 @@ pub(crate) fn presentation_or_error(src: probe::Source) -> Result<Presentation> 
         }));
     }
     Ok(pres)
+}
+
+/// What a probe shows for an RTMP or MMS stream: recorded through FFmpeg, when it can.
+pub(crate) fn stream_view(recordable: bool) -> MediaProbe {
+    MediaProbe {
+        kind: if recordable {
+            MediaKind::Stream
+        } else {
+            MediaKind::Unsupported
+        },
+        message: (!recordable).then(|| {
+            "Recording RTMP and MMS streams needs Siler's FFmpeg (one with network support).".into()
+        }),
+        title: None,
+        duration: None,
+        variants: Vec::new(),
+        audio: Vec::new(),
+        subtitles: Vec::new(),
+        default: Selection::default(),
+        warnings: Vec::new(),
+        dropped_drm: 0,
+        ffmpeg: recordable,
+        live: true,
+        entries: Vec::new(),
+    }
 }
 
 /// What a probe shows the user: the picker's choices, or why nothing can be downloaded.
@@ -462,13 +542,25 @@ pub(crate) fn probe_view(src: probe::Source, prefs: &Preferences, ffmpeg: bool) 
         warnings: Vec::new(),
         dropped_drm: 0,
         ffmpeg,
+        live: false,
+        entries: Vec::new(),
     };
     let Some(p) = src.presentation else {
         match kind {
             Kind::Direct | Kind::File | Kind::WebVtt => view.kind = MediaKind::Direct,
-            Kind::Hds | Kind::Playlist => {
-                view.kind = MediaKind::Unsupported;
-                view.message = Some("This kind of playlist isn't supported yet.".into());
+            Kind::Playlist => {
+                view.kind = MediaKind::Playlist;
+                view.entries = src
+                    .entries
+                    .iter()
+                    .map(|e| PlaylistEntry {
+                        url: e.url.to_string(),
+                        title: e.title.clone(),
+                    })
+                    .collect();
+            }
+            Kind::Hds => {
+                view.message = Some("This HDS stream has no video Siler can download.".into());
             }
             Kind::Html | Kind::Hls | Kind::Dash => {
                 view.message = Some(
@@ -483,9 +575,10 @@ pub(crate) fn probe_view(src: probe::Source, prefs: &Preferences, ffmpeg: bool) 
     view.title = p.title.clone();
     view.duration = p.duration;
     view.warnings = p.warnings.clone();
-    if p.is_live() {
-        view.kind = MediaKind::Live;
-        view.message = Some("This stream is live. Siler can't record live streams yet.".into());
+    view.live = p.is_live();
+    if view.live && p.kind == siler_media::ManifestKind::Hds {
+        view.kind = MediaKind::Unsupported;
+        view.message = Some("Siler can't record live HDS streams.".into());
         return view;
     }
     if p.variants.is_empty() && p.audio.is_empty() {
@@ -503,6 +596,8 @@ pub(crate) fn probe_view(src: probe::Source, prefs: &Preferences, ffmpeg: bool) 
     view.kind = match p.kind {
         siler_media::ManifestKind::Hls => MediaKind::Hls,
         siler_media::ManifestKind::Dash => MediaKind::Dash,
+        siler_media::ManifestKind::Hds => MediaKind::Hds,
+        siler_media::ManifestKind::Stream => MediaKind::Stream,
     };
     view.default = select::default_selection(&p, prefs);
     view.variants = p
@@ -582,7 +677,8 @@ fn name_from_path(url: &Url) -> Option<String> {
 
 fn is_generic(segment: &str) -> bool {
     let stem = segment.rsplit_once('.').map_or(segment, |(s, _)| s);
-    GENERIC.contains(&stem.to_ascii_lowercase().as_str())
+    // A bare extension (Unified Streaming's `…/name.isml/.m3u8`) names nothing.
+    stem.is_empty() || GENERIC.contains(&stem.to_ascii_lowercase().as_str())
 }
 
 /// Extensions a media output can have; a name given with one has it replaced by the
@@ -638,6 +734,10 @@ mod tests {
         assert_eq!(
             default_name(None, &u("https://cdn.example/shows/42/master.m3u8")),
             "42"
+        );
+        assert_eq!(
+            default_name(None, &u("https://demo.example/live/scte35.isml/.m3u8")),
+            "scte35"
         );
         assert_eq!(
             default_name(None, &u("https://cdn.example/index.mpd")),

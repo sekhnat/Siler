@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from "../i18n";
   import { FolderOpen, Gauge, Minus, Plus } from "@lucide/svelte";
   import { open } from "@tauri-apps/plugin-dialog";
   import { api, type Download } from "../api";
@@ -33,7 +34,7 @@
   const changed = $derived(fileChanged || (plainFile && (checksumChanged || (!done && mirrorsChanged))));
 
   async function browse() {
-    const picked = await open({ directory: true, defaultPath: dir || undefined, title: "Move to folder" });
+    const picked = await open({ directory: true, defaultPath: dir || undefined, title: t("properties-move-to-folder") });
     if (typeof picked === "string") dir = picked;
   }
 
@@ -52,7 +53,7 @@
         const folder = dir.trim() && dir.trim() !== d.dir ? dir.trim() : null;
         await api.edit(d.id, name, folder);
       }
-      toasts.show(done ? "File moved" : "Download updated", "success");
+      toasts.show(done ? t("properties-file-moved") : t("properties-download-updated"), "success");
       onclose();
     } catch (e) {
       toasts.error(e);
@@ -62,7 +63,7 @@
   }
 </script>
 
-<Modal title="Properties" width={560} {onclose}>
+<Modal title={t("properties-properties")} width={560} {onclose}>
   <div class="head">
     <FileIcon category={d.category} size={42} />
     <div class="min">
@@ -73,41 +74,41 @@
 
   <div class="form">
     <label class="field">
-      <span class="label">File name</span>
-      <input class="input" bind:value={filename} spellcheck="false" placeholder="Decided when the download starts" />
+      <span class="label">{t("properties-file-name")}</span>
+      <input class="input" bind:value={filename} spellcheck="false" placeholder={t("properties-decided-when-the-download-starts")} />
     </label>
     <div class="field">
-      <span class="label">Folder</span>
+      <span class="label">{t("properties-folder")}</span>
       <div class="row">
-        <input class="input" bind:value={dir} spellcheck="false" placeholder="Category folder" />
-        <button class="btn" onclick={browse} title="Choose folder"><FolderOpen size={15} /></button>
+        <input class="input" bind:value={dir} spellcheck="false" placeholder={t("properties-category-folder")} />
+        <button class="btn" onclick={browse} title={t("properties-choose-folder")}><FolderOpen size={15} /></button>
       </div>
       {#if changed && (done || d.downloaded > 0)}
-        <div class="hint">{done ? "The file" : "The partial file"} will be moved{d.status === "downloading" ? "; the download pauses for a moment" : ""}.</div>
+        <div class="hint">{(done ? t("properties-the-file-will-be-moved") : d.status === "downloading" ? t("properties-the-partial-file-will-be-moved-pause") : t("properties-the-partial-file-will-be-moved"))}</div>
       {/if}
     </div>
 
     <div class="field">
-      <span class="label">Address</span>
+      <span class="label">{t("properties-address")}</span>
       <div class="row">
         <input class="input mono selectable" value={d.url} readonly />
-        {#if !done}<button class="btn" onclick={onrefresh}>Refresh link…</button>{/if}
+        {#if !done}<button class="btn" onclick={onrefresh}>{t("properties-refresh-link")}</button>{/if}
       </div>
     </div>
 
     {#if !done}
       <div class="grid">
         <div class="field">
-          <span class="label">Connections</span>
+          <span class="label">{t("properties-connections")}</span>
           <div class="stepper">
-            <button class="icon-btn sm" onclick={() => setConnections(d.connections - 1)} disabled={d.connections <= 1} aria-label="Fewer"><Minus size={14} /></button>
+            <button class="icon-btn sm" onclick={() => setConnections(d.connections - 1)} disabled={d.connections <= 1} aria-label={t("properties-fewer")}><Minus size={14} /></button>
             <span class="num">{d.connections}</span>
-            <button class="icon-btn sm" onclick={() => setConnections(d.connections + 1)} disabled={d.connections >= 32} aria-label="More"><Plus size={14} /></button>
-            <span class="hint">{d.status === "downloading" ? "applies right away" : ""}</span>
+            <button class="icon-btn sm" onclick={() => setConnections(d.connections + 1)} disabled={d.connections >= 32} aria-label={t("properties-more")}><Plus size={14} /></button>
+            <span class="hint">{d.status === "downloading" ? t("properties-applies-right-away") : ""}</span>
           </div>
         </div>
         <div class="field">
-          <span class="label">Speed limit</span>
+          <span class="label">{t("properties-speed-limit")}</span>
           <div class="limit-wrap">
             <button class="btn" onclick={() => (limitMenu = !limitMenu)}><Gauge size={14} /> {limitLabel(d.speed_limit)}</button>
             {#if limitMenu}
@@ -120,28 +121,28 @@
 
     {#if plainFile}
       <label class="field">
-        <span class="label">Checksum <span class="hint">({done ? "use Verify checksum to check the file now" : "checked when the download finishes"})</span></span>
-        <input class="input mono" bind:value={checksum} placeholder="MD5, SHA-1, SHA-256 or SHA-512" spellcheck="false" />
+        <span class="label">{t("properties-checksum")} <span class="hint">({done ? t("properties-use-verify-checksum-to-check-the") : t("properties-checked-when-the-download-finishes")})</span></span>
+        <input class="input mono" bind:value={checksum} placeholder={t("properties-md5-sha-1-sha-256-or")} spellcheck="false" />
       </label>
       {#if !done}
         <label class="field">
-          <span class="label">Mirrors <span class="hint">(other addresses of the same file, one per line)</span></span>
+          <span class="label">{t("properties-mirrors")} <span class="hint">{t("properties-other-addresses-of-the-same-file")}</span></span>
           <textarea class="input mono mirrors" rows="2" bind:value={mirrors} spellcheck="false" placeholder="https://mirror.example/file.iso"></textarea>
         </label>
       {/if}
     {/if}
 
     <dl>
-      {#if d.referrer}<dt>Referrer</dt><dd class="mono selectable truncate" title={d.referrer}>{d.referrer}</dd>{/if}
-      {#if d.method && d.method !== "GET"}<dt>Request</dt><dd>{d.method} form submission</dd>{/if}
-      <dt>Added</dt><dd>{dateTime(d.created_at)}</dd>
-      {#if d.completed_at}<dt>Finished</dt><dd>{dateTime(d.completed_at)}</dd>{/if}
+      {#if d.referrer}<dt>{t("properties-referrer")}</dt><dd class="mono selectable truncate" title={d.referrer}>{d.referrer}</dd>{/if}
+      {#if d.method && d.method !== "GET"}<dt>{t("properties-request")}</dt><dd>{t("properties-form-submission", { method: d.method })}</dd>{/if}
+      <dt>{t("properties-added")}</dt><dd>{dateTime(d.created_at)}</dd>
+      {#if d.completed_at}<dt>{t("properties-finished")}</dt><dd>{dateTime(d.completed_at)}</dd>{/if}
     </dl>
   </div>
 
   {#snippet footer()}
-    <button class="btn btn-ghost" onclick={onclose}>Close</button>
-    <button class="btn btn-primary" onclick={save} disabled={!changed || saving}>Save</button>
+    <button class="btn btn-ghost" onclick={onclose}>{t("properties-close")}</button>
+    <button class="btn btn-primary" onclick={save} disabled={!changed || saving}>{t("properties-save")}</button>
   {/snippet}
 </Modal>
 

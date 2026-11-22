@@ -38,11 +38,12 @@ fi
 
 version="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["version"])' "$root/extension/manifest.json")"
 artifacts="$root/extension/web-ext-artifacts"
+echo "==> Building the Firefox extension"
+node "$root/scripts/build-extension.mjs" firefox >/dev/null
 echo "==> Signing Siler Integration $version (unlisted)"
 # Credentials go through the environment, not the command line, so they don't show up in ps.
 WEB_EXT_API_KEY="$AMO_JWT_ISSUER" WEB_EXT_API_SECRET="$AMO_JWT_SECRET" \
-  npx --yes web-ext@10 sign --channel=unlisted --source-dir "$root/extension" --artifacts-dir "$artifacts" \
-    --ignore-files "tests/**"
+  npx --yes web-ext@10 sign --channel=unlisted --source-dir "$root/dist/extension-firefox" --artifacts-dir "$artifacts"
 
 xpi="$(ls -t "$artifacts"/*.xpi | head -n 1)"
 dest="${XDG_DATA_HOME:-$HOME/.local/share}/siler"

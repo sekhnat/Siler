@@ -21,7 +21,7 @@ pub fn extensions(s: &siler_core::Settings) -> HashSet<String> {
     s.categories
         .iter()
         .flat_map(|c| c.extensions.iter().cloned())
-        .chain(["m3u8", "mpd"].map(String::from))
+        .chain(["m3u8", "mpd", "f4m"].map(String::from))
         .collect()
 }
 
@@ -48,7 +48,9 @@ pub fn links_in(text: &str, exts: &HashSet<String>) -> Vec<String> {
         let Ok(url) = Url::parse(line) else {
             return Vec::new();
         };
-        if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        if !matches!(url.scheme(), "http" | "https" | "ftp" | "ftps" | "sftp")
+            || url.host_str().is_none()
+        {
             return Vec::new();
         }
         let name = url
@@ -200,9 +202,14 @@ mod tests {
             links_in("https://x.org/My%20Film.mkv", &exts),
             ["https://x.org/My%20Film.mkv"]
         );
+        // FTP and SFTP files count too.
+        assert_eq!(
+            links_in("ftp://x.org/a.zip\nsftp://h/srv/b.iso", &exts),
+            ["ftp://x.org/a.zip", "sftp://h/srv/b.iso"]
+        );
         // Prose, other schemes and pages aren't offered.
         assert!(links_in("see https://x.org/a.zip for details", &exts).is_empty());
-        assert!(links_in("ftp://x.org/a.zip", &exts).is_empty());
+        assert!(links_in("gopher://x.org/a.zip", &exts).is_empty());
         assert!(links_in("https://x.org/", &exts).is_empty());
         assert!(links_in("https://x.org/zip", &exts).is_empty());
         assert!(links_in("https://x.org/a.gz", &exts).is_empty());

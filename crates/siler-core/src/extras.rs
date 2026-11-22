@@ -29,6 +29,26 @@ pub struct Extras {
     /// Bytes the download's own URL delivered while there were mirrors, over all runs.
     #[serde(skip_serializing_if = "is_zero")]
     pub own_bytes: u64,
+    /// What the last error was, as a code the app can show in its language.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<ErrorCode>,
+}
+
+/// An error as a code and its details (see `Error::code_args`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ErrorCode {
+    pub code: String,
+    pub args: Vec<(String, String)>,
+}
+
+impl From<&crate::Error> for ErrorCode {
+    fn from(e: &crate::Error) -> Self {
+        let (code, args) = e.code_args();
+        ErrorCode {
+            code: code.to_string(),
+            args: args.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
+        }
+    }
 }
 
 fn is_zero(v: &u64) -> bool {

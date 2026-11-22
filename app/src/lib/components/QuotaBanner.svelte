@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from "../i18n";
   import { Gauge } from "@lucide/svelte";
   import { api } from "../api";
   import { bytes } from "../format";
@@ -14,9 +15,9 @@
   <div class="banner">
     <Gauge size={16} />
     <span class="grow">
-      <b>Data quota reached</b> — {bytes(q.used)} of {bytes(q.limit)} used. Downloads wait{at ? ` until ${at}` : " for the next period"}.
+      <b>{t("quota-banner-data-quota-reached")}</b> {at ? t("quota-banner-used-wait-until", { used: bytes(q.used), limit: bytes(q.limit), at }) : t("quota-banner-used-wait", { used: bytes(q.used), limit: bytes(q.limit) })}
     </span>
-    <button class="btn btn-sm" onclick={() => attempt(api.ignoreQuota())}>Ignore for this period</button>
+    <button class="btn btn-sm" onclick={() => attempt(api.ignoreQuota())}>{t("quota-banner-ignore-for-this-period")}</button>
   </div>
 {/if}
 

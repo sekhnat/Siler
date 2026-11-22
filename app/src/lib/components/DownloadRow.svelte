@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { FileArchive, Film, FolderOpen, KeyRound, ListOrdered, LoaderCircle, Pause, Play, RefreshCw, RotateCw, ShieldCheck, ShieldX, SquareTerminal, Waypoints } from "@lucide/svelte";
+  import { t } from "../i18n";
+  import { CircleStop, FileArchive, Film, FolderOpen, KeyRound, ListOrdered, LoaderCircle, Pause, Play, Radio, RefreshCw, RotateCw, ShieldCheck, ShieldX, SquareTerminal, Waypoints } from "@lucide/svelte";
   import { ALGO_LABEL, api, MAIN_QUEUE, type Download } from "../api";
-  import { STATUS_COLOR, STATUS_LABEL } from "../categories";
-  import { bytes, eta, host, knownSize, nameFromUrl, percent, relativeTime, speed, syncLabel } from "../format";
+    import { bytes, clock, eta, host, knownSize, nameFromUrl, percent, relativeTime, speed, STREAM_KIND, syncLabel } from "../format";
+  import { errorOf, isRecording, phaseText, progressOf, sizeText, statusColor, statusText } from "../rowview";
   import { attempt, store } from "../store.svelte";
   import FileIcon from "./FileIcon.svelte";
   import ProgressBar from "./ProgressBar.svelte";
@@ -10,59 +11,17 @@
   let { d, selected }: { d: Download; selected: boolean } = $props();
 
   const done = $derived(d.status === "completed");
+  const recording = $derived(isRecording(d));
   const mp = $derived(d.media_progress ?? null);
   const size = $derived(knownSize(d));
-  /** A media download's progress is its phase; while it downloads, its bytes when the
-   * pieces' sizes are known, else its pieces. */
-  function mediaPct(m: NonNullable<typeof mp>): number {
-    switch (m.phase) {
-      case "downloading":
-        if (m.bytes_total) return 88 * Math.min(1, d.downloaded / m.bytes_total);
-        return m.segments_total ? (88 * m.segments_done) / m.segments_total : 0;
-      case "rebuilding":
-        return 88 + (m.permille / 1000) * 10;
-      case "publishing":
-        return 99;
-      default:
-        return 0;
-    }
-  }
-  const pct = $derived(done ? 100 : mp ? mediaPct(mp) : percent(d.total_size, d.downloaded));
+  const pct = $derived(progressOf(d));
   const name = $derived(d.filename ?? nameFromUrl(d.url));
-  const phaseText = $derived.by(() => {
-    if (!mp) return null;
-    switch (mp.phase) {
-      case "waiting":
-        return "Waiting for the site…";
-      case "resolving":
-        return "Reading the stream…";
-      case "downloading":
-        if (mp.bytes_total) return `${bytes(d.downloaded)} of ${bytes(mp.bytes_total)}`;
-        return `Pieces ${mp.segments_done} of ${mp.segments_total}${d.downloaded ? ` · ${bytes(d.downloaded)}` : ""}`;
-      case "rebuilding":
-        return `Rebuilding ${(mp.permille / 10).toFixed(0)}%`;
-      default:
-        return "Saving…";
-    }
-  });
-  const finishing = $derived.by(() => {
-    const p = d.phase;
-    if (!p || done) return null;
-    const pc = p.total ? ` ${Math.floor((100 * p.done) / p.total)}%` : "";
-    return p.name === "verifying" ? `Checking the checksum${pc}` : `Unpacking${pc}`;
-  });
+  const phase = $derived(phaseText(d));
   const verified = $derived(d.verify && d.verify.expected ? d.verify.expected.toLowerCase() === d.verify.actual.toLowerCase() : null);
   const usedMirrors = $derived(d.sources.filter((s, i) => i > 0 && !s.disabled).length);
   const commandFailed = $derived(!!d.command && !d.command.running && (d.command.error != null || d.command.exit_code !== 0));
-  const sizeText = $derived.by(() => {
-    if (done) return bytes(d.total_size);
-    if (finishing) return finishing;
-    if (phaseText) return phaseText;
-    if (d.media) return d.downloaded ? `${bytes(d.downloaded)} so far` : "Not started";
-    if (d.total_size) return `${bytes(d.downloaded)} of ${bytes(d.total_size)}`;
-    return d.downloaded ? bytes(d.downloaded) : "Unknown size";
-  });
-  const statusColor = $derived(d.needs_login ? "var(--accent)" : STATUS_COLOR[d.status]);
+  const sizeLine = $derived(sizeText(d));
+  const statusColorV = $derived(statusColor(d));
 
   function askLogin(e: MouseEvent) {
     e.stopPropagation();
@@ -77,50 +36,50 @@
     <div class="top">
       <span class="name truncate" title={name}>{name}</span>
       {#if d.file_missing}
-        <span class="pill" style:--c="var(--warn)" title="The file was moved or deleted">File missing</span>
+        <span class="pill" style:--c="var(--warn)" title={t("download-row-the-file-was-moved-or-deleted")}>{t("download-row-file-missing")}</span>
       {/if}
       {#if verified === true}
-        <span class="pill" style:--c="var(--ok)" title="Its {ALGO_LABEL[d.verify!.algo]} matches the expected checksum"><ShieldCheck size={11} />Verified</span>
+        <span class="pill" style:--c="var(--ok)" title={t("download-row-its-matches-the-expected-checksum", { v: ALGO_LABEL[d.verify!.algo] })}><ShieldCheck size={11} />{t("download-row-verified")}</span>
       {:else if d.checksum_failed}
-        <span class="pill" style:--c="var(--err)" title="Its {d.verify ? ALGO_LABEL[d.verify.algo] : 'checksum'} doesn't match"><ShieldX size={11} />Damaged</span>
+        <span class="pill" style:--c="var(--err)" title={(d.verify ? t("download-row-its-doesn-t-match", { algo: ALGO_LABEL[d.verify.algo] }) : t("download-row-its-checksum-doesn-t-match"))}><ShieldX size={11} />{t("download-row-damaged")}</span>
       {/if}
       {#if d.sources.length > 1 && !done}
-        <span class="pill quiet" title="{usedMirrors} of {d.sources.length - 1} mirrors in use"><Waypoints size={11} />{usedMirrors + 1} sources</span>
+        <span class="pill quiet" title={t("download-row-of-mirrors-in-use", { usedMirrors, v: d.sources.length - 1 })}><Waypoints size={11} />{t("download-row-sources", { v: usedMirrors + 1 })}</span>
       {/if}
       {#if d.zip_path}
-        <span class="pill quiet" title="From inside the archive: {d.zip_path}"><FileArchive size={11} />ZIP</span>
+        <span class="pill quiet" title={t("download-row-from-inside-the-archive", { zip_path: d.zip_path })}><FileArchive size={11} />{t("download-row-zip")}</span>
       {/if}
       {#if d.command?.running}
-        <span class="pill" style:--c="var(--accent)" title="Running the command after the download"><SquareTerminal size={11} />Running command</span>
+        <span class="pill" style:--c="var(--accent)" title={t("download-row-running-the-command-after-the-download")}><SquareTerminal size={11} />{t("download-row-running-command")}</span>
       {:else if commandFailed}
-        <span class="pill" style:--c="var(--warn)" title={d.command?.error ?? `The command exited with ${d.command?.exit_code}`}><SquareTerminal size={11} />Command failed</span>
+        <span class="pill" style:--c="var(--warn)" title={d.command?.error ?? t("download-row-command-exited", { code: d.command?.exit_code ?? "" })}><SquareTerminal size={11} />{t("download-row-command-failed")}</span>
       {/if}
       {#if d.media}
-        <span class="pill quiet" title={d.media.reason}><Film size={11} />{d.media.manifest === "hls" ? "HLS" : "DASH"}</span>
+        <span class="pill quiet" title={d.media.reason}>{#if d.media.live && !done}<Radio size={11} />{t("download-row-live")}{:else}<Film size={11} />{STREAM_KIND[d.media.manifest] ?? t("download-row-stream")}{/if}</span>
       {/if}
       {#if !done && d.queue_id !== MAIN_QUEUE}
-        <span class="pill quiet" title="In the queue “{store.queueName(d.queue_id)}”"><ListOrdered size={11} />{store.queueName(d.queue_id)}</span>
+        <span class="pill quiet" title={t("download-row-in-the-queue", { v: store.queueName(d.queue_id) })}><ListOrdered size={11} />{store.queueName(d.queue_id)}</span>
       {/if}
       {#if d.sync_every}
         <span
           class="pill quiet"
-          title="Checked for a newer version {syncLabel(d.sync_every)}{d.sync_checked_at ? ` · last checked ${relativeTime(d.sync_checked_at)}` : ''}"
+          title={(d.sync_checked_at ? t("download-row-checked-for-a-newer-version-last", { every: syncLabel(d.sync_every), when: relativeTime(d.sync_checked_at) }) : t("download-row-checked-for-a-newer-version", { every: syncLabel(d.sync_every) }))}
           ><RefreshCw size={11} />{syncLabel(d.sync_every)}</span
         >
       {/if}
       {#if !done}
-        <span class="pill" style:--c={statusColor}>
+        <span class="pill" style:--c={statusColorV}>
           {#if d.status === "probing"}<LoaderCircle size={11} class="spin" />{/if}
-          {d.needs_login ? "Needs login" : STATUS_LABEL[d.status]}
+          {statusText(d)}
         </span>
       {/if}
     </div>
     {#if !done}<ProgressBar value={pct} status={d.status} height={5} />{/if}
     <div class="meta truncate">
       {#if d.status === "failed" && d.error}
-        <span class="err">{d.error}</span>
+        <span class="err">{errorOf(d)}</span>
       {:else}
-        <span class="num">{sizeText}</span>
+        <span class="num">{sizeLine}</span>
         {#if !done && d.total_size}<span class="sep">·</span><span class="num">{pct.toFixed(pct < 10 ? 1 : 0)}%</span>{/if}
         <span class="sep">·</span><span>{host(d.final_url ?? d.url)}</span>
         {#if done}<span class="sep">·</span><span>{relativeTime(d.completed_at)}</span>{/if}
@@ -131,27 +90,35 @@
   <div class="rate">
     {#if d.status === "downloading"}
       <div class="speed num">{speed(d.speed)}</div>
-      {#if !d.media || mp?.bytes_total}<div class="eta num">{eta(size, d.downloaded, d.speed)} left</div>{/if}
+      {#if (!d.media || mp?.bytes_total) && mp?.phase !== "recording"}<div class="eta num">{t("download-row-left", { v: eta(size, d.downloaded, d.speed) })}</div>{/if}
     {/if}
   </div>
 
   <div class="quick">
+    {#if recording}
+      <button class="icon-btn sm finish" title={t("download-row-finish-the-recording-and-keep-it")} onclick={(e) => (e.stopPropagation(), attempt(api.finish(d.id)))}><CircleStop size={15} /></button>
+    {/if}
     {#if d.status === "downloading" || d.status === "probing" || d.status === "queued"}
-      <button class="icon-btn sm" title="Pause" onclick={(e) => (e.stopPropagation(), attempt(api.pause(d.id)))}><Pause size={15} /></button>
+      <button class="icon-btn sm" title={t("download-row-pause")} onclick={(e) => (e.stopPropagation(), attempt(api.pause(d.id)))}><Pause size={15} /></button>
     {:else if d.status === "paused" || d.status === "waiting"}
-      <button class="icon-btn sm" title="Resume" onclick={(e) => (e.stopPropagation(), attempt(api.resume(d.id)))}><Play size={15} /></button>
+      <button class="icon-btn sm" title={t("download-row-resume")} onclick={(e) => (e.stopPropagation(), attempt(api.resume(d.id)))}><Play size={15} /></button>
+    {:else if d.needs_host_key}
+      <button class="icon-btn sm" title={t("download-row-check-the-server-s-key")} onclick={askLogin}><KeyRound size={15} /></button>
     {:else if d.needs_login}
-      <button class="icon-btn sm" title="Log in" onclick={askLogin}><KeyRound size={15} /></button>
+      <button class="icon-btn sm" title={t("download-row-log-in")} onclick={askLogin}><KeyRound size={15} /></button>
     {:else if d.status === "failed"}
-      <button class="icon-btn sm" title="Retry" onclick={(e) => (e.stopPropagation(), attempt(api.resume(d.id)))}><RotateCw size={15} /></button>
+      <button class="icon-btn sm" title={t("download-row-retry")} onclick={(e) => (e.stopPropagation(), attempt(api.resume(d.id)))}><RotateCw size={15} /></button>
     {/if}
     {#if d.dir && !d.file_missing}
-      <button class="icon-btn sm" title="Show in folder" onclick={(e) => (e.stopPropagation(), attempt(api.showInFolder(d.id)))}><FolderOpen size={15} /></button>
+      <button class="icon-btn sm" title={t("download-row-show-in-folder")} onclick={(e) => (e.stopPropagation(), attempt(api.showInFolder(d.id)))}><FolderOpen size={15} /></button>
     {/if}
   </div>
 </div>
 
 <style>
+  .finish {
+    color: var(--err);
+  }
   .row {
     display: grid;
     grid-template-columns: 40px minmax(0, 1fr) auto 64px;

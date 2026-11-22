@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from "../i18n";
   import { Check } from "@lucide/svelte";
   import { scale } from "svelte/transition";
   import { SPEED_PRESETS, SPEED_UNITS, limitLabel } from "../format";
@@ -64,10 +65,10 @@
       <select class="input" bind:value={unit}>
         {#each SPEED_UNITS as u, i (u.label)}<option value={i}>{u.label}</option>{/each}
       </select>
-      <button type="submit" class="btn btn-primary btn-sm">Set</button>
+      <button type="submit" class="btn btn-primary btn-sm">{t("speed-menu-set")}</button>
     </form>
   {:else}
-    <button role="menuitem" onclick={() => (custom = true)}><span>Custom…</span></button>
+    <button role="menuitem" onclick={() => (custom = true)}><span>{t("speed-menu-custom")}</span></button>
   {/if}
 </div>
 

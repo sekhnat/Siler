@@ -1,0 +1,21 @@
+pkgbase = siler-bin
+	pkgdesc = Download manager: many connections per file, queues, FTP/SFTP, a video grabber and browser integration
+	pkgver = 0.8.0
+	pkgrel = 1
+	url = https://github.com/sekhnat/Siler
+	arch = x86_64
+	license = LicenseRef-unknown
+	depends = webkit2gtk-4.1
+	depends = gtk3
+	depends = libayatana-appindicator
+	depends = hicolor-icon-theme
+	optdepends = kwallet: remember logins on KDE Plasma
+	optdepends = gnome-keyring: remember logins on GNOME and others
+	provides = siler
+	conflicts = siler
+	options = !strip
+	options = !debug
+	source = https://github.com/sekhnat/Siler/releases/download/v0.8.0/siler-0.8.0-linux-x86_64.tar.gz
+	sha256sums = SKIP
+
+pkgname = siler-bin

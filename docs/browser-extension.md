@@ -1,6 +1,6 @@
 # Browser extension
 
-**Siler Integration** sends downloads and the videos web pages play from Firefox to Siler. It works in Firefox and the browsers built on it: LibreWolf, Waterfox, Floorp and Zen.
+**Siler Integration** sends downloads and the videos web pages play from your browser to Siler. One extension, built for two families: Firefox and the browsers built on it (LibreWolf, Waterfox, Floorp, Zen), and the Chromium ones (Chrome, Chromium, Brave, Vivaldi, Edge, Opera).
 
 <p align="center">
   <picture><source media="(prefers-color-scheme: dark)" srcset="images/extension-popup-dark.png"><source media="(prefers-color-scheme: light)" srcset="images/extension-popup-light.png"><img src="images/extension-popup-light.png" alt="The extension's toolbar popup: connected to Siler, with active downloads, speed and the capture switch" width="320"></picture>
@@ -10,9 +10,25 @@
 
 1. **Register the browser host.** Run `siler --install-integration` once, or open Siler → Settings → Browser → **Install**. The AppImage and the release tarball include the host; from a source checkout, `./scripts/install-dev.sh` builds and registers it (it needs `siler-nmhost` next to the `siler` binary).
    - The host manifest goes to `~/.mozilla/native-messaging-hosts/`, which Firefox, Zen and Floorp read. A copy goes to `~/.librewolf/`, `~/.waterfox/`, `~/.floorp/` and `~/.zen/` when those browsers are installed.
+   - For the Chromium browsers it goes to `~/.config/<browser>/NativeMessagingHosts/` (google-chrome, google-chrome-beta, google-chrome-unstable, chromium, BraveSoftware/Brave-Browser, vivaldi, microsoft-edge, opera), when the browser is installed. Install the browser first, or click **Install** again afterwards.
+   - The AUR package installs the manifests system-wide instead (`/usr/lib/mozilla/native-messaging-hosts/`, `/etc/chromium/…`, `/etc/opt/chrome/…`, `/etc/opt/edge/…`).
    - When Siler runs as an AppImage, the host is copied to `~/.local/share/siler/bin/`, because the AppImage's own files disappear when it closes. Siler updates that copy and the AppImage path on every start.
 2. **Install the extension.** Open Siler → Settings → Browser and click **Add to Firefox**. After an update, reload pages that were already open (or restart Firefox): they keep the previous version's Download button until then. The AppImage and the release tarball include the extension, signed by Mozilla; Siler hands Firefox a copy and Firefox asks to add it. Each [release](https://github.com/sekhnat/Siler/releases/latest) also has `siler-integration-<version>.xpi` to open with Firefox directly. A build you signed yourself (below) takes precedence.
 3. **Grant access to all sites** on the welcome page. Firefox treats MV3 host permissions as optional.
+
+### Chrome, Chromium, Brave, Vivaldi, Edge, Opera
+
+1. Register the browser host as above.
+2. In Siler, open Settings → Browser and click **Set up** under the Chromium browsers. Siler copies the extension to `~/.local/share/siler/chromium-extension/` (it must stay put: the browser loads it from there every time).
+3. Open the browser's extensions page (Siler offers **Open in Chrome** and the like), turn on **Developer mode**, click **Load unpacked** and choose that folder.
+
+The extension isn't in the Chrome Web Store yet ([docs/chrome-web-store.md](chrome-web-store.md) has the submission checklist). An unpacked extension keeps the same ID (`legjbaodpdlommbgpdfcmogjedfgpjae`, pinned by the `key` in `manifest.chromium.json`), which is the one the host manifest allows.
+
+How it differs from Firefox: Chromium extensions can't hold a response at its headers, so a download is taken when the browser starts it (`downloads.onCreated`): it is cancelled and handed to Siler, and the browser may show it for a moment. Form downloads (POST) are sent again with their form data. Stream manifests are read with a request of their own (with the page's cookies), and site answers (Facebook, Instagram, TikTok, Vimeo) are copied from the page by a small script that runs only on those sites.
+
+### Building
+
+`node scripts/build-extension.mjs firefox` and `… chromium` write `dist/extension-<browser>/` and a zip. The source is one folder (`extension/`); `manifest.chromium.json` is merged over `manifest.json` for Chromium, whose background is a service worker (`sw.js`) loading the same scripts.
 
 ### Signing your own build
 
@@ -21,7 +37,7 @@ Release builds of Firefox only keep signed extensions installed. To sign a chang
 1. Create an API key at <https://addons.mozilla.org/developers/addon/api/key/>.
 2. Put it in `~/.config/siler/amo.env` (`AMO_JWT_ISSUER=…`, `AMO_JWT_SECRET=…`), then `chmod 600` it.
 3. Raise `version` in `extension/manifest.json`: every signing needs a new version.
-4. Run `./scripts/sign-extension.sh`. It uploads the extension for an **unlisted** signature: Mozilla signs it but doesn't publish it.
+4. Run `./scripts/sign-extension.sh`. It builds the Firefox extension and uploads it for an **unlisted** signature: Mozilla signs it but doesn't publish it.
 5. Click Siler → Settings → Browser → **Add to Firefox**.
 
 For a quick test instead, open `about:debugging#/runtime/this-firefox`, choose **Load Temporary Add-on** and pick `extension/manifest.json`. It is removed when Firefox restarts. `npx web-ext run -s extension` also works, except on distributions that lock `devtools.debugger.remote-enabled`, such as CachyOS.

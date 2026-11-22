@@ -25,20 +25,24 @@ Firefox extension ──native messaging (stdio)──► siler-nmhost ──Uni
 
 - Data is written into a preallocated `<name>.siler.part` file using positional writes. Progress is checkpointed about once a second, on pause and on quit.
 - Resuming re-probes the URL. If the size, ETag or Last-Modified changed, the download starts over and shows a notice.
+- How bytes are fetched is a transport per URL scheme (`crates/siler-core/src/transport/`): HTTP(S) with reqwest, FTP/FTPS with a small client of Siler's own, and SFTP with russh. A transport answers two questions, what a file is (`probe`) and its bytes from one offset to another (`open_range`); segments, connection limits, retries, mirrors, speed limits and the quota are the same for all of them.
 - The HTTP client is HTTP/1.1 only and sends `Accept-Encoding: identity`. This makes each connection a real TCP connection, and keeps byte ranges pointing at the file itself.
+- FTP uses passive mode (EPSV, else PASV, always to the control connection's host), `REST` for ranges and `MDTM` in place of an ETag. A range that ends before the file does closes its connections; a whole file returns its logged-in control connection to a small pool. FTP and SSH connections go through the proxy too: SOCKS5 directly, an HTTP proxy with `CONNECT`.
 - A connection limit per server is shared by all of that server's downloads, with exceptions for single servers.
 - Mirrors and multi-source downloads: other addresses of the same file share the work, each checked first for the same size and range support. A mirror that keeps failing is dropped and its work moves to the others. Servers' `Link: rel=duplicate` headers (RFC 6249) add mirrors automatically.
 - Metalinks (RFC 5854 `.meta4` and 3.0 `.metalink`) become the files they list, with their mirrors, checksums and piece hashes. With piece hashes, only damaged pieces are fetched again.
 - Checksums (MD5, SHA-1, SHA-256, SHA-512, or a server's `Digest`/`Repr-Digest` header) are checked before the file gets its final name. A file that doesn't match is kept until you choose **Download again** or **Keep it anyway**.
 - ZIP preview lists the files inside a ZIP on a server with two small range requests. Single files can be fetched out of it (only their compressed bytes), unpacked and checked against their CRC-32.
 - Scheduling runs while Siler is running (in the tray is fine). It can't wake a sleeping or switched-off computer: that needs root (rtcwake) and is left out.
-- Media downloads (HLS and DASH) are described in [Video and audio streams](media.md).
+- Media downloads (HLS, DASH, HDS, live recordings, RTMP and MMS) are described in [Video and audio streams](media.md).
 
 ## Security and privacy
 
 - The database is mode 0600 because it stores forwarded cookies, which are needed to resume. Cookies are never sent to the UI.
 - The socket is mode 0600 and only accepts peers with the same UID.
 - Logins are kept in memory and, when you choose to save them, in the desktop keyring (Secret Service API: KWallet, GNOME Keyring, KeePassXC…). They are never written to the database. A login is only sent to the server it belongs to; redirects to another host don't carry it. The keyring is read only when a server asks for a login, or at start when a manual proxy has a username.
+- SFTP server keys are checked against `~/.ssh/known_hosts` and Siler's own list; an unknown key waits for the user to trust it, a changed one is refused.
+- The update check asks `api.github.com` for the latest release once a day (or never, if turned off) and sends nothing about the user. An AppImage update is used only when its SHA-256 matches the release's checksum file.
 - Media playlists are checked before anything is fetched. Their links must be `http(s)` and by default may not point at this computer or the local network. See [Media safety](media.md#safety).
 - The command after each download runs without a shell, one download at a time. `{path}`, `{dir}`, `{name}`, `{url}` and `{size}` are filled in inside each word, so a file name with spaces, quotes or `;` stays one argument and can't run anything else.
 

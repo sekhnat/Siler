@@ -13,6 +13,7 @@ use tokio::net::{UnixListener, UnixStream};
 
 use crate::AppState;
 use crate::commands::meta_of;
+use crate::i18n::tr;
 
 pub fn start(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
@@ -83,7 +84,7 @@ fn now_ms() -> i64 {
 fn dispatch(app: &AppHandle, req: Request) -> Response {
     let Some(state) = app.try_state::<AppState>() else {
         return Response::Error {
-            message: "Siler couldn't start; open it to see why".into(),
+            message: tr("ipc-couldnt-start"),
         };
     };
     state
@@ -168,7 +169,7 @@ pub fn handle_add(app: &AppHandle, items: Vec<BrowserItem>, opts: &AddOptions) -
     let silent = opts.silent;
     let Some(state) = app.try_state::<AppState>() else {
         return Response::Error {
-            message: "Siler couldn't start; open it to see why".into(),
+            message: tr("ipc-couldnt-start"),
         };
     };
     let items: Vec<_> = items

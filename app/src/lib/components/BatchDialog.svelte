@@ -20,6 +20,7 @@
 </script>
 
 <script lang="ts">
+  import { t } from "../i18n";
   import { Search, ShieldCheck, Waypoints, X } from "@lucide/svelte";
   import { onMount } from "svelte";
   import { api, MAIN_QUEUE, type Category, type OnConflict, type Settings } from "../api";
@@ -47,7 +48,7 @@
 
   const nameOf = (i: BatchItem) => i.filename ?? nameFromUrl(i.url);
   // A manifest is a stream: it becomes a video, whatever its own name says.
-  const isStream = (i: BatchItem) => !!i.stream || /\.(m3u8|mpd)(\?|#|$)/i.test(i.url);
+  const isStream = (i: BatchItem) => !!i.stream || /\.(m3u8|mpd|f4m)(\?|#|$)/i.test(i.url) || /^(rtmpt?|mms[ht]?):/i.test(i.url);
   const typed = $derived(
     items.map((i) => ({ ...i, name: nameOf(i), category: isStream(i) ? "video" : categoryOf(nameOf(i), settings?.categories) })),
   );
@@ -91,23 +92,23 @@
 
 <div class="batch">
   <div>
-    <h2>Download {items.length} files</h2>
+    <h2>{t("batch-download-files", { length: items.length })}</h2>
     <div class="hint">
-      {#if items[0]?.origin === "grabber"}Found by the site grabber.{" "}{:else if items[0]?.origin === "list"}From a list or metalink.{" "}{/if}Choose which files Siler should download.
+      {#if items[0]?.origin === "grabber"}{t("batch-found-by-the-site-grabber")}{" "}{:else if items[0]?.origin === "list"}{t("batch-from-a-list-or-metalink")}{" "}{/if}{t("batch-choose-which-files-siler-should-download")}
     </div>
   </div>
 
   <div class="filters">
     <label class="search">
       <Search size={14} />
-      <input placeholder="Filter by name or address" bind:value={query} spellcheck="false" />
-      {#if query}<button class="icon-btn sm" onclick={() => (query = "")} aria-label="Clear"><X size={13} /></button>{/if}
+      <input placeholder={t("batch-filter-by-name-or-address")} bind:value={query} spellcheck="false" />
+      {#if query}<button class="icon-btn sm" onclick={() => (query = "")} aria-label={t("batch-clear")}><X size={13} /></button>{/if}
     </label>
     <div class="chips">
-      <button class="chip" class:on={type === "all"} onclick={() => (type = "all")}>All <span>{items.length}</span></button>
-      {#each types as t (t.key)}
-        <button class="chip" class:on={type === t.key} style:--c={t.color} onclick={() => (type = t.key)}>
-          <t.icon size={12} /> {t.label} <span>{t.n}</span>
+      <button class="chip" class:on={type === "all"} onclick={() => (type = "all")}>{t("batch-all")} <span>{items.length}</span></button>
+      {#each types as ty (ty.key)}
+        <button class="chip" class:on={type === ty.key} style:--c={ty.color} onclick={() => (type = ty.key)}>
+          <ty.icon size={12} /> {ty.label} <span>{ty.n}</span>
         </button>
       {/each}
     </div>
@@ -115,41 +116,41 @@
 
   <div class="list">
     <div class="row head">
-      <input type="checkbox" checked={shownOn} onchange={() => setShown(!shownOn)} aria-label="Select all shown" />
-      <span>{count} of {items.length} selected{totalSize ? ` · ${bytes(totalSize)}` : ""}</span>
+      <input type="checkbox" checked={shownOn} onchange={() => setShown(!shownOn)} aria-label={t("batch-select-all-shown")} />
+      <span>{t("batch-of-selected", { count, length: items.length })}{totalSize ? ` · ${bytes(totalSize)}` : ""}</span>
       <span class="links">
-        <button onclick={() => setShown(true)}>Select shown</button>
-        <button onclick={() => setShown(false)}>Clear shown</button>
+        <button onclick={() => setShown(true)}>{t("batch-select-shown")}</button>
+        <button onclick={() => setShown(false)}>{t("batch-clear-shown")}</button>
       </span>
     </div>
     {#each shown as it (it.key)}
       <label class="row">
         <input type="checkbox" bind:checked={checked[it.key]} />
         <span class="name truncate" title={it.url}>{it.name}</span>
-        {#if it.checksum}<span class="badge" title="Checked against {it.checksum}"><ShieldCheck size={12} /></span>{/if}
-        {#if it.mirrors}<span class="badge" title="{it.mirrors} {it.mirrors === 1 ? 'mirror' : 'mirrors'}"><Waypoints size={12} /> {it.mirrors}</span>{/if}
+        {#if it.checksum}<span class="badge" title={t("batch-checked-against", { checksum: it.checksum })}><ShieldCheck size={12} /></span>{/if}
+        {#if it.mirrors}<span class="badge" title={t("batch-mirrors", { count: it.mirrors })}><Waypoints size={12} /> {it.mirrors}</span>{/if}
         <span class="host truncate">{host(it.url)}</span>
         <span class="size">{it.size ? bytes(it.size) : ""}</span>
       </label>
     {:else}
-      <div class="none hint">Nothing matches the filter.</div>
+      <div class="none hint">{t("batch-nothing-matches-the-filter")}</div>
     {/each}
   </div>
 
   <div class="actions">
-    <button class="btn btn-ghost" onclick={oncancel} disabled={busy}>Cancel</button>
+    <button class="btn btn-ghost" onclick={oncancel} disabled={busy}>{t("batch-cancel")}</button>
     <label class="conflict">
-      <span class="hint">If a file exists</span>
+      <span class="hint">{t("batch-if-a-file-exists")}</span>
       <select class="input" bind:value={conflict}>
-        <option value="rename">Keep both</option>
-        <option value="overwrite">Replace it</option>
-        <option value="skip">Skip it</option>
+        <option value="rename">{t("batch-keep-both")}</option>
+        <option value="overwrite">{t("batch-replace-it")}</option>
+        <option value="skip">{t("batch-skip-it")}</option>
       </select>
     </label>
     <span class="grow"></span>
     <QueuePicker bind:value={queueId} />
-    <button class="btn" disabled={!count || busy} onclick={() => submit(true)}>Download later</button>
-    <button class="btn btn-primary" disabled={!count || busy} onclick={() => submit(false)}>Download {count}</button>
+    <button class="btn" disabled={!count || busy} onclick={() => submit(true)}>{t("batch-download-later")}</button>
+    <button class="btn btn-primary" disabled={!count || busy} onclick={() => submit(false)}>{t("batch-download", { count })}</button>
   </div>
 </div>
 

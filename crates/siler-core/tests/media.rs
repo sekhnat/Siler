@@ -1543,3 +1543,305 @@ async fn the_download_waits_until_the_site_allows_it() {
     );
     e.shutdown().await;
 }
+
+// ------------------------------------------------------------------ HDS, playlists, live
+
+#[tokio::test]
+async fn hds_fragments_become_one_mp4() {
+    let ff = need_ffmpeg!();
+    let (addr, s) = spawn_server().await;
+    let t = dir();
+    let e = engine(t.path(), &ff).await;
+    let p = probe(&e, &url(addr, "hds/manifest.f4m")).await;
+    assert_eq!(p.kind, MediaKind::Hds, "{:?}", p.message);
+    assert_eq!(p.variants.len(), 1);
+    assert!(!p.live);
+    let id = e
+        .add_media(NewMediaDownload {
+            url: url(addr, "hds/manifest.f4m"),
+            dir: Some(t.path().join("out")),
+            container: Some(ContainerChoice::Mp4),
+            filename: Some("hds".into()),
+            ..Default::default()
+        })
+        .await
+        .expect("adds");
+    let d = wait_done(&e, id).await;
+    assert_eq!(d.status, Status::Completed, "{:?}", d.error);
+    assert!(
+        s.hits("/hds/boot.abst") >= 2,
+        "read at the probe and at the download"
+    );
+    let out = output_of(&d);
+    assert!(out.to_string_lossy().ends_with(".mp4"));
+    let kinds: Vec<String> = streams(&ff, &out).into_iter().map(|s| s.1).collect();
+    assert!(kinds.contains(&"h264".to_string()), "{kinds:?}");
+    assert!(kinds.contains(&"aac".to_string()), "{kinds:?}");
+    let secs = duration_of(&ff, &out);
+    assert!((5.0..7.0).contains(&secs), "{secs}");
+    e.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_plain_playlist_lists_its_links() {
+    let (addr, s) = spawn_server().await;
+    let t = dir();
+    let extra = t.path().join("extra");
+    std::fs::create_dir_all(&extra).unwrap();
+    std::fs::write(
+        extra.join("radio.pls"),
+        "[playlist]\nFile1=http://radio.example/a.mp3\nTitle1=Morning\nFile2=mms://radio.example/live\nNumberOfEntries=2\n",
+    )
+    .unwrap();
+    *s.extra.lock().unwrap() = Some(extra);
+    let e = engine_plain(t.path()).await;
+    let p = probe(&e, &url(addr, "extra/radio.pls")).await;
+    assert_eq!(p.kind, MediaKind::Playlist);
+    let urls: Vec<&str> = p.entries.iter().map(|e| e.url.as_str()).collect();
+    assert_eq!(
+        urls,
+        ["http://radio.example/a.mp3", "mms://radio.example/live"]
+    );
+    assert_eq!(p.entries[0].title.as_deref(), Some("Morning"));
+    e.shutdown().await;
+}
+
+/// A live playlist over the muxed fixture's segments: `first..=last`, by media sequence.
+fn live_playlist(seq: u64, segs: &[usize], ended: bool) -> String {
+    let mut s = format!(
+        "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:{seq}\n"
+    );
+    for i in segs {
+        s.push_str(&format!("#EXTINF:2.0,\n/muxed/seg{i}.ts\n"));
+    }
+    if ended {
+        s.push_str("#EXT-X-ENDLIST\n");
+    }
+    s
+}
+
+async fn live_setup(playlist: String) -> (SocketAddr, Arc<Shared>, tempfile::TempDir, PathBuf) {
+    let (addr, s) = spawn_server().await;
+    let t = dir();
+    let extra = t.path().join("extra");
+    std::fs::create_dir_all(&extra).unwrap();
+    std::fs::write(extra.join("live.m3u8"), playlist).unwrap();
+    *s.extra.lock().unwrap() = Some(extra.clone());
+    (addr, s, t, extra)
+}
+
+async fn wait_hit(s: &Shared, path: &str) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while s.hits(path) == 0 {
+        assert!(Instant::now() < deadline, "{path} was never fetched");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test]
+async fn a_live_stream_is_recorded_until_it_ends() {
+    let ff = need_ffmpeg!();
+    let (addr, s, t, extra) = live_setup(live_playlist(0, &[0, 1], false)).await;
+    let e = engine(t.path(), &ff).await;
+    let p = probe(&e, &url(addr, "extra/live.m3u8")).await;
+    assert_eq!(p.kind, MediaKind::Hls);
+    assert!(p.live);
+    let id = e
+        .add_media(NewMediaDownload {
+            url: url(addr, "extra/live.m3u8"),
+            dir: Some(t.path().join("out")),
+            container: Some(ContainerChoice::Mkv),
+            filename: Some("live".into()),
+            ..Default::default()
+        })
+        .await
+        .expect("adds");
+    wait_hit(&s, "/muxed/seg1.ts").await;
+    // The stream goes on, then ends.
+    std::fs::write(extra.join("live.m3u8"), live_playlist(0, &[0, 1, 2], true)).unwrap();
+    let d = wait_done(&e, id).await;
+    assert_eq!(d.status, Status::Completed, "{:?}", d.error);
+    assert_eq!(s.hits("/muxed/seg0.ts"), 1, "nothing is fetched twice");
+    let secs = duration_of(&ff, &output_of(&d));
+    assert!((5.0..7.0).contains(&secs), "{secs}");
+    e.shutdown().await;
+}
+
+#[tokio::test]
+async fn finish_ends_a_recording_and_keeps_it() {
+    let ff = need_ffmpeg!();
+    let (addr, s, t, _extra) = live_setup(live_playlist(0, &[0, 1], false)).await;
+    let e = engine(t.path(), &ff).await;
+    let id = e
+        .add_media(NewMediaDownload {
+            url: url(addr, "extra/live.m3u8"),
+            dir: Some(t.path().join("out")),
+            container: Some(ContainerChoice::Mp4),
+            filename: Some("finished".into()),
+            ..Default::default()
+        })
+        .await
+        .expect("adds");
+    wait_hit(&s, "/muxed/seg1.ts").await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    e.finish(id).expect("finishes");
+    let d = wait_done(&e, id).await;
+    assert_eq!(d.status, Status::Completed, "{:?}", d.error);
+    let secs = duration_of(&ff, &output_of(&d));
+    assert!((3.0..5.0).contains(&secs), "{secs}");
+    assert_eq!(s.hits("/muxed/seg2.ts"), 0);
+    e.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_recording_behind_the_live_edge_catches_up_and_finish_stops_it_at_once() {
+    let ff = need_ffmpeg!();
+    let (addr, s, t, extra) = live_setup(live_playlist(0, &[0], false)).await;
+    let e = engine(t.path(), &ff).await;
+    let id = e
+        .add_media(NewMediaDownload {
+            url: url(addr, "extra/live.m3u8"),
+            dir: Some(t.path().join("out")),
+            container: Some(ContainerChoice::Mkv),
+            filename: Some("behind".into()),
+            ..Default::default()
+        })
+        .await
+        .expect("adds");
+    wait_hit(&s, "/muxed/seg0.ts").await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Slow segments, and two new ones at once: they are fetched side by side.
+    *s.delay.lock().unwrap() = Some(Duration::from_secs(4));
+    std::fs::write(extra.join("live.m3u8"), live_playlist(0, &[0, 1, 2], false)).unwrap();
+    wait_hit(&s, "/muxed/seg1.ts").await;
+    wait_hit(&s, "/muxed/seg2.ts").await;
+    let (a, b) = {
+        let first = s.first.lock().unwrap();
+        (first["/muxed/seg1.ts"], first["/muxed/seg2.ts"])
+    };
+    assert!(b.duration_since(a) < Duration::from_millis(1000), "fetched one after the other");
+    // Finish doesn't wait for the segments still coming: the recording keeps the first.
+    let pressed = Instant::now();
+    e.finish(id).expect("finishes");
+    let d = wait_done(&e, id).await;
+    assert!(pressed.elapsed() < Duration::from_secs(3), "{:?}", pressed.elapsed());
+    assert_eq!(d.status, Status::Completed, "{:?}", d.error);
+    let secs = duration_of(&ff, &output_of(&d));
+    assert!((1.0..3.0).contains(&secs), "{secs}");
+    *s.delay.lock().unwrap() = None;
+    e.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_paused_recording_continues_from_the_live_edge_with_a_gap() {
+    let ff = need_ffmpeg!();
+    let (addr, s, t, extra) = live_setup(live_playlist(0, &[0], false)).await;
+    let e = engine(t.path(), &ff).await;
+    let mut events = e.subscribe();
+    let id = e
+        .add_media(NewMediaDownload {
+            url: url(addr, "extra/live.m3u8"),
+            dir: Some(t.path().join("out")),
+            container: Some(ContainerChoice::Mkv),
+            filename: Some("gap".into()),
+            ..Default::default()
+        })
+        .await
+        .expect("adds");
+    wait_hit(&s, "/muxed/seg0.ts").await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    e.pause(id).expect("pauses");
+    let d = wait_done(&e, id).await;
+    assert_eq!(d.status, Status::Paused, "{:?}", d.error);
+    // Meanwhile the stream moved on: sequence 5 is seg2 (sequences 1–4 were missed).
+    std::fs::write(extra.join("live.m3u8"), live_playlist(5, &[2], false)).unwrap();
+    e.resume(id).expect("resumes");
+    wait_hit(&s, "/muxed/seg2.ts").await;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut gaps = 0;
+    while gaps == 0 && Instant::now() < deadline {
+        if let Ok(Ok(Event::Progress { items, .. })) =
+            tokio::time::timeout(Duration::from_millis(200), events.recv()).await
+        {
+            gaps = items
+                .iter()
+                .find(|i| i.id == id)
+                .and_then(|i| i.media.as_ref())
+                .map_or(0, |m| m.gaps);
+        }
+    }
+    assert_eq!(gaps, 1, "the missed segments count as one gap");
+    e.finish(id).expect("finishes");
+    let d = wait_done(&e, id).await;
+    assert_eq!(d.status, Status::Completed, "{:?}", d.error);
+    assert_eq!(s.hits("/muxed/seg1.ts"), 0);
+    e.shutdown().await;
+}
+
+/// Needs an FFmpeg with the RTMP muxer to play the server (`SILER_FULL_FFMPEG`, e.g. the
+/// system's), besides Siler's own for recording.
+#[tokio::test]
+async fn an_rtmp_stream_is_recorded_until_finish() {
+    let ff = need_ffmpeg!();
+    let Some(full) = std::env::var_os("SILER_FULL_FFMPEG").map(PathBuf::from) else {
+        eprintln!("skipped: SILER_FULL_FFMPEG not set");
+        return;
+    };
+    let t = dir();
+    let e = engine(t.path(), &ff).await;
+    if !e.ffmpeg_status().network {
+        eprintln!("skipped: this FFmpeg can't record RTMP");
+        return;
+    }
+    e.set_settings(Settings {
+        allow_private_media_addresses: true,
+        ..e.settings()
+    })
+    .expect("settings");
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let rtmp = format!("rtmp://127.0.0.1:{port}/live/test");
+    let mut server = Command::new(&full)
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-re",
+            "-stream_loop",
+            "-1",
+            "-i",
+        ])
+        .arg(fixtures().join("muxed/seg0.ts"))
+        .args(["-c", "copy", "-f", "flv", "-listen", "1"])
+        .arg(&rtmp)
+        .spawn()
+        .expect("RTMP server starts");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let p = probe(&e, &rtmp).await;
+    assert_eq!(p.kind, MediaKind::Stream);
+    let id = e
+        .add_media(NewMediaDownload {
+            url: rtmp.clone(),
+            dir: Some(t.path().join("out")),
+            filename: Some("rtmp".into()),
+            ..Default::default()
+        })
+        .await
+        .expect("adds");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while e.get(id).unwrap().downloaded < 20_000 && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    e.finish(id).expect("finishes");
+    let d = wait_done(&e, id).await;
+    let _ = server.kill();
+    let _ = server.wait();
+    assert_eq!(d.status, Status::Completed, "{:?}", d.error);
+    let out = output_of(&d);
+    assert!(out.to_string_lossy().ends_with(".mp4"), "{out:?}");
+    assert!(duration_of(&ff, &out) > 0.5);
+    e.shutdown().await;
+}

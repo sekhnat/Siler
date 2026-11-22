@@ -31,18 +31,18 @@ async function notify(title, message) {
 
 /** Remembers the last problem for the popup, and shows it as a notification. */
 async function reportFailure(file, reason) {
-  const message = `Siler couldn't take ${file ? `“${file}”` : "the download"}: ${reason}. Firefox is downloading it instead.`;
+  const message = file ? silerT("bgCouldntTakeFile", [file, reason]) : silerT("bgCouldntTakeDownload", [reason]);
   await browser.storage.session.set({ lastError: { at: Date.now(), message } }).catch(() => {});
-  notify("Download not handed to Siler", message);
+  notify(silerT("bgNotHandedTitle"), message);
 }
 
 /** A download would have gone to Siler, but Siler can't be reached. Said at most every 10 min. */
 function reportUnreachable() {
   if (Date.now() - unreachableShownAt < UNREACHABLE_EVERY) return;
   unreachableShownAt = Date.now();
-  const message = "Firefox handles downloads itself until Siler is set up: open Siler → Settings → Browser → Install.";
-  browser.storage.session.set({ lastError: { at: Date.now(), message: "Siler isn't reachable. " + message } }).catch(() => {});
-  notify("Siler isn't reachable", message);
+  const message = silerT("bgNotSetUp");
+  browser.storage.session.set({ lastError: { at: Date.now(), message: silerT("bgUnreachableLong", [message]) } }).catch(() => {});
+  notify(silerT("bgUnreachable"), message);
 }
 
 const reasonOf = (e) => String(e?.message ?? e).replace(/^Error:\s*/, "");
@@ -115,7 +115,7 @@ async function describe(url, { referrer = null, pageUrl = null, filename = null,
 
 async function handOver(items, silent = false) {
   const reply = await silerSend({ type: "add_downloads", items, silent });
-  if (reply?.type !== "accepted") throw new Error(reply?.message || "Siler rejected the download");
+  if (reply?.type !== "accepted") throw new Error(reply?.message || silerT("bgRejected"));
   health = { ...health, installed: true, running: true, checkedAt: Date.now() };
   return reply;
 }
@@ -218,10 +218,17 @@ browser.webRequest.onSendHeaders.addListener(
       ua: h["user-agent"] || null,
       contentType: h["content-type"] || null,
     });
+    const post = postBodies.get(d.requestId);
+    if (!SILER_GECKO && d.method === "POST" && post) {
+      recentPosts.set(d.url, { ...post, at: Date.now(), contentType: h["content-type"] || null });
+      for (const [u, v] of recentPosts) if (Date.now() - v.at > 60_000) recentPosts.delete(u);
+    }
   },
   DOC_REQUESTS,
-  ["requestHeaders"],
+  SILER_GECKO ? ["requestHeaders"] : ["requestHeaders", "extraHeaders"],
 );
+/** Chromium: form submissions by address, for the download they may turn into. */
+const recentPosts = new Map();
 const forgetRequest = (d) => {
   sentHeaders.delete(d.requestId);
   postBodies.delete(d.requestId);
@@ -240,7 +247,11 @@ function closeIfBlank(tabId, type) {
   browser.tabs.remove(tabId).catch(() => {});
 }
 
-browser.webRequest.onHeadersReceived.addListener(
+// Chromium can't hold a response at its headers: there, downloads are taken when they start
+// (downloads.onCreated below), with a form's body remembered by its address (see
+// onSendHeaders above).
+
+if (SILER_GECKO) browser.webRequest.onHeadersReceived.addListener(
   async (d) => {
     const sent = sentHeaders.get(d.requestId);
     const post = postBodies.get(d.requestId);
@@ -336,13 +347,24 @@ browser.downloads.onCreated.addListener(async (item) => {
       mime: item.mime || null,
       storeId: item.cookieStoreId,
     });
+    // Chromium: a form submission's download, with the form sent again.
+    const post = recentPosts.get(item.url);
+    if (post) {
+      recentPosts.delete(item.url);
+      desc.method = "POST";
+      desc.body = post.body;
+      const ct = post.contentType || (post.form ? "application/x-www-form-urlencoded" : null);
+      if (ct) desc.headers = [["Content-Type", ct]];
+    }
     await handOver([desc]);
   } catch (e) {
     console.warn("Siler hand-over failed; downloading in Firefox instead", e);
     health.checkedAt = 0;
     reportFailure(basename(item.filename), reasonOf(e));
     passThrough.add(item.url);
-    browser.downloads.download({ url: item.url, cookieStoreId: item.cookieStoreId }).catch(() => passThrough.delete(item.url));
+    const again = { url: item.url };
+    if (item.cookieStoreId) again.cookieStoreId = item.cookieStoreId;
+    browser.downloads.download(again).catch(() => passThrough.delete(item.url));
   }
 });
 
@@ -352,17 +374,17 @@ function createMenus() {
   browser.contextMenus.removeAll().then(() => {
     browser.contextMenus.create({
       id: "siler-link",
-      title: "Download with Siler",
+      title: silerT("menuDownload"),
       contexts: ["link", "image"],
     });
     browser.contextMenus.create({
       id: "siler-video",
-      title: "Download this video with Siler",
+      title: silerT("menuDownloadVideo"),
       contexts: ["video", "audio"],
     });
     browser.contextMenus.create({
       id: "siler-all",
-      title: "Download all links with Siler",
+      title: silerT("menuDownloadAll"),
       contexts: ["page", "selection"],
     });
   });
@@ -419,7 +441,7 @@ browser.contextMenus.onClicked.addListener(async (info, tab) => {
       const [res] = await browser.scripting.executeScript({ target: { tabId: tab.id, frameIds: [info.frameId ?? 0] }, func: collectLinks });
       const { links = [], selection = false } = res?.result ?? {};
       if (!links.length) {
-        notify("No links found", selection ? "The selection contains no links." : "This page has no links to download.");
+        notify(silerT("bgNoLinksFound"), selection ? silerT("bgSelectionHasNoLinks") : silerT("bgPageHasNoLinks"));
         return;
       }
       const cfg = await silerConfig();
@@ -439,13 +461,13 @@ browser.contextMenus.onClicked.addListener(async (info, tab) => {
   } catch (e) {
     console.error("Siler:", e);
     health.checkedAt = 0;
-    notify(info.menuItemId === "siler-video" ? "Siler couldn't take the video" : "Siler couldn't take the links", reasonOf(e));
+    notify(info.menuItemId === "siler-video" ? silerT("bgCouldntTakeVideo") : silerT("bgCouldntTakeLinks"), reasonOf(e));
   }
 });
 
 // ---------------------------------------------------------------- messages & lifecycle
 
-browser.runtime.onMessage.addListener((msg, sender) => {
+silerOnMessage((msg, sender) => {
   switch (msg?.type) {
     case "media-list":
       return Feed.forPopup(msg.tabId, !!msg.fresh).catch(() => []);
@@ -465,13 +487,16 @@ browser.runtime.onMessage.addListener((msg, sender) => {
           () => ({ ok: true }),
           (e) => {
             health.checkedAt = 0;
-            notify("Siler couldn't take the video", reasonOf(e));
+            notify(silerT("bgCouldntTakeVideo"), reasonOf(e));
             return { ok: false, message: reasonOf(e) };
           },
         );
     }
     case "bypass":
       bypassUntil = Date.now() + 4000;
+      return;
+    case "media-body":
+      if (!SILER_GECKO && sender.tab) Feed.fromPage(sender.tab, sender.frameId ?? 0, msg.url, msg.text, msg.pageUrl);
       return;
     case "health":
       return refreshHealth(true);

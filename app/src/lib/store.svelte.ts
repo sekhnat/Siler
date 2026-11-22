@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import { listen } from "@tauri-apps/api/event";
 import { api, errorText, MAIN_QUEUE, type Download, type EngineEvent, type GrabProgress, type Queue, type QuotaStatus } from "./api";
 
@@ -15,7 +16,7 @@ class DownloadStore {
   grabs = $state<Record<number, GrabProgress>>({});
 
   queueName(id: number): string {
-    return this.queues.find((q) => q.id === id)?.name ?? "Main queue";
+    return this.queues.find((q) => q.id === id)?.name ?? t("store-main-queue");
   }
 
   list = $derived(Object.values(this.items).sort((a, b) => b.id - a.id));
@@ -115,7 +116,7 @@ class Toasts {
   }
 
   dismiss(id: number) {
-    this.items = this.items.filter((t) => t.id !== id);
+    this.items = this.items.filter((x) => x.id !== id);
   }
 }
 

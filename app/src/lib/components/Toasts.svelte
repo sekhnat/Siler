@@ -5,10 +5,10 @@
 </script>
 
 <div class="stack">
-  {#each toasts.items as t (t.id)}
-    <button class="toast {t.kind}" transition:fly={{ y: 16, duration: 180 }} onclick={() => toasts.dismiss(t.id)}>
-      {#if t.kind === "error"}<CircleAlert size={16} />{:else if t.kind === "success"}<CircleCheck size={16} />{:else}<Info size={16} />{/if}
-      <span>{t.text}</span>
+  {#each toasts.items as toast (toast.id)}
+    <button class="toast {toast.kind}" transition:fly={{ y: 16, duration: 180 }} onclick={() => toasts.dismiss(toast.id)}>
+      {#if toast.kind === "error"}<CircleAlert size={16} />{:else if toast.kind === "success"}<CircleCheck size={16} />{:else}<Info size={16} />{/if}
+      <span>{toast.text}</span>
     </button>
   {/each}
 </div>

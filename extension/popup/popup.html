@@ -10,41 +10,41 @@
       <img src="../icons/icon-32.png" alt="" width="28" height="28" />
       <div>
         <div class="title">Siler</div>
-        <div class="status"><span id="dot" class="dot"></span><span id="status">Checking…</span></div>
+        <div class="status"><span id="dot" class="dot"></span><span id="status" data-i18n="popupChecking">Checking…</span></div>
       </div>
     </header>
 
     <div id="stats" class="stats" hidden>
-      <div><b id="active">0</b><span class="muted">active</span></div>
-      <div><b id="queued">0</b><span class="muted">queued</span></div>
-      <div><b id="speed">0 B/s</b><span class="muted">speed</span></div>
+      <div><b id="active">0</b><span class="muted" data-i18n="popupActive">active</span></div>
+      <div><b id="queued">0</b><span class="muted" data-i18n="popupQueued">queued</span></div>
+      <div><b id="speed">0 B/s</b><span class="muted" data-i18n="popupSpeed">speed</span></div>
     </div>
 
     <div id="outdated" class="banner warn" hidden></div>
     <div id="error" class="banner err" hidden>
       <span id="error-text"></span>
-      <button id="error-close" class="link" aria-label="Dismiss">Dismiss</button>
+      <button id="error-close" class="link" data-i18n-aria-label="popupDismiss" data-i18n="popupDismiss">Dismiss</button>
     </div>
 
     <label class="row">
       <span>
-        <span class="label">Capture downloads</span>
-        <span class="muted small">Hold <kbd>Alt</kbd> while clicking to skip</span>
+        <span class="label" data-i18n="popupCaptureDownloads">Capture downloads</span>
+        <span class="muted small" data-i18n="popupHoldAlt">Hold Alt while clicking to skip</span>
       </span>
       <button id="enabled" class="switch" role="switch" aria-checked="true"></button>
     </label>
 
     <label id="site-row" class="row" hidden>
       <span>
-        <span class="label">Capture on <span id="site"></span></span>
-        <span class="muted small" id="site-hint">Turn off to let Firefox handle this site's downloads</span>
+        <span class="label"><span data-i18n="popupCaptureOn">Capture on</span> <span id="site"></span></span>
+        <span class="muted small" id="site-hint">Turn off to let the browser handle this site's downloads</span>
       </span>
       <button id="site-on" class="switch" role="switch" aria-checked="true"></button>
     </label>
 
     <section id="videos" class="videos" hidden>
       <div class="videos-head">
-        <span class="label">Videos on this page</span>
+        <span class="label" data-i18n="popupVideosOnThisPage">Videos on this page</span>
         <span id="videos-count" class="muted small"></span>
       </div>
       <ul id="video-list" class="video-list"></ul>
@@ -53,18 +53,19 @@
     </section>
 
     <form id="add" class="add">
-      <input id="url" type="url" placeholder="Paste a link to download" autocomplete="off" />
-      <button class="btn" type="submit">Add</button>
+      <input id="url" type="url" data-i18n-placeholder="popupPasteALink" placeholder="Paste a link to download" autocomplete="off" />
+      <button class="btn" type="submit" data-i18n="popupAdd">Add</button>
     </form>
 
     <div id="setup" class="setup" hidden>
-      The Siler app isn't registered with Firefox yet. Open Siler → Settings → Browser and click <b>Install</b>.
+      <span data-i18n="popupNotRegistered">The Siler app isn't registered with this browser yet. Open Siler → Settings → Browser and click Install.</span>
     </div>
 
     <footer>
-      <button id="open" class="btn btn-primary">Open Siler</button>
-      <button id="options" class="btn">Options</button>
+      <button id="open" class="btn btn-primary" data-i18n="popupOpenSiler">Open Siler</button>
+      <button id="options" class="btn" data-i18n="popupOptions">Options</button>
     </footer>
+    <script src="../compat.js"></script>
     <script src="../shared.js"></script>
     <script src="popup.js"></script>
   </body>

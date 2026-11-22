@@ -1,6 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
+silerLocalize();
 
 function fmtSpeed(n) {
   if (!n) return "0 B/s";
@@ -36,7 +37,7 @@ async function renderVideos(fresh = false) {
   const box = $("videos");
   box.hidden = !list?.length;
   if (!list?.length) return;
-  $("videos-count").textContent = list.length === 1 ? "" : `${list.length} found`;
+  $("videos-count").textContent = list.length === 1 ? "" : silerT("popupFound", [String(list.length)]);
   const ul = $("video-list");
   ul.replaceChildren(
     ...list.map((v, i) => {
@@ -68,7 +69,7 @@ async function renderVideos(fresh = false) {
 function syncButton() {
   const n = document.querySelectorAll("#video-list input:checked").length;
   $("video-download").disabled = n === 0;
-  $("video-download").textContent = n > 1 ? `Download ${n} with Siler` : "Download with Siler";
+  $("video-download").textContent = n > 1 ? silerT("popupDownloadN", [String(n)]) : silerT("menuDownload");
 }
 
 $("video-download").addEventListener("click", async () => {
@@ -77,7 +78,7 @@ $("video-download").addEventListener("click", async () => {
   const btn = $("video-download");
   const msg = $("video-msg");
   btn.disabled = true;
-  btn.textContent = "Sending to Siler…";
+  btn.textContent = silerT("popupSending");
   msg.hidden = true;
   msg.classList.remove("err");
   const r = await browser.runtime.sendMessage({ type: "media-download", tabId, keys }).catch((e) => ({ ok: false, message: String(e?.message ?? e) }));
@@ -85,7 +86,7 @@ $("video-download").addEventListener("click", async () => {
     window.close();
     return;
   }
-  msg.textContent = r?.message || "Siler couldn't take the video.";
+  msg.textContent = r?.message || silerT("popupCouldntTakeVideo");
   msg.classList.add("err");
   msg.hidden = false;
   syncButton();
@@ -103,8 +104,8 @@ async function render() {
     $("site").textContent = siteHost.replace(/^www\./, "");
     $("site-on").setAttribute("aria-checked", String(!blocked));
     $("site-hint").textContent = blocked
-      ? "Firefox handles this site's downloads and videos"
-      : "Turn off to let Firefox handle this site's downloads and videos";
+      ? silerT("popupBrowserHandlesSite")
+      : silerT("popupTurnOffToLetBrowser");
   }
 
   const last = await browser.runtime.sendMessage({ type: "last-error" }).catch(() => null);
@@ -116,16 +117,16 @@ async function render() {
   $("outdated").hidden = !h.outdated;
   $("outdated").textContent =
     h.outdated === "app"
-      ? `Siler ${h.version ?? ""} is older than this extension. Update Siler.`
+      ? silerT("popupAppOlder", [h.version ?? ""])
       : h.outdated === "extension"
-        ? `This extension is older than Siler ${h.version ?? ""}. Update the extension.`
+        ? silerT("popupExtensionOlder", [h.version ?? ""])
         : "";
   $("dot").className = "dot " + (h.running ? "ok" : h.installed ? "warn" : "err");
   $("status").textContent = h.running
-    ? `Connected · v${h.version}`
+    ? silerT("popupConnected", [h.version ?? ""])
     : h.installed
-      ? "Not running — starts when needed"
-      : "Not installed";
+      ? silerT("popupNotRunning")
+      : silerT("popupNotInstalled");
 
   if (h.running) {
     const s = await browser.runtime.sendMessage({ type: "status" });

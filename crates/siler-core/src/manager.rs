@@ -33,7 +33,7 @@ use crate::{
 };
 use crate::{metalink, postrun, zip};
 use siler_media::ParseLimits;
-use siler_media::select::{self, Output};
+use siler_media::select::{self, ContainerChoice, Output, Selection, SubtitleMode};
 use std::sync::atomic::AtomicBool;
 use tokio_util::sync::CancellationToken;
 
@@ -54,7 +54,7 @@ pub(crate) struct Inner {
     pub(crate) rt: Handle,
     /// The FFmpeg used to combine media, when it passed the capability check.
     ffmpeg: Mutex<Option<std::path::PathBuf>>,
-    ffmpeg_status: Mutex<FfmpegStatus>,
+    pub(crate) ffmpeg_status: Mutex<FfmpegStatus>,
     quota: Quota,
     /// When the quota's period was last saved.
     quota_saved: Mutex<Instant>,
@@ -251,6 +251,7 @@ impl Engine {
         }
 
         let net = Arc::new(Net::new(&settings.proxy, proxy_password.as_deref())?);
+        *net.known_hosts.write().unwrap() = Some(dir.join("known_hosts"));
         let quota = Quota::new(store.load_value("quota")?.as_deref());
 
         let inner = Arc::new(Inner {
@@ -484,6 +485,7 @@ impl Engine {
             sync_every: 0,
             sync_checked_at: None,
             needs_login: None,
+            needs_host_key: None,
             kind: JobKind::File,
             media: None,
             extras,
@@ -513,6 +515,29 @@ impl Engine {
             self.inner.persist_and_emit(rec, None)?;
         }
         Ok(())
+    }
+
+    /// Ends a recording (a live stream, or an RTMP/MMS stream) and keeps what was recorded: a
+    /// running one stops fetching and is rebuilt; a paused one is rebuilt from what it has.
+    pub fn finish(&self, id: i64) -> Result<()> {
+        {
+            let mut st = self.inner.state();
+            let rec = st.records.get_mut(&id).ok_or(Error::NotFound)?;
+            let recording =
+                rec.kind == JobKind::Stream || rec.media.as_ref().is_some_and(|m| m.live);
+            if !recording {
+                return Err(Error::Protocol("Only recordings can be finished".into()));
+            }
+            if let Some(m) = rec.media.as_mut() {
+                m.finish = true;
+            }
+            self.inner.persist_and_emit(rec, None)?;
+            if let Some(run) = st.running.get(&id) {
+                run.finish.cancel();
+                return Ok(());
+            }
+        }
+        self.resume(id)
     }
 
     pub fn resume(&self, id: i64) -> Result<()> {
@@ -660,7 +685,7 @@ impl Engine {
     pub fn set_sync(&self, id: i64, every_secs: u64) -> Result<()> {
         let mut st = self.inner.state();
         let rec = st.records.get_mut(&id).ok_or(Error::NotFound)?;
-        if rec.kind == JobKind::Media && every_secs > 0 {
+        if rec.kind.is_media() && every_secs > 0 {
             return Err(Error::Protocol("Streams aren't kept up to date".into()));
         }
         if rec.extras.zip_entry.is_some() && every_secs > 0 {
@@ -683,7 +708,7 @@ impl Engine {
             if rec.status != Status::Completed {
                 return Err(Error::Protocol("This download hasn't finished yet".into()));
             }
-            if rec.kind == JobKind::Media {
+            if rec.kind.is_media() {
                 return Err(Error::Protocol("Streams aren't kept up to date".into()));
             }
             if !st.checking.insert(id) {
@@ -828,7 +853,7 @@ impl Engine {
             if rec.status == Status::Completed {
                 return Err(Error::Protocol("This download has already finished".into()));
             }
-            (rec.total_size, rec.meta.clone(), rec.kind == JobKind::Media)
+            (rec.total_size, rec.meta.clone(), rec.kind.is_media())
         };
         let meta = meta.unwrap_or(old_meta);
         let s = self.settings();
@@ -959,6 +984,110 @@ impl Engine {
         Ok(())
     }
 
+    /// Fetches a small document (at most `max` bytes) through Siler's own connection
+    /// settings (the proxy), following redirects. For the app's own needs, such as the
+    /// update check; not a download.
+    pub async fn fetch_bytes(
+        &self,
+        url: &str,
+        max: u64,
+        headers: &[(&str, &str)],
+    ) -> Result<Vec<u8>> {
+        use futures_util::StreamExt;
+        let mut rb = self.inner.net.client().get(url);
+        for (k, v) in headers {
+            rb = rb.header(*k, *v);
+        }
+        let resp = rb
+            .send()
+            .await
+            .map_err(|e| Error::Network(crate::error::describe(&e)))?;
+        if !resp.status().is_success() {
+            return Err(Error::Http(resp.status().as_u16()));
+        }
+        let mut body = Vec::new();
+        let mut stream = resp.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| Error::Network(crate::error::describe(&e)))?;
+            if body.len() as u64 + chunk.len() as u64 > max {
+                return Err(Error::Protocol("The answer is larger than expected".into()));
+            }
+            body.extend_from_slice(&chunk);
+        }
+        Ok(body)
+    }
+
+    /// Fetches `url` into `path` (replacing it) through Siler's own connection settings,
+    /// reporting bytes done and the total when known. For the app's own needs (an update);
+    /// not a download in the list.
+    pub async fn fetch_to_file(
+        &self,
+        url: &str,
+        path: &Path,
+        headers: &[(&str, &str)],
+        progress: impl Fn(u64, Option<u64>),
+    ) -> Result<()> {
+        use futures_util::StreamExt;
+        use tokio::io::AsyncWriteExt;
+        let mut rb = self.inner.net.client().get(url);
+        for (k, v) in headers {
+            rb = rb.header(*k, *v);
+        }
+        let resp = rb
+            .send()
+            .await
+            .map_err(|e| Error::Network(crate::error::describe(&e)))?;
+        if !resp.status().is_success() {
+            return Err(Error::Http(resp.status().as_u16()));
+        }
+        let total = resp.content_length();
+        let mut file = tokio::fs::File::create(path).await?;
+        let mut done = 0u64;
+        let mut stream = resp.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| Error::Network(crate::error::describe(&e)))?;
+            file.write_all(&chunk).await?;
+            done += chunk.len() as u64;
+            progress(done, total);
+        }
+        file.flush().await?;
+        file.sync_all().await?;
+        if total.is_some_and(|t| t != done) {
+            return Err(Error::Network("connection closed early".into()));
+        }
+        Ok(())
+    }
+
+    /// Trusts an SFTP server's key (saved in Siler's own known_hosts next to the database),
+    /// and resumes the downloads that stopped for it.
+    pub fn trust_host_key(&self, request: &crate::HostKeyRequest) -> Result<()> {
+        let list = self
+            .inner
+            .net
+            .known_hosts
+            .read()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| Error::Protocol("No place to save server keys".into()))?;
+        crate::transport::sftp::trust(&list, request)?;
+        let ids: Vec<i64> = self
+            .inner
+            .state()
+            .records
+            .values()
+            .filter(|r| {
+                r.needs_host_key
+                    .as_ref()
+                    .is_some_and(|k| k.host == request.host)
+            })
+            .map(|r| r.id)
+            .collect();
+        for id in ids {
+            self.resume(id)?;
+        }
+        Ok(())
+    }
+
     /// Stops sending a login to a server.
     pub fn forget_login(&self, host: &str) {
         self.inner.net.set_login(host, None);
@@ -1002,7 +1131,7 @@ impl Engine {
                 let completed = rec.status == Status::Completed;
                 let (from, to) = if completed {
                     (od.join(on), nd.join(nn))
-                } else if rec.kind == JobKind::Media {
+                } else if rec.kind.is_media() {
                     (media::workdir(od, on), media::workdir(nd, nn))
                 } else {
                     (filename::part_path(od, on), filename::part_path(nd, nn))
@@ -1053,7 +1182,7 @@ impl Engine {
         {
             let mut st = self.inner.state();
             let rec = st.records.get_mut(&id).ok_or(Error::NotFound)?;
-            if rec.kind == JobKind::Media
+            if rec.kind.is_media()
                 && rec.status == Status::Completed
                 && let (Some(nd), Some(nn)) = (&dir, &name)
             {
@@ -1167,10 +1296,16 @@ impl Engine {
         meta: &RequestMeta,
         hint: Option<&SourceHint>,
     ) -> Result<MediaProbe> {
+        if media::stream::is_stream_url(url) {
+            media::stream::parse_stream_url(url)?;
+            return Ok(media::stream_view(
+                self.inner.ffmpeg().is_some() && self.ffmpeg_status().network,
+            ));
+        }
         let s = self.settings();
         let lim = ParseLimits::default();
         let hint = hint.cloned().map(|h| h.checked(&lim)).transpose()?;
-        let url = probe::parse_url(&self.inner.strip_login(url)?)?;
+        let url = probe::parse_web_url(&self.inner.strip_login(url)?)?;
         let run_limit = RateLimiter::new(0);
         let io = Limiters {
             global: &self.inner.global,
@@ -1195,10 +1330,13 @@ impl Engine {
     /// Adds a stream as a media download: the chosen (or the default) video, audio and
     /// subtitle tracks, in the chosen container. The stream is read again at every attempt.
     pub async fn add_media(&self, nd: NewMediaDownload) -> Result<i64> {
+        if media::stream::is_stream_url(&nd.url) {
+            return self.add_stream(nd).await;
+        }
         let s = self.settings();
         let lim = ParseLimits::default();
         let hint = nd.hint.clone().map(|h| h.checked(&lim)).transpose()?;
-        let url = probe::parse_url(&self.inner.strip_login(&nd.url)?)?;
+        let url = probe::parse_web_url(&self.inner.strip_login(&nd.url)?)?;
         if nd.meta.body.as_ref().is_some_and(|b| b.len() > MAX_BODY) {
             return Err(Error::Protocol(
                 "The form data is too large to send again".into(),
@@ -1219,7 +1357,8 @@ impl Engine {
         );
         let src = media::resolve(&http, &url, hint.as_ref(), &lim, &io).await?;
         let final_url = src.final_url.clone();
-        let pres = media::presentation_or_error(src)?;
+        // A live stream is recorded: the picker told the user so.
+        let pres = media::presentation_or_error(src, true)?;
         let selection = nd
             .selection
             .clone()
@@ -1271,13 +1410,107 @@ impl Engine {
             fingerprint: None,
             sidecars: Vec::new(),
             hint,
+            live: pres.is_live(),
+            finish: false,
         };
+        self.insert_media(MediaInsert {
+            url,
+            final_url,
+            dir,
+            wanted,
+            on_conflict,
+            queue_id: nd.queue_id,
+            start_paused: nd.start_paused,
+            meta: nd.meta,
+            kind: JobKind::Media,
+            media: mrec,
+        })
+    }
+
+    /// Adds an RTMP or MMS stream, recorded through FFmpeg until Finish.
+    async fn add_stream(&self, nd: NewMediaDownload) -> Result<i64> {
+        let s = self.settings();
+        let url = media::stream::parse_stream_url(&nd.url)?;
+        if self.inner.ffmpeg().is_none() {
+            return Err(Error::Media(MediaError::FfmpegMissing));
+        }
+        let choice = nd.container.unwrap_or(s.default_media_container);
+        // RTMP carries H.264 and AAC, which MP4 holds; MMS carries Windows Media, which only
+        // Matroska does.
+        let output = match choice {
+            ContainerChoice::Mp4 => Output::Mp4,
+            ContainerChoice::Auto if url.scheme().starts_with("rtmp") => Output::Mp4,
+            _ => Output::Mkv,
+        };
+        let ext = media::extension(output, None);
+        let base = nd
+            .filename
+            .clone()
+            .unwrap_or_else(|| media::default_name(None, &url));
+        let stem = media::strip_media_extension(&base).to_string();
+        let wanted = filename::sanitize(&format!("{stem}.{ext}"))
+            .ok_or_else(|| Error::Protocol("That file name isn't allowed".into()))?;
+        let dir = nd
+            .dir
+            .clone()
+            .unwrap_or_else(|| s.category_dir(Category::Video));
+        let on_conflict = match nd.on_conflict.unwrap_or(s.on_conflict) {
+            OnConflict::Ask => OnConflict::Rename,
+            p => p,
+        };
+        let label = if url.scheme().starts_with("rtmp") {
+            "RTMP stream"
+        } else {
+            "MMS stream"
+        };
+        let mrec = MediaRecord {
+            manifest: siler_media::ManifestKind::Stream,
+            selection: Selection::default(),
+            container: choice,
+            output,
+            reason: "Recorded as it arrives, without re-encoding".into(),
+            subtitles: SubtitleMode::None,
+            title: None,
+            labels: vec![label.into()],
+            fingerprint: None,
+            sidecars: Vec::new(),
+            hint: None,
+            live: true,
+            finish: false,
+        };
+        self.insert_media(MediaInsert {
+            final_url: url.clone(),
+            url,
+            dir,
+            wanted,
+            on_conflict,
+            queue_id: nd.queue_id,
+            start_paused: nd.start_paused,
+            meta: RequestMeta::default(),
+            kind: JobKind::Stream,
+            media: mrec,
+        })
+    }
+
+    fn insert_media(&self, m: MediaInsert) -> Result<i64> {
+        let MediaInsert {
+            url,
+            final_url,
+            dir,
+            wanted,
+            on_conflict,
+            queue_id,
+            start_paused,
+            meta,
+            kind,
+            media: mrec,
+        } = m;
+        let s = self.settings();
         let mut st = self.inner.state();
         // Two unfinished media downloads never share a name, so never a Work Directory. An
         // existing file of that name is dealt with when the output is published.
         let name = free_media_name(&st, &dir, &wanted);
-        let queue_id = nd
-            .queue_id
+        let queue_id = queue_id
             .filter(|q| st.queues.contains_key(q))
             .unwrap_or(MAIN_QUEUE);
         let position = st.records.values().map(|r| r.position).max().unwrap_or(0) + 1;
@@ -1290,7 +1523,7 @@ impl Engine {
             category: Category::Video,
             total_size: None,
             downloaded: 0,
-            status: if nd.start_paused {
+            status: if start_paused {
                 Status::Waiting
             } else {
                 Status::Queued
@@ -1300,7 +1533,7 @@ impl Engine {
             notice: None,
             etag: None,
             last_modified: None,
-            meta: nd.meta,
+            meta,
             connections: s.connections.clamp(1, 32),
             speed_limit: 0,
             created_at: now_ms(),
@@ -1312,7 +1545,8 @@ impl Engine {
             sync_every: 0,
             sync_checked_at: None,
             needs_login: None,
-            kind: JobKind::Media,
+            needs_host_key: None,
+            kind,
             media: Some(mrec),
             extras: Extras::default(),
         };
@@ -1356,7 +1590,7 @@ impl Engine {
         let (dir, name) = (r.dir.as_ref()?, r.filename.as_ref()?);
         Some(if r.status == Status::Completed {
             dir.join(name)
-        } else if r.kind == JobKind::Media {
+        } else if r.kind.is_media() {
             media::workdir(dir, name)
         } else {
             filename::part_path(dir, name)
@@ -1469,7 +1703,7 @@ impl Engine {
         {
             let st = self.inner.state();
             let r = st.records.get(&id).ok_or(Error::NotFound)?;
-            if r.kind == JobKind::Media || r.extras.zip_entry.is_some() {
+            if r.kind.is_media() || r.extras.zip_entry.is_some() {
                 return Err(Error::Protocol(
                     "Mirrors can only be used for ordinary files".into(),
                 ));
@@ -1658,7 +1892,7 @@ impl Engine {
 /// Deletes the partial data of a download that isn't running: a media Work Directory, or a
 /// part file.
 fn partial_remove(rec: &Record, dir: &Path, name: &str) -> std::io::Result<()> {
-    if rec.kind == JobKind::Media {
+    if rec.kind.is_media() {
         std::fs::remove_dir_all(media::workdir(dir, name))
     } else {
         std::fs::remove_file(filename::part_path(dir, name))
@@ -1745,7 +1979,7 @@ impl Inner {
                     table.segs.clone()
                 };
                 (
-                    if table.segs.is_empty() && r.kind != JobKind::Media {
+                    if table.segs.is_empty() && !r.kind.is_media() {
                         r.downloaded
                     } else {
                         run.downloaded.load(Relaxed)
@@ -1788,7 +2022,9 @@ impl Inner {
             sync_every: u64::try_from(r.sync_every).unwrap_or(0),
             sync_checked_at: r.sync_checked_at,
             file_missing,
+            error_code: r.error.as_ref().and(r.extras.error_code.clone()),
             needs_login: r.needs_login.clone(),
+            needs_host_key: r.needs_host_key.clone(),
             speed,
             active_connections: active,
             segments: visible_segments(&segments),
@@ -1799,6 +2035,8 @@ impl Inner {
                 subtitles: m.subtitles,
                 labels: m.labels.clone(),
                 sidecars: m.sidecars.clone(),
+                live: m.live,
+                finished: m.finish,
             }),
             checksum: r.extras.checksum.clone(),
             verify: r.extras.verify.clone(),
@@ -1968,6 +2206,7 @@ impl Inner {
             rec.status = Status::Probing;
             rec.error = None;
             rec.needs_login = None;
+            rec.needs_host_key = None;
             let run = Arc::new(Running::new(rec.speed_limit, rec.connections));
             running.insert(id, run.clone());
             if let Err(e) = self.persist_and_emit(rec, Some(&run)) {
@@ -2208,15 +2447,11 @@ impl Inner {
     }
 
     async fn run(self: Arc<Self>, id: i64, run: Arc<Running>) {
-        let is_media = self
-            .state()
-            .records
-            .get(&id)
-            .is_some_and(|r| r.kind == JobKind::Media);
-        let result = if is_media {
-            media::drive(&self, id, &run).await
-        } else {
-            self.drive(id, &run).await
+        let kind = self.state().records.get(&id).map(|r| r.kind);
+        let result = match kind {
+            Some(JobKind::Media) => media::drive(&self, id, &run).await,
+            Some(JobKind::Stream) => media::stream::drive(&self, id, &run).await,
+            _ => self.drive(id, &run).await,
         };
         let reason = run.stop_reason.load(Relaxed);
         let mut failed = None;
@@ -2252,7 +2487,7 @@ impl Inner {
                     if !table.segs.is_empty() {
                         rec.segments = table.segs.clone();
                         rec.downloaded = table.downloaded();
-                    } else if rec.kind == JobKind::Media {
+                    } else if rec.kind.is_media() {
                         rec.downloaded = run.downloaded.load(Relaxed);
                     }
                     drop(table);
@@ -2269,17 +2504,28 @@ impl Inner {
                             tracing::info!("download {id} failed: {e}");
                             rec.status = Status::Failed;
                             rec.error = Some(e.to_string());
+                            rec.extras.error_code = Some(e.into());
                             rec.needs_login = e.login_request();
-                            failed = Some(match e.login_request() {
-                                Some(request) => Event::LoginRequired {
+                            rec.needs_host_key = match e {
+                                Error::HostKeyUnknown(r) => Some((**r).clone()),
+                                _ => None,
+                            };
+                            failed = Some(match (e.login_request(), rec.needs_host_key.clone()) {
+                                (Some(request), _) => Event::LoginRequired {
                                     id,
                                     filename: rec.filename.clone(),
                                     request,
                                 },
-                                None => Event::Failed {
+                                (None, Some(request)) => Event::HostKeyUnknown {
+                                    id,
+                                    filename: rec.filename.clone(),
+                                    request,
+                                },
+                                (None, None) => Event::Failed {
                                     id,
                                     filename: rec.filename.clone(),
                                     error: e.to_string(),
+                                    code: Some(e.into()),
                                 },
                             });
                             let _ = self.persist_and_emit(rec, None);
@@ -3175,6 +3421,20 @@ impl Inner {
     }
 }
 
+/// A media download about to be added.
+struct MediaInsert {
+    url: Url,
+    final_url: Url,
+    dir: PathBuf,
+    wanted: String,
+    on_conflict: OnConflict,
+    queue_id: Option<i64>,
+    start_paused: bool,
+    meta: RequestMeta,
+    kind: JobKind,
+    media: MediaRecord,
+}
+
 /// What `finish` needs to know about the transfer.
 struct Finish {
     dir: PathBuf,
@@ -3223,7 +3483,11 @@ fn repair_segments(size: u64, bad: &[(u64, u64)]) -> Vec<Segment> {
 /// file or a server rather than from the user).
 async fn public_address(url: &str) -> std::result::Result<(), String> {
     let u = Url::parse(url).map_err(|e| e.to_string())?;
-    siler_media::policy::check(&u, false).map_err(|e| e.to_string())?;
+    match u.scheme() {
+        // The media policy only knows the web; FTP and SFTP mirrors get the same address check.
+        "ftp" | "ftps" | "sftp" if u.host_str().is_some() => {}
+        _ => siler_media::policy::check(&u, false).map_err(|e| e.to_string())?,
+    }
     let host = u
         .host_str()
         .unwrap_or("")
@@ -3236,7 +3500,11 @@ async fn public_address(url: &str) -> std::result::Result<(), String> {
             Ok(())
         };
     }
-    let port = u.port_or_known_default().unwrap_or(80);
+    let port = u.port_or_known_default().unwrap_or(match u.scheme() {
+        "sftp" => 22,
+        "ftps" => 21,
+        _ => 80,
+    });
     let addrs = tokio::net::lookup_host((host.as_str(), port))
         .await
         .map_err(|e| format!("Its name can't be found: {e}"))?;

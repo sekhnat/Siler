@@ -14,13 +14,18 @@ use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_notification::NotificationExt;
 
+use crate::i18n::{tr, tr_args};
 use crate::ipc_server::Origin;
 use crate::{AppState, open_add_window};
 
 type Res<T> = Result<T, String>;
 
-fn err(e: impl std::fmt::Display) -> String {
-    e.to_string()
+/// An error for the interface: an engine error in the interface's language.
+fn err<E: std::fmt::Display + 'static>(e: E) -> String {
+    match (&e as &dyn std::any::Any).downcast_ref::<siler_core::Error>() {
+        Some(core) => crate::i18n::error(core),
+        None => e.to_string(),
+    }
 }
 
 /// What a pending item brings beyond its link.
@@ -114,16 +119,16 @@ pub fn on_engine_event(app: &AppHandle, engine: &Engine, ev: &Event) -> bool {
             if cfg.notify_on_failure && !result.ok() {
                 let why = match (&result.error, result.exit_code) {
                     (Some(e), _) => e.clone(),
-                    (None, Some(c)) => format!("It exited with {c}."),
-                    (None, None) => "It failed.".into(),
+                    (None, Some(c)) => tr_args("tools-it-exited-with", vec![("code", c.into())]),
+                    (None, None) => tr("tools-it-failed"),
                 };
                 let _ = app
                     .notification()
                     .builder()
-                    .title("The command after a download failed")
+                    .title(tr("tools-the-command-failed"))
                     .body(format!(
                         "{}\n{why}",
-                        filename.as_deref().unwrap_or("Download")
+                        filename.clone().unwrap_or_else(|| tr("notify-download"))
                     ))
                     .show();
             }
@@ -133,8 +138,8 @@ pub fn on_engine_event(app: &AppHandle, engine: &Engine, ev: &Event) -> bool {
             let _ = app
                 .notification()
                 .builder()
-                .title("Data quota reached")
-                .body("Downloads continue when the next period starts.")
+                .title(tr("tools-data-quota-reached"))
+                .body(tr("tools-downloads-continue-next-period"))
                 .show();
             false
         }
@@ -200,7 +205,7 @@ pub fn import_file(app: &AppHandle, path: &Path) -> Res<usize> {
     let state = app.try_state::<AppState>().ok_or("Siler isn't ready")?;
     let meta = std::fs::metadata(path).map_err(err)?;
     if meta.len() > siler_core::lists::MAX_BYTES as u64 {
-        return Err("The file is too large to be a download list.".into());
+        return Err(tr("tools-file-too-large-for-a-list"));
     }
     let bytes = std::fs::read(path).map_err(err)?;
     let (_, items) = siler_core::lists::import(&bytes)?;
@@ -243,10 +248,12 @@ pub struct Expansion {
 pub fn expand_batch(pattern: String) -> Res<Expansion> {
     let urls = siler_core::batch::expand(&pattern)?;
     for u in [urls.first(), urls.last()].into_iter().flatten() {
-        let ok = url::Url::parse(u)
-            .is_ok_and(|p| matches!(p.scheme(), "http" | "https") && p.host_str().is_some());
+        let ok = url::Url::parse(u).is_ok_and(|p| {
+            matches!(p.scheme(), "http" | "https" | "ftp" | "ftps" | "sftp")
+                && p.host_str().is_some()
+        });
         if !ok {
-            return Err(format!("“{u}” isn't an http or https address."));
+            return Err(format!("“{u}” isn't a web, FTP or SFTP address."));
         }
     }
     Ok(Expansion {
@@ -494,7 +501,7 @@ pub fn review_grab(app: AppHandle, files: Vec<GrabFile>, queue_id: Option<i64>) 
 #[tauri::command]
 pub fn open_saved_site(path: PathBuf) -> Res<()> {
     if !path.is_file() {
-        return Err("The saved page is no longer there".into());
+        return Err(tr("tools-saved-page-gone"));
     }
     crate::launch::open(&path).map_err(err)
 }

@@ -1,6 +1,6 @@
 # Video and audio streams
 
-Siler downloads HLS (`.m3u8`) and DASH (`.mpd`) streams into one ordinary video file, with the quality, audio languages and subtitles you pick.
+Siler downloads HLS (`.m3u8`), DASH (`.mpd`) and Adobe HDS (`.f4m`) streams into one ordinary video file, with the quality, audio languages and subtitles you pick. It records live streams, including RTMP and MMS, until you press **Finish**.
 
 <p align="center">
   <picture><source media="(prefers-color-scheme: dark)" srcset="images/add-video-dark.png"><source media="(prefers-color-scheme: light)" srcset="images/add-video-light.png"><img src="images/add-video-light.png" alt="The Add window listing a stream's video qualities, audio languages and subtitles" width="480"></picture>
@@ -9,13 +9,38 @@ Siler downloads HLS (`.m3u8`) and DASH (`.mpd`) streams into one ordinary video 
 ## Adding a stream
 
 - Paste a stream's address into the Add window, give it on the command line, or copy it (the clipboard watcher offers it).
-- From a web page, the Firefox extension finds the streams and files a page plays and hands them over with the page's cookies. See [Videos on web pages](browser-extension.md#videos-on-web-pages).
+- From a web page, the browser extension finds the streams and files a page plays and hands them over with the page's cookies. See [Videos on web pages](browser-extension.md#videos-on-web-pages).
 - Siler lists the video qualities, audio languages and subtitles, with the size each choice will take, and downloads the ones you pick into one file.
 - Settings → Media sets the defaults: the highest quality to pick, preferred audio and subtitle languages, the container and where subtitles go.
 
+## Live streams
+
+- A live HLS or DASH stream (no `#EXT-X-ENDLIST`, or `type="dynamic"`) is recorded: the Add window says so, the list shows **Recording · time · size** with a LIVE badge, and **Finish** (beside Pause, in the detail panel and the right-click menu) ends the recording and builds the file from what was recorded.
+- Recording starts at the live edge (the last three segments the playlist lists). The playlist is read again about once a segment; each new segment is kept once, by its media sequence (HLS) or `$Number$` (DASH, with `SegmentTimeline` or a segment duration; `availabilityStartTime` and `timeShiftBufferDepth` decide what is available now).
+- A recording that falls behind the live edge (on a slow connection) fetches up to four segments at once to catch up. **Finish** doesn't wait for segments still arriving.
+- The recording ends by itself when the stream does (`#EXT-X-ENDLIST`, or the MPD becomes static).
+- **Pause**, or quitting Siler, keeps what was recorded. Resuming continues from the live edge; what was missed meanwhile counts as a **gap** (shown in the detail panel). A segment that can't be fetched after a few tries is skipped and counted the same way.
+- Subtitles of live streams aren't recorded. Live HDS isn't supported.
+
+### RTMP and MMS
+
+- `rtmp://`, `rtmpt://`, `mms://`, `mmsh://` and `mmst://` addresses are recorded by FFmpeg, which copies the stream into Matroska until **Finish** (FFmpeg is asked to stop, so the file is closed properly) or the stream ends. `mms://` tries MMS over HTTP, then over TCP.
+- The recording becomes MP4 (RTMP, usually H.264 and AAC) or stays Matroska (MMS, Windows Media), as the container setting says; if MP4 can't hold its codecs, it stays Matroska.
+- A recording can't continue where it stopped: pausing finishes it.
+- Siler looks the server's name up itself and gives FFmpeg the address; the same address check as for other streams applies. Encrypted RTMP (`rtmps`, `rtmpe`) isn't supported. These connections don't go through Siler's proxy.
+- It needs an FFmpeg with network support; Siler's own build has it (Settings → Media shows whether yours does).
+
+## Adobe HDS
+
+An `.f4m` manifest lists its bitrates and a bootstrap (inline or by address) that numbers the fragments (`…Seg1-Frag1`). Siler fetches the fragments like any stream's pieces, takes the FLV tags out of each one, and joins them after an FLV header into one file that FFmpeg copies into MP4 or MKV. Media with Adobe Access DRM (`drmAdditionalHeader`) is refused.
+
+## Playlists
+
+Plain M3U (without HLS tags), PLS and ASX files are lists of links, not streams. The Add window shows their entries and **Review the links…** opens them in the batch window, where each becomes its own download (or recording, for RTMP and MMS entries).
+
 ## FFmpeg
 
-- Streams are muxed with **FFmpeg**, with no re-encoding. Siler ships a static build made from a pinned release by `scripts/build-ffmpeg.sh`, with only the codecs, containers and filters it needs.
+- Streams are muxed with **FFmpeg**, with no re-encoding. Siler ships a static build made from a pinned release by `scripts/build-ffmpeg.sh`, with only the codecs, containers and filters it needs, plus the network protocols for RTMP and MMS recording (`tcp`, `http`, `rtmp`, `rtmpt`, `mmsh`, `mmst`; no TLS).
 - `scripts/install-dev.sh` builds it the first time and puts `ffmpeg` and `ffprobe` next to the app. The AppImage and the release tarball include it.
 - Without FFmpeg, single-track downloads still work; combining video and audio needs it.
 - Settings → Media shows which FFmpeg is in use. `SILER_FFMPEG=/path/to/ffmpeg` overrides it.
@@ -45,7 +70,7 @@ Siler downloads HLS (`.m3u8`) and DASH (`.mpd`) streams into one ordinary video 
 
 ## Not supported yet
 
-Live streams, HDS, generic playlists, SAMPLE-AES, and subtitles carried inside WebM.
+Live HDS, encrypted RTMP, recording a live stream from the start of its time-shift window, SAMPLE-AES, and subtitles carried inside WebM.
 
 ## Testing
 

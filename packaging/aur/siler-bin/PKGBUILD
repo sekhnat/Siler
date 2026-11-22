@@ -1,0 +1,41 @@
+# Maintainer: sekhnat
+# Built from the release tarball (scripts/make-tarball.sh). Update with
+# scripts/aur-update.sh <version>, which also regenerates .SRCINFO.
+pkgname=siler-bin
+pkgver=0.8.0
+pkgrel=1
+pkgdesc="Download manager: many connections per file, queues, FTP/SFTP, a video grabber and browser integration"
+arch=('x86_64')
+url="https://github.com/sekhnat/Siler"
+license=('LicenseRef-unknown')
+depends=('webkit2gtk-4.1' 'gtk3' 'libayatana-appindicator' 'hicolor-icon-theme')
+optdepends=('kwallet: remember logins on KDE Plasma'
+            'gnome-keyring: remember logins on GNOME and others')
+provides=('siler')
+conflicts=('siler')
+options=('!strip' '!debug')
+source=("https://github.com/sekhnat/Siler/releases/download/v${pkgver}/siler-${pkgver}-linux-x86_64.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+  cd "siler-${pkgver}"
+  install -Dm755 siler "${pkgdir}/usr/bin/siler"
+  install -Dm755 siler-nmhost "${pkgdir}/usr/bin/siler-nmhost"
+  # Siler's own FFmpeg (with the protocols and formats it needs), kept off PATH.
+  install -Dm755 ffmpeg "${pkgdir}/usr/lib/siler/ffmpeg"
+  install -Dm755 ffprobe "${pkgdir}/usr/lib/siler/ffprobe"
+  install -Dm644 siler-integration.xpi "${pkgdir}/usr/share/siler/siler-integration.xpi"
+  cp -r chromium-extension "${pkgdir}/usr/share/siler/chromium-extension"
+  find "${pkgdir}/usr/share/siler/chromium-extension" -type d -exec chmod 755 {} + -o -type f -exec chmod 644 {} +
+  cp -r share/applications share/icons "${pkgdir}/usr/share/"
+
+  # Native messaging hosts, system-wide.
+  install -Dm644 native-messaging/firefox.json "${pkgdir}/usr/lib/mozilla/native-messaging-hosts/com.siler.nmhost.json"
+  install -Dm644 native-messaging/firefox.json "${pkgdir}/usr/lib/librewolf/native-messaging-hosts/com.siler.nmhost.json"
+  install -Dm644 native-messaging/chromium.json "${pkgdir}/etc/chromium/native-messaging-hosts/com.siler.nmhost.json"
+  install -Dm644 native-messaging/chromium.json "${pkgdir}/etc/opt/chrome/native-messaging-hosts/com.siler.nmhost.json"
+  install -Dm644 native-messaging/chromium.json "${pkgdir}/etc/opt/edge/native-messaging-hosts/com.siler.nmhost.json"
+
+  install -Dm644 README.md "${pkgdir}/usr/share/doc/siler/README.md"
+  install -Dm644 LICENSE.FFmpeg "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE.FFmpeg"
+}

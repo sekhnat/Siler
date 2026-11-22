@@ -95,9 +95,10 @@ fn split_name(name: &str) -> Option<(Vec<String>, String)> {
     Some((parts, file))
 }
 
+/// A source a download can use: http(s), or ftp (metalinks often list FTP mirrors).
 fn http_url(s: &str) -> Option<String> {
     let u = url::Url::parse(s.trim()).ok()?;
-    matches!(u.scheme(), "http" | "https").then(|| u.to_string())
+    matches!(u.scheme(), "http" | "https" | "ftp" | "ftps").then(|| u.to_string())
 }
 
 fn best_hash<'a>(hashes: impl Iterator<Item = &'a Node>) -> Option<Checksum> {
@@ -279,11 +280,7 @@ mod tests {
     #[test]
     fn reads_metalink_4() {
         let files = parse(V4.as_bytes()).unwrap();
-        assert_eq!(
-            files.len(),
-            2,
-            "unsafe names and ftp-only files are left out"
-        );
+        assert_eq!(files.len(), 3, "unsafe names are left out");
         let f = &files[0];
         assert_eq!(f.name, "example.ext");
         assert_eq!(f.size, Some(14471447));
@@ -291,7 +288,8 @@ mod tests {
             f.urls,
             [
                 "https://download.fr.example.com/example.ext",
-                "http://ftp.de.example.com/example.ext"
+                "http://ftp.de.example.com/example.ext",
+                "ftp://ftp.example.com/example.ext"
             ]
         );
         assert_eq!(f.checksum.as_ref().unwrap().algo, Algo::Sha256);
@@ -302,7 +300,7 @@ mod tests {
 
         let nd = f.to_download(Some(Path::new("/dl")));
         assert_eq!(nd.url, f.urls[0]);
-        assert_eq!(nd.mirrors.len(), 1);
+        assert_eq!(nd.mirrors.len(), 2);
         assert_eq!(nd.mirrors[0].origin, MirrorOrigin::Metalink);
         assert_eq!(nd.dir.as_deref(), Some(Path::new("/dl")));
         let nested = files[1].to_download(Some(Path::new("/dl")));

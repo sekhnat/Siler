@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from "../i18n";
   import type { Snippet } from "svelte";
   import Modal from "./Modal.svelte";
 
@@ -34,7 +35,7 @@
 <Modal {title} width={460} {onclose}>
   <div class="body">{@render children()}</div>
   {#snippet footer()}
-    <button class="btn btn-ghost" onclick={onclose}>Cancel</button>
+    <button class="btn btn-ghost" onclick={onclose}>{t("confirm-cancel")}</button>
     <button class="btn {danger ? 'btn-danger' : 'btn-primary'}" onclick={run} disabled={busy}>{confirm}</button>
   {/snippet}
 </Modal>

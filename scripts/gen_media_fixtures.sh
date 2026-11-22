@@ -11,7 +11,7 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
 rm -rf "$out"
-mkdir -p "$out"/{muxed,split,aes,fmp4,dash,drm}
+mkdir -p "$out"/{muxed,split,aes,fmp4,dash,drm,hds}
 
 # Six seconds of 64x64 video (10 fps, a keyframe every 2 s) with a 440 Hz tone (English) and
 # an 880 Hz tone (German, used as a separate track).
@@ -29,6 +29,11 @@ mkdir -p "$out"/{muxed,split,aes,fmp4,dash,drm}
 "$ff" -hide_banner -loglevel error -y -i "$work/full.ts" -c copy \
     -f hls -hls_time 2 -hls_playlist_type vod -hls_list_size 0 \
     -hls_segment_filename "$out/muxed/seg%d.ts" "$out/muxed/index.m3u8"
+
+# Adobe HDS: the muxed stream as FLV, packed into F4F fragments with a bootstrap and an F4M.
+"$ff" -hide_banner -loglevel error -y -i "concat:$out/muxed/seg0.ts|$out/muxed/seg1.ts|$out/muxed/seg2.ts" \
+    -c copy -f flv "$work/hds.flv"
+python3 "$root/scripts/gen_hds_fixture.py" "$work/hds.flv" "$out/hds"
 
 # Split HLS: video-only variant; English and German audio renditions; WebVTT subtitles.
 "$ff" -hide_banner -loglevel error -y -i "$work/video.ts" -c copy \

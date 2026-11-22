@@ -2,6 +2,7 @@
 //! Secret Service API (KWallet, GNOME Keyring, KeePassXC…). Nothing is read until a server
 //! asks for a login, so starting Siler never pops up an unlock prompt.
 
+use crate::i18n::{tr, tr_args};
 use oo7::Keyring;
 use serde::Serialize;
 use siler_core::Login;
@@ -51,7 +52,7 @@ async fn read_secret(item: &oo7::Item) -> oo7::Result<String> {
 
 /// Saves (or replaces) the login for a server.
 pub async fn save(host: &str, login: &Login) -> Result<(), String> {
-    let k = keyring().await.ok_or("No keyring is available")?;
+    let k = keyring().await.ok_or_else(|| tr("logins-no-keyring"))?;
     let _ = k.delete(&attrs(SITE, host)).await;
     let mut a = attrs(SITE, host);
     a.insert("username", &login.username);
@@ -62,7 +63,7 @@ pub async fn save(host: &str, login: &Login) -> Result<(), String> {
         true,
     )
     .await
-    .map_err(|e| format!("Couldn't save the login in the keyring: {e}"))
+    .map_err(|e| tr_args("logins-couldnt-save", vec![("why", e.to_string().into())]))
 }
 
 /// The saved login for a server, if any.
@@ -106,7 +107,7 @@ pub async fn list() -> Vec<SavedLogin> {
 }
 
 pub async fn forget(host: &str) -> Result<(), String> {
-    let k = keyring().await.ok_or("No keyring is available")?;
+    let k = keyring().await.ok_or_else(|| tr("logins-no-keyring"))?;
     k.delete(&attrs(SITE, host))
         .await
         .map_err(|e| e.to_string())
@@ -135,12 +136,17 @@ pub async fn proxy_password_saved() -> bool {
 }
 
 pub async fn set_proxy_password(password: Option<&str>) -> Result<(), String> {
-    let k = keyring().await.ok_or("No keyring is available")?;
+    let k = keyring().await.ok_or_else(|| tr("logins-no-keyring"))?;
     match password.filter(|p| !p.is_empty()) {
         Some(p) => k
             .create_item("Siler proxy password", &attrs(PROXY, PROXY), p, true)
             .await
-            .map_err(|e| format!("Couldn't save the proxy password in the keyring: {e}")),
+            .map_err(|e| {
+                tr_args(
+                    "logins-couldnt-save-proxy",
+                    vec![("why", e.to_string().into())],
+                )
+            }),
         None => k
             .delete(&attrs(PROXY, PROXY))
             .await

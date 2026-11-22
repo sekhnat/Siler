@@ -21,7 +21,13 @@ pub struct FfmpegStatus {
     pub ok: bool,
     /// What is missing, for the Settings screen.
     pub missing: Vec<String>,
+    /// It can record RTMP and MMS streams (network protocols, FLV and ASF demuxers).
+    pub network: bool,
 }
+
+/// What recording RTMP and MMS streams needs, beyond the rest.
+const NETWORK_PROTOCOLS: &[&str] = &["tcp", "rtmp", "mmsh", "mmst"];
+const NETWORK_DEMUXERS: &[&str] = &["flv", "asf"];
 
 const MUXERS: &[&str] = &["mp4", "matroska", "mpegts", "webvtt"];
 const DEMUXERS: &[&str] = &[
@@ -61,6 +67,7 @@ pub(crate) fn probe(path: &Path) -> FfmpegStatus {
                     version: None,
                     ok: false,
                     missing: vec!["it didn't run".into()],
+                    network: false,
                 };
             }
         }
@@ -156,11 +163,14 @@ pub(crate) fn parse(text: &str, path: Option<String>) -> FfmpegStatus {
             }
         }
     }
+    let network = NETWORK_PROTOCOLS.iter().all(|p| protocols.contains(*p))
+        && NETWORK_DEMUXERS.iter().all(|d| demuxers.contains(*d));
     FfmpegStatus {
         path,
         version,
         ok: missing.is_empty(),
         missing,
+        network,
     }
 }
 

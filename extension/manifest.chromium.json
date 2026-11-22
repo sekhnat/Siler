@@ -1,0 +1,48 @@
+{
+  "_comment": "Merged over manifest.json by scripts/build-extension.mjs for Chromium browsers. `key` pins the ID of an unpacked load (legjbaodpdlommbgpdfcmogjedfgpjae); the Chrome Web Store gives its own.",
+  "minimum_chrome_version": "120",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqivJQQm3I4rtJkU2expEDSG/xHAncKYha89Im3imGrlrSDqJXl8Sk7JzokOOX55yWt2NiaHXh6s4n258ZZpTnPm82EFUvOQ1ddjbPvIh07PNOuGf7SW+RJV3ctz+tMIlpI4K2q7MnRDLVXB0qSkzkMsG8IEuRdydlSVQjMLAPsNA7m2I70jtn3hrBPLduCMcmwhuKQBWTnTV6aBE3Pg7VVUGzpPI2lAXfmjvrry03JQidfY8WNUduq3zd4RIBSf1kV15snRni8rBKxyJiOpcb1SSKArBCT01Rvu4Spqfmx92HBVaQV77xmVJrGNzR01SomlmWXVybW4wgzJXuaGfxwIDAQAB",
+  "browser_specific_settings": null,
+  "permissions": [
+    "downloads",
+    "cookies",
+    "contextMenus",
+    "nativeMessaging",
+    "notifications",
+    "storage",
+    "scripting",
+    "webRequest"
+  ],
+  "background": {
+    "service_worker": "sw.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "compat.js",
+        "content.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true
+    },
+    {
+      "matches": [
+        "*://www.facebook.com/*",
+        "*://web.facebook.com/*",
+        "*://m.facebook.com/*",
+        "*://www.instagram.com/*",
+        "*://www.tiktok.com/*",
+        "*://player.vimeo.com/*"
+      ],
+      "js": [
+        "hook.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "MAIN"
+    }
+  ]
+}

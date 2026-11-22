@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from "../i18n";
   import { Copy, LoaderCircle, ShieldCheck, ShieldX } from "@lucide/svelte";
   import { ALGO_LABEL, api, errorText, type Checksum, type Download, type VerifyResult } from "../api";
   import { nameFromUrl } from "../format";
@@ -61,28 +62,28 @@
 
   async function copy(v: string) {
     await navigator.clipboard.writeText(v).catch(() => {});
-    toasts.show("Copied", "success");
+    toasts.show(t("verify-copied"), "success");
   }
 </script>
 
-<Modal title="Verify “{d.filename ?? nameFromUrl(d.url)}”" width={560} {onclose}>
+<Modal title={t("verify-verify", { v: d.filename ?? nameFromUrl(d.url) })} width={560} {onclose}>
   <div class="body">
     <label class="field">
-      <span class="label">Expected checksum <span class="hint">(paste it from the site; MD5, SHA-1, SHA-256 or SHA-512)</span></span>
+      <span class="label">{t("verify-expected-checksum")} <span class="hint">{t("verify-paste-it-from-the-site-md5")}</span></span>
       <!-- svelte-ignore a11y_autofocus -->
-      <input class="input mono" bind:value={text} placeholder="Leave empty to work out its SHA-256" spellcheck="false" autofocus onkeydown={(e) => e.key === "Enter" && verify()} />
+      <input class="input mono" bind:value={text} placeholder={t("verify-leave-empty-to-work-out-its")} spellcheck="false" autofocus onkeydown={(e) => e.key === "Enter" && verify()} />
       {#if parseError}<span class="note err">{parseError}</span>{:else if parsed}<span class="note">{ALGO_LABEL[parsed.algo]}</span>{/if}
     </label>
 
     {#if busy}
-      <div class="result"><LoaderCircle size={16} class="spin" /> Reading the file…</div>
+      <div class="result"><LoaderCircle size={16} class="spin" /> {t("verify-reading-the-file")}</div>
     {:else if error}
       <div class="result bad"><ShieldX size={16} /> {error}</div>
     {:else if result}
       <div class="result" class:good={matches === true} class:bad={matches === false}>
-        {#if matches === true}<ShieldCheck size={18} /> <b>The file is intact</b> — its {ALGO_LABEL[result.algo]} matches.
-        {:else if matches === false}<ShieldX size={18} /> <b>The file doesn't match</b> — it is damaged or a different file.
-        {:else}<ShieldCheck size={18} /> Its {ALGO_LABEL[result.algo]} is below.{/if}
+        {#if matches === true}<ShieldCheck size={18} /> <b>{t("verify-the-file-is-intact")}</b> {t("verify-its-matches", { v: ALGO_LABEL[result.algo] })}
+        {:else if matches === false}<ShieldX size={18} /> <b>{t("verify-the-file-doesn-t-match")}</b> {t("verify-it-is-damaged-or-a-different")}
+        {:else}<ShieldCheck size={18} /> {t("verify-its-is-below", { v: ALGO_LABEL[result.algo] })}{/if}
       </div>
       <div class="mono hex selectable">{result.actual}</div>
     {/if}
@@ -90,17 +91,17 @@
     <div class="digests">
       {#if digests}
         {#each digests as g (g.algo)}
-          <div class="dg"><span class="algo">{g.algo}</span><span class="mono hex selectable truncate">{g.hex}</span><button class="icon-btn xs" onclick={() => copy(g.hex)} aria-label="Copy"><Copy size={12} /></button></div>
+          <div class="dg"><span class="algo">{g.algo}</span><span class="mono hex selectable truncate">{g.hex}</span><button class="icon-btn xs" onclick={() => copy(g.hex)} aria-label={t("verify-copy")}><Copy size={12} /></button></div>
         {/each}
       {:else}
-        <button class="link" onclick={compute} disabled={digesting}>{digesting ? "Working them out…" : "Show its MD5, SHA-1 and SHA-256"}</button>
+        <button class="link" onclick={compute} disabled={digesting}>{digesting ? t("verify-working-them-out") : t("verify-show-its-md5-sha-1-and")}</button>
       {/if}
     </div>
   </div>
   {#snippet footer()}
     <span class="grow"></span>
-    <button class="btn btn-ghost" onclick={onclose}>Close</button>
-    <button class="btn btn-primary" onclick={verify} disabled={busy || !!parseError}>Verify</button>
+    <button class="btn btn-ghost" onclick={onclose}>{t("verify-close")}</button>
+    <button class="btn btn-primary" onclick={verify} disabled={busy || !!parseError}>{t("verify-verify-2")}</button>
   {/snippet}
 </Modal>
 

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from "../i18n";
   import { ArrowDownToLine, CalendarClock, CircleAlert, CircleCheck, Clock, Gauge, Layers, ListOrdered, Pencil, Play, Plus, RefreshCw, Settings, Square } from "@lucide/svelte";
   import { api, type Download, type Queue } from "../api";
   import { CATEGORIES, isActive } from "../categories";
@@ -29,12 +30,12 @@
 
   const count = (pred: (d: Download) => boolean) => store.list.filter(pred).length;
   const statusNav = $derived([
-    { key: "all", label: "All downloads", icon: Layers, n: store.list.length },
-    { key: "active", label: "Downloading", icon: ArrowDownToLine, n: count((d) => isActive(d.status)) },
-    { key: "queued", label: "Queued & paused", icon: Clock, n: count((d) => d.status === "queued" || d.status === "paused" || d.status === "waiting") },
-    { key: "completed", label: "Completed", icon: CircleCheck, n: count((d) => d.status === "completed") },
-    { key: "failed", label: "Failed", icon: CircleAlert, n: count((d) => d.status === "failed") },
-    { key: "sync", label: "Kept up to date", icon: RefreshCw, n: count((d) => d.sync_every > 0) },
+    { key: "all", label: t("sidebar-all-downloads"), icon: Layers, n: store.list.length },
+    { key: "active", label: t("sidebar-downloading"), icon: ArrowDownToLine, n: count((d) => isActive(d.status)) },
+    { key: "queued", label: t("sidebar-queued-paused"), icon: Clock, n: count((d) => d.status === "queued" || d.status === "paused" || d.status === "waiting") },
+    { key: "completed", label: t("sidebar-completed"), icon: CircleCheck, n: count((d) => d.status === "completed") },
+    { key: "failed", label: t("sidebar-failed"), icon: CircleAlert, n: count((d) => d.status === "failed") },
+    { key: "sync", label: t("sidebar-kept-up-to-date"), icon: RefreshCw, n: count((d) => d.sync_every > 0) },
   ].filter((n) => n.key !== "sync" || n.n > 0));
   const queueNav = $derived(
     store.queues.map((q) => ({
@@ -54,13 +55,13 @@
   <div class="brand">
     <Logo size={30} />
     <div>
-      <div class="name">Siler</div>
-      <div class="tag">Download manager</div>
+      <div class="name">{t("sidebar-siler")}</div>
+      <div class="tag">{t("sidebar-download-manager")}</div>
     </div>
   </div>
 
   <button class="btn btn-primary add" onclick={onadd}>
-    <Plus size={17} strokeWidth={2.4} /> Add URL
+    <Plus size={17} strokeWidth={2.4} /> {t("sidebar-add-url")}
   </button>
 
   <nav>
@@ -73,32 +74,32 @@
     {/each}
 
     <div class="section">
-      <span>Queues</span>
-      <button class="icon-btn sm" title="New queue" aria-label="New queue" onclick={() => onqueue(null)}><Plus size={14} /></button>
+      <span>{t("sidebar-queues")}</span>
+      <button class="icon-btn sm" title={t("sidebar-new-queue")} aria-label={t("sidebar-new-queue")} onclick={() => onqueue(null)}><Plus size={14} /></button>
     </div>
     {#each queueNav as { q, n, waiting, when } (q.id)}
       <div class="queue" class:on={filter === `queue:${q.id}`}>
-        <button class="nav" class:on={filter === `queue:${q.id}`} onclick={() => (filter = `queue:${q.id}`)} ondblclick={() => onqueue(q)} title={when ? `Scheduled ${when}` : q.name}>
+        <button class="nav" class:on={filter === `queue:${q.id}`} onclick={() => (filter = `queue:${q.id}`)} ondblclick={() => onqueue(q)} title={when ? t("sidebar-scheduled", { when }) : q.name}>
           {#if when}<CalendarClock size={16} />{:else}<ListOrdered size={16} />{/if}
           <span class="qname">
             <span class="truncate">{q.name}</span>
             {#if when}<span class="when truncate">{when}</span>{/if}
           </span>
-          {#if q.active}<span class="live" title="Running"></span>{/if}
+          {#if q.active}<span class="live" title={t("sidebar-running")}></span>{/if}
           {#if n}<span class="count">{n}</span>{/if}
         </button>
         <span class="q-actions">
           {#if q.active}
-            <button class="icon-btn sm" title="Stop the queue" aria-label="Stop the queue" onclick={() => attempt(api.stopQueue(q.id))}><Square size={12} /></button>
+            <button class="icon-btn sm" title={t("sidebar-stop-the-queue")} aria-label={t("sidebar-stop-the-queue")} onclick={() => attempt(api.stopQueue(q.id))}><Square size={12} /></button>
           {:else if waiting}
-            <button class="icon-btn sm" title="Start the queue" aria-label="Start the queue" onclick={() => attempt(api.startQueue(q.id))}><Play size={13} /></button>
+            <button class="icon-btn sm" title={t("sidebar-start-the-queue")} aria-label={t("sidebar-start-the-queue")} onclick={() => attempt(api.startQueue(q.id))}><Play size={13} /></button>
           {/if}
-          <button class="icon-btn sm" title="Edit the queue" aria-label="Edit the queue" onclick={() => onqueue(q)}><Pencil size={12} /></button>
+          <button class="icon-btn sm" title={t("sidebar-edit-the-queue")} aria-label={t("sidebar-edit-the-queue")} onclick={() => onqueue(q)}><Pencil size={12} /></button>
         </span>
       </div>
     {/each}
 
-    <div class="section">Categories</div>
+    <div class="section">{t("sidebar-categories")}</div>
     {#each catNav as c (c.key)}
       <button class="nav" class:on={filter === `cat:${c.key}`} onclick={() => (filter = `cat:${c.key}`)}>
         <span class="dot" style:--c={c.color}><c.icon size={13} strokeWidth={2.2} /></span>
@@ -111,13 +112,13 @@
   <div class="speed-card">
     <div class="speed-head">
       <div>
-        <div class="speed-label">{activeCount ? `${activeCount} active` : "Idle"}</div>
+        <div class="speed-label">{activeCount ? t("sidebar-active", { count: activeCount }) : t("sidebar-idle")}</div>
         <div class="speed-value">{speed(store.totalSpeed)}</div>
       </div>
       <div class="limit-wrap">
-        <button class="limit" class:limited={globalLimit > 0} onclick={() => (limitMenu = !limitMenu)} title="Global speed limit">
+        <button class="limit" class:limited={globalLimit > 0} onclick={() => (limitMenu = !limitMenu)} title={t("sidebar-global-speed-limit")}>
           <Gauge size={14} />
-          {globalLimit ? limitLabel(globalLimit) : "No limit"}
+          {globalLimit ? limitLabel(globalLimit) : t("sidebar-no-limit")}
         </button>
         {#if limitMenu}
           <SpeedMenu align="right" direction="up" value={globalLimit} onselect={onlimit} onclose={() => (limitMenu = false)} />
@@ -129,7 +130,7 @@
 
   <button class="nav settings" onclick={onsettings}>
     <Settings size={16} />
-    <span>Settings</span>
+    <span>{t("sidebar-settings")}</span>
   </button>
 </aside>
 

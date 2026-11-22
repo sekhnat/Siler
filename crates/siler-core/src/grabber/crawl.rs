@@ -130,7 +130,7 @@ pub(super) async fn crawl(
     emit: &(dyn Fn(&GrabProgress) + Sync),
 ) -> Result<GrabResult, String> {
     let s: Settings = inner.settings();
-    let start = crate::probe::parse_url(&cfg.start_url).map_err(|e| e.to_string())?;
+    let start = crate::probe::parse_web_url(&cfg.start_url).map_err(|e| e.to_string())?;
     let private_ok = siler_media::policy::is_private_source(&start);
     let http = Arc::new(Http::new(
         inner.net.clone(),

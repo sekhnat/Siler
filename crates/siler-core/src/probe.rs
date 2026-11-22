@@ -35,6 +35,15 @@ pub struct ProbeResult {
 pub(crate) fn parse_url(url: &str) -> Result<Url> {
     let url = Url::parse(url.trim()).map_err(|e| Error::InvalidUrl(e.to_string()))?;
     match url.scheme() {
+        s if crate::transport::FILE_SCHEMES.contains(&s) => Ok(url),
+        s => Err(Error::InvalidUrl(format!("unsupported scheme “{s}”"))),
+    }
+}
+
+/// Only http(s): for what only makes sense on the web (media, the site grabber).
+pub(crate) fn parse_web_url(url: &str) -> Result<Url> {
+    let url = parse_url(url)?;
+    match url.scheme() {
         "http" | "https" => Ok(url),
         s => Err(Error::InvalidUrl(format!("unsupported scheme “{s}”"))),
     }
@@ -138,6 +147,9 @@ pub(crate) async fn probe(
     ua: &str,
 ) -> Result<ProbeResult> {
     let url = parse_url(url)?;
+    if crate::transport::kind(&url) != crate::transport::Kind::Http {
+        return crate::transport::probe(net, &url).await;
+    }
     let mut target = url.clone();
     let mut attempts = 0;
     let resp = loop {
@@ -247,6 +259,16 @@ pub(crate) async fn fetch_range(
         return Ok(Vec::new());
     }
     let url = parse_url(url)?;
+    if crate::transport::kind(&url) != crate::transport::Kind::Http {
+        let s = crate::transport::open_range(net, &url, start, Some(start + len))
+            .await
+            .map_err(|e| match e {
+                crate::transport::OpenError::Fatal(e) => e,
+                crate::transport::OpenError::Transient(m) => Error::Network(m),
+                crate::transport::OpenError::Throttled(c, a) => Error::Busy(c, a),
+            })?;
+        return crate::transport::collect(s, len).await;
+    }
     let auth = net.auth_for(&url);
     let resp = build_request(&net.client(), url, meta, ua, auth.as_deref())
         .header(
@@ -301,7 +323,7 @@ pub(crate) async fn fetch_range(
 }
 
 /// The `rel=duplicate` targets of `Link` headers (RFC 6249), by `pri` (lowest first). Only
-/// http(s) addresses, at most 10.
+/// http(s) and ftp addresses, at most 10.
 pub(crate) fn duplicate_links(values: &[&str], base: &Url) -> Vec<String> {
     let mut found: Vec<(u32, String)> = Vec::new();
     for v in values {
@@ -334,7 +356,7 @@ pub(crate) fn duplicate_links(values: &[&str], base: &Url) -> Vec<String> {
                 continue;
             }
             if let Ok(u) = base.join(target.trim())
-                && matches!(u.scheme(), "http" | "https")
+                && matches!(u.scheme(), "http" | "https" | "ftp" | "ftps")
                 && u != *base
                 && !found.iter().any(|(_, f)| *f == u.as_str())
             {
@@ -384,7 +406,11 @@ mod tests {
         );
         assert_eq!(
             got,
-            vec!["http://m1.example/f.iso", "https://m2.example/f.iso"]
+            vec![
+                "http://m1.example/f.iso",
+                "https://m2.example/f.iso",
+                "ftp://m3.example/f.iso"
+            ]
         );
     }
 

@@ -1,6 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
+silerLocalize();
 const SWITCHES = [
   "enabled",
   "captureAll",
@@ -52,15 +53,15 @@ async function checkSetup() {
   $("perm-ok").hidden = !granted;
 
   const h = await silerHealth();
-  $("host-state").textContent = h.running ? "✓ Connected" : h.installed ? "✓ Installed (Siler starts on demand)" : "✗ Not found";
+  $("host-state").textContent = h.running ? silerT("optionsConnected") : h.installed ? silerT("optionsInstalled") : silerT("optionsNotFound");
   $("host-state").className = h.installed ? "ok" : "muted";
   $("welcome").hidden = granted && h.installed;
   $("outdated").hidden = !h.outdated;
   $("outdated").textContent =
     h.outdated === "app"
-      ? `Siler ${h.version ?? ""} is older than this extension (${browser.runtime.getManifest().version}). Update Siler so they work together.`
+      ? silerT("optionsAppOlder", [h.version ?? "", browser.runtime.getManifest().version])
       : h.outdated === "extension"
-        ? `This extension (${browser.runtime.getManifest().version}) is older than Siler ${h.version ?? ""}. Update the extension.`
+        ? silerT("optionsExtensionOlder", [browser.runtime.getManifest().version, h.version ?? ""])
         : "";
 }
 

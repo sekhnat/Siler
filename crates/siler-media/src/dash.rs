@@ -21,6 +21,29 @@ use crate::xml::{self, Node};
 
 /// Parses a static MPD. Dynamic (live) manifests parse, and report [`Liveness::Live`].
 pub fn parse(body: &[u8], base: &Url, lim: &ParseLimits) -> Result<Presentation, ParseError> {
+    parse_at(body, base, lim, None)
+}
+
+/// The wall clock of a live MPD: what is available at `now`.
+#[derive(Debug, Clone, Copy)]
+struct Clock {
+    /// Seconds since the Unix epoch.
+    now: f64,
+    /// `availabilityStartTime`, in the same seconds.
+    start: f64,
+    /// `timeShiftBufferDepth`: how far back segments stay available.
+    depth: Option<f64>,
+}
+
+/// Like [`parse`]; for a dynamic MPD, `now` (seconds since the Unix epoch) decides which
+/// segments are available, and segments are numbered by their `$Number$` so that the same
+/// segment keeps its number from one reload to the next.
+pub fn parse_at(
+    body: &[u8],
+    base: &Url,
+    lim: &ParseLimits,
+    now: Option<f64>,
+) -> Result<Presentation, ParseError> {
     if body.len() > lim.max_manifest_bytes {
         return Err(ParseError::TooLarge {
             limit: lim.max_manifest_bytes,
@@ -31,6 +54,20 @@ pub fn parse(body: &[u8], base: &Url, lim: &ParseLimits) -> Result<Presentation,
         return Err(ParseError::invalid("the root element isn't MPD"));
     }
     let dynamic = root.attr("type") == Some("dynamic");
+    let clock = match (dynamic, now) {
+        (true, Some(now)) => Some(Clock {
+            now,
+            start: root
+                .attr("availabilityStartTime")
+                .and_then(parse_datetime)
+                .unwrap_or(0.0),
+            depth: root
+                .attr("timeShiftBufferDepth")
+                .map(iso_duration)
+                .transpose()?,
+        }),
+        _ => None,
+    };
     let mpd_duration = match root.attr("mediaPresentationDuration") {
         Some(s) => Some(iso_duration(s)?),
         None => None,
@@ -100,7 +137,7 @@ pub fn parse(body: &[u8], base: &Url, lim: &ParseLimits) -> Result<Presentation,
                     .and_then(|v| v.trim().parse::<u32>().ok());
                 let protection = protections(aset, rep);
                 let Some(plan) = plan_for(
-                    rep, aset, period, &rep_base, &rep_id, bandwidth, p_start, p_dur, lim,
+                    rep, aset, period, &rep_base, &rep_id, bandwidth, p_start, p_dur, lim, clock,
                 )?
                 else {
                     let w = "a representation that doesn't say where its segments are was skipped";
@@ -378,6 +415,7 @@ fn plan_for(
     p_start: f64,
     p_dur: Option<f64>,
     lim: &ParseLimits,
+    clock: Option<Clock>,
 ) -> Result<Option<SegmentPlan>, ParseError> {
     let levels = [rep, aset, period];
     let templates: Vec<&Node> = levels
@@ -386,7 +424,7 @@ fn plan_for(
         .collect();
     if !templates.is_empty() {
         let t = Layered(templates);
-        return template_plan(&t, base, rep_id, bandwidth, p_start, p_dur, lim).map(Some);
+        return template_plan(&t, base, rep_id, bandwidth, p_start, p_dur, lim, clock).map(Some);
     }
     if let Some(l) = levels.iter().find_map(|n| n.child("SegmentList")) {
         return list_plan(l, base, p_start, lim).map(Some);
@@ -442,6 +480,7 @@ fn whole_plan(base: &Url, start: f64, dur: Option<f64>) -> SegmentPlan {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn template_plan(
     t: &Layered<'_>,
     base: &Url,
@@ -450,6 +489,7 @@ fn template_plan(
     p_start: f64,
     p_dur: Option<f64>,
     lim: &ParseLimits,
+    clock: Option<Clock>,
 ) -> Result<SegmentPlan, ParseError> {
     let timescale = t.u64("timescale")?.unwrap_or(1).max(1);
     let pto = t.u64("presentationTimeOffset")?.unwrap_or(0);
@@ -506,17 +546,26 @@ fn template_plan(
                     .map(|n| attr_u64(n, "t"))
                     .transpose()?
                     .flatten();
-                let end = match (next, p_dur) {
-                    (Some(t), _) => t as f64,
-                    (None, Some(p)) => pto as f64 + p * timescale as f64,
-                    (None, None) => {
+                let end = match (next, p_dur, clock) {
+                    (Some(t), _, _) => t as f64,
+                    (None, Some(p), _) => pto as f64 + p * timescale as f64,
+                    // Live: the repeats run up to what is available now.
+                    (None, None, Some(c)) => {
+                        pto as f64 + (c.now - c.start - p_start).max(0.0) * timescale as f64
+                    }
+                    (None, None, None) => {
                         return Err(ParseError::unsupported(
                             "a timeline that runs to the end of a period of unknown length",
                         ));
                     }
                 };
                 let span = (end - time as f64).max(0.0);
-                ((span / d as f64).ceil() as u64).saturating_sub(1)
+                if next.is_none() && p_dur.is_none() {
+                    // Live: only the segments completed by now.
+                    ((span / d as f64).floor() as u64).saturating_sub(1)
+                } else {
+                    ((span / d as f64).ceil() as u64).saturating_sub(1)
+                }
             };
             for _ in 0..=repeats {
                 push(&mut entries, (number, time, d))?;
@@ -529,10 +578,26 @@ fn template_plan(
         let d = t.u64("duration")?.filter(|d| *d > 0).ok_or_else(|| {
             ParseError::unsupported("a SegmentTemplate has neither a timeline nor a duration")
         })?;
-        let p =
-            p_dur.ok_or_else(|| ParseError::unsupported("the length of a period isn't known"))?;
-        let count = ((p * timescale as f64) / d as f64).ceil() as u64;
-        for i in 0..count {
+        let (first, count) = match (p_dur, clock) {
+            (Some(p), _) => (0, ((p * timescale as f64) / d as f64).ceil() as u64),
+            // Live: the segments that have been completed by now, within the time-shift
+            // buffer (the last 30 when the MPD doesn't say how deep it is).
+            (None, Some(c)) => {
+                let secs = d as f64 / timescale as f64;
+                let done = ((c.now - c.start - p_start).max(0.0) / secs).floor() as u64;
+                let keep = c
+                    .depth
+                    .map_or(30, |depth| (depth / secs).floor() as u64)
+                    .max(1);
+                (done.saturating_sub(keep), done)
+            }
+            (None, None) => {
+                return Err(ParseError::unsupported(
+                    "the length of a period isn't known",
+                ));
+            }
+        };
+        for i in first..count {
             push(
                 &mut entries,
                 (
@@ -548,7 +613,8 @@ fn template_plan(
     for (i, (number, time, d)) in entries.into_iter().enumerate() {
         let s = expand(media, rep_id, Some(number), bandwidth, Some(time))?;
         plan.segments.push(Segment {
-            seq: i as u64,
+            // Live segments keep their number across reloads; on demand, the position.
+            seq: if clock.is_some() { number } else { i as u64 },
             object: Object {
                 url: resolve(base, &s)?,
                 range: None,
@@ -560,7 +626,7 @@ fn template_plan(
             duration: d as f64 / timescale as f64,
         });
     }
-    if plan.segments.is_empty() {
+    if plan.segments.is_empty() && clock.is_none() {
         return Err(ParseError::invalid(
             "a SegmentTemplate describes no segments",
         ));
@@ -716,6 +782,44 @@ fn parse_range(s: &str) -> Result<ByteRange, ParseError> {
 
 /// An ISO 8601 duration in seconds: `PnD`, `PTnH`, `PTnM`, `PTnS` and combinations. Years and
 /// months have no fixed length and are refused.
+/// An `xs:dateTime` (`2026-11-22T10:00:00.5Z`, `…+01:00`, or without a zone, taken as UTC)
+/// as seconds since the Unix epoch.
+fn parse_datetime(s: &str) -> Option<f64> {
+    let s = s.trim();
+    let (date, time) = s.split_once('T')?;
+    let mut d = date.splitn(3, '-');
+    let y: i64 = d.next()?.parse().ok()?;
+    let m: i64 = d.next()?.parse().ok()?;
+    let day: i64 = d.next()?.parse().ok()?;
+    let (clock, offset) = if let Some(c) = time.strip_suffix('Z') {
+        (c, 0.0)
+    } else if let Some(i) = time.rfind(['+', '-']).filter(|&i| i >= 8) {
+        let (c, z) = time.split_at(i);
+        let sign = if z.starts_with('-') { -1.0 } else { 1.0 };
+        let (h, mi) = z[1..].split_once(':').unwrap_or((&z[1..], "0"));
+        let off = h.parse::<f64>().ok()? * 3600.0 + mi.parse::<f64>().ok()? * 60.0;
+        (c, sign * off)
+    } else {
+        (time, 0.0)
+    };
+    let mut c = clock.splitn(3, ':');
+    let hh: f64 = c.next()?.parse().ok()?;
+    let mm: f64 = c.next()?.parse().ok()?;
+    let ss: f64 = c.next().unwrap_or("0").parse().ok()?;
+    if !(1..=12).contains(&m) || !(1..=31).contains(&day) {
+        return None;
+    }
+    // Days from the civil date (Howard Hinnant's algorithm).
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(days as f64 * 86_400.0 + hh * 3600.0 + mm * 60.0 + ss - offset)
+}
+
 pub(crate) fn iso_duration(s: &str) -> Result<f64, ParseError> {
     let bad = || ParseError::invalid("a duration isn't in ISO 8601 form");
     let body = s.trim().strip_prefix('P').ok_or_else(bad)?;
@@ -911,6 +1015,53 @@ mod tests {
         );
         assert_eq!(p.variants[0].subtitles, vec![sub.id.clone()]);
         assert!(!p.variants[0].muxed_audio);
+    }
+
+    #[test]
+    fn datetimes() {
+        assert_eq!(parse_datetime("1970-01-01T00:00:00Z"), Some(0.0));
+        assert_eq!(
+            parse_datetime("2026-11-22T10:00:00Z"),
+            Some(1_795_341_600.0)
+        );
+        assert_eq!(
+            parse_datetime("2026-11-22T11:00:00.5+01:00"),
+            Some(1_795_341_600.5)
+        );
+        assert_eq!(parse_datetime("2026-11-22T10:00:00"), Some(1_795_341_600.0));
+        assert_eq!(parse_datetime("nonsense"), None);
+    }
+
+    #[test]
+    fn live_template_is_cut_at_now() {
+        let mpd = r#"<MPD type="dynamic" availabilityStartTime="2026-11-22T10:00:00Z" timeShiftBufferDepth="PT20S" minimumUpdatePeriod="PT2S"><Period start="PT0S"><AdaptationSet mimeType="video/mp4" codecs="avc1"><Representation id="v" bandwidth="1000" width="10" height="10"><SegmentTemplate timescale="1" duration="4" startNumber="1" initialization="init.mp4" media="s$Number$.m4s"/></Representation></AdaptationSet></Period></MPD>"#;
+        let base = Url::parse("http://h/live.mpd").unwrap();
+        let lim = ParseLimits::default();
+        let now = parse_datetime("2026-11-22T10:01:00Z").unwrap();
+        let p = parse_at(mpd.as_bytes(), &base, &lim, Some(now)).unwrap();
+        assert!(p.is_live());
+        let segs = &p.variants[0].video.plan.segments;
+        // 60 s in, 4 s segments: 15 done, the last 5 within the 20 s buffer.
+        let nums: Vec<u64> = segs.iter().map(|s| s.seq).collect();
+        assert_eq!(nums, [11, 12, 13, 14, 15]);
+        assert!(segs[0].object.url.as_str().ends_with("/s11.m4s"));
+        let later = parse_at(mpd.as_bytes(), &base, &lim, Some(now + 8.0)).unwrap();
+        assert_eq!(
+            later.variants[0].video.plan.segments.last().unwrap().seq,
+            17
+        );
+    }
+
+    #[test]
+    fn live_timeline_runs_to_now() {
+        let mpd = r#"<MPD type="dynamic" availabilityStartTime="2026-11-22T10:00:00Z"><Period start="PT0S"><AdaptationSet mimeType="audio/mp4" codecs="mp4a.40.2"><Representation id="a" bandwidth="128000"><SegmentTemplate timescale="10" startNumber="100" media="a$Number$.m4s"><SegmentTimeline><S t="0" d="20" r="-1"/></SegmentTimeline></SegmentTemplate></Representation></AdaptationSet></Period></MPD>"#;
+        let base = Url::parse("http://h/live.mpd").unwrap();
+        let now = parse_datetime("2026-11-22T10:00:10.9Z").unwrap();
+        let p = parse_at(mpd.as_bytes(), &base, &ParseLimits::default(), Some(now)).unwrap();
+        let segs = &p.audio[0].plan.segments;
+        assert_eq!(segs.len(), 5);
+        assert_eq!(segs[0].seq, 100);
+        assert_eq!(segs[4].seq, 104);
     }
 
     #[test]

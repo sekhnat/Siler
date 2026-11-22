@@ -130,6 +130,108 @@ pub struct Settings {
     pub after_download: AfterDownload,
     /// A download that turns out to be a metalink is replaced by the files it lists.
     pub open_metalinks: bool,
+    /// Ask GitHub once a day whether a newer Siler is out.
+    pub check_updates: bool,
+    /// A version the user chose to skip (not announced again).
+    pub skipped_version: String,
+    /// How the download list looks: kept by the app, not used by the engine.
+    pub ui: UiSettings,
+    /// The interface's language (`de`, `pt-BR`, …); empty for the system's.
+    pub language: String,
+}
+
+/// The list's view, columns, order and toolbar.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UiSettings {
+    /// `cards` or `details`.
+    pub view: String,
+    /// The Details view's columns, in order.
+    pub columns: Vec<ColumnSetting>,
+    /// What the list is sorted by (`added`, `name`, `size`, …).
+    pub sort: String,
+    /// The order is reversed from the sort's natural one.
+    pub sort_reverse: bool,
+    /// The toolbar's buttons, in order.
+    pub toolbar: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ColumnSetting {
+    pub id: String,
+    /// In pixels.
+    pub width: u32,
+}
+
+/// Toolbar buttons, in their default order.
+pub const DEFAULT_TOOLBAR: &[&str] = &[
+    "queue",
+    "resume_all",
+    "pause_all",
+    "when_done",
+    "sort",
+    "view",
+    "more",
+];
+
+impl Default for UiSettings {
+    fn default() -> Self {
+        let col = |id: &str, width| ColumnSetting {
+            id: id.into(),
+            width,
+        };
+        UiSettings {
+            view: "cards".into(),
+            columns: vec![
+                col("name", 220),
+                col("size", 80),
+                col("progress", 130),
+                col("speed", 90),
+                col("eta", 80),
+                col("status", 110),
+                col("added", 140),
+            ],
+            sort: "added".into(),
+            sort_reverse: false,
+            toolbar: DEFAULT_TOOLBAR.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+}
+
+impl UiSettings {
+    fn normalized(mut self) -> Self {
+        if !matches!(self.view.as_str(), "cards" | "details") {
+            self.view = "cards".into();
+        }
+        let mut seen = HashSet::new();
+        self.columns
+            .retain(|c| !c.id.is_empty() && c.id.len() <= 32 && seen.insert(c.id.clone()));
+        self.columns.truncate(24);
+        for c in &mut self.columns {
+            c.width = c.width.clamp(40, 1200);
+        }
+        // The name is always shown, first.
+        if let Some(i) = self.columns.iter().position(|c| c.id == "name") {
+            let name = self.columns.remove(i);
+            self.columns.insert(0, name);
+        } else {
+            self.columns.insert(
+                0,
+                ColumnSetting {
+                    id: "name".into(),
+                    width: 220,
+                },
+            );
+        }
+        let mut seen = HashSet::new();
+        self.toolbar
+            .retain(|t| !t.is_empty() && t.len() <= 32 && seen.insert(t.clone()));
+        self.toolbar.truncate(24);
+        if self.sort.is_empty() || self.sort.len() > 32 {
+            self.sort = "added".into();
+        }
+        self
+    }
 }
 
 /// A command run after a download finishes, for example to scan, unpack or move the file.
@@ -194,6 +296,10 @@ impl Default for Settings {
             quota: crate::quota::QuotaSettings::default(),
             after_download: AfterDownload::default(),
             open_metalinks: true,
+            check_updates: true,
+            skipped_version: String::new(),
+            ui: UiSettings::default(),
+            language: String::new(),
         }
     }
 }
@@ -252,6 +358,7 @@ impl Settings {
 
     pub(crate) fn normalized(mut self) -> Self {
         self.media_segment_concurrency = self.media_segment_concurrency.clamp(1, 16);
+        self.ui = std::mem::take(&mut self.ui).normalized();
         self.preferred_audio_language = self.preferred_audio_language.trim().to_string();
         self.preferred_subtitle_language = self.preferred_subtitle_language.trim().to_string();
         self.max_concurrent = self.max_concurrent.clamp(1, 20);

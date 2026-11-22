@@ -1,0 +1,272 @@
+{
+  "actionTitle": {
+    "message": "Siler"
+  },
+  "bgCouldntTakeDownload": {
+    "message": "Siler couldn't take the download: $1. The browser is downloading it instead."
+  },
+  "bgCouldntTakeFile": {
+    "message": "Siler couldn't take “$1”: $2. The browser is downloading it instead."
+  },
+  "bgCouldntTakeLinks": {
+    "message": "Siler couldn't take the links"
+  },
+  "bgCouldntTakeVideo": {
+    "message": "Siler couldn't take the video"
+  },
+  "bgNoLinksFound": {
+    "message": "No links found"
+  },
+  "bgNotHandedTitle": {
+    "message": "Download not handed to Siler"
+  },
+  "bgNotSetUp": {
+    "message": "The browser handles downloads itself until Siler is set up: open Siler → Settings → Browser → Install."
+  },
+  "bgPageHasNoLinks": {
+    "message": "This page has no links to download."
+  },
+  "bgRejected": {
+    "message": "Siler rejected the download"
+  },
+  "bgSelectionHasNoLinks": {
+    "message": "The selection contains no links."
+  },
+  "bgUnreachable": {
+    "message": "Siler isn't reachable"
+  },
+  "bgUnreachableLong": {
+    "message": "Siler isn't reachable. $1"
+  },
+  "buttonDownload": {
+    "message": "Download"
+  },
+  "buttonNotSent": {
+    "message": "Not sent"
+  },
+  "buttonSending": {
+    "message": "Sending…"
+  },
+  "buttonSent": {
+    "message": "Sent to Siler"
+  },
+  "extDescription": {
+    "message": "Send downloads and videos on web pages to the Siler download manager for faster, resumable, multi-connection downloading."
+  },
+  "extName": {
+    "message": "Siler Integration"
+  },
+  "feedNoFormats": {
+    "message": "YouTube offered no formats Siler can download for this video"
+  },
+  "feedNoVideoYet": {
+    "message": "No video found here yet. Play it for a moment, then try again."
+  },
+  "feedNoYouTubeVideo": {
+    "message": "This YouTube page has no video"
+  },
+  "feedSolverFailed": {
+    "message": "YouTube's player code couldn't be run ($1)"
+  },
+  "feedUpdateForSite": {
+    "message": "Update Siler to version 0.6.0 or later to download videos from this site"
+  },
+  "feedUpdateForYouTube": {
+    "message": "Update Siler to version 0.6.0 or later to download YouTube videos"
+  },
+  "feedVideosGone": {
+    "message": "Those videos are gone from the page"
+  },
+  "feedWhichVideo": {
+    "message": "Siler couldn't tell which of this page's $1 videos you clicked. Open the post (its date links to it), then try again."
+  },
+  "feedYouTubeNoAnswer": {
+    "message": "YouTube didn't answer"
+  },
+  "feedYouTubeSays": {
+    "message": "YouTube says: $1"
+  },
+  "menuDownload": {
+    "message": "Download with Siler"
+  },
+  "menuDownloadAll": {
+    "message": "Download all links with Siler"
+  },
+  "menuDownloadVideo": {
+    "message": "Download this video with Siler"
+  },
+  "optionsAllowAccess": {
+    "message": "Allow access"
+  },
+  "optionsAllowCookies": {
+    "message": "Allow Siler to read download cookies on all sites, so protected downloads keep working."
+  },
+  "optionsAlsoByMime": {
+    "message": "Also capture video, audio and archive downloads by MIME type."
+  },
+  "optionsAppOlder": {
+    "message": "Siler $1 is older than this extension ($2). Update Siler so they work together."
+  },
+  "optionsCaptureEverything": {
+    "message": "Capture everything"
+  },
+  "optionsConnect": {
+    "message": "Connect to the Siler app."
+  },
+  "optionsConnected": {
+    "message": "✓ Connected"
+  },
+  "optionsDownloadButton": {
+    "message": "Download button over videos"
+  },
+  "optionsExtensionOlder": {
+    "message": "This extension ($1) is older than Siler $2. Update the extension."
+  },
+  "optionsFileExtensions": {
+    "message": "File extensions"
+  },
+  "optionsFindVideos": {
+    "message": "Find videos on pages"
+  },
+  "optionsFinishSettingUp": {
+    "message": "Finish setting up"
+  },
+  "optionsGranted": {
+    "message": "✓ Granted"
+  },
+  "optionsIfNotInstalled": {
+    "message": "If it's not installed: open Siler → Settings → Browser → Install."
+  },
+  "optionsIgnoreRules": {
+    "message": "Ignore the file type rules below."
+  },
+  "optionsInstalled": {
+    "message": "✓ Installed (Siler starts on demand)"
+  },
+  "optionsIntro": {
+    "message": "The browser hands matching downloads to Siler for faster, resumable downloading."
+  },
+  "optionsListVideos": {
+    "message": "List the videos a page plays in the Siler menu, with their number on the toolbar button."
+  },
+  "optionsMatchByType": {
+    "message": "Match by content type"
+  },
+  "optionsMinimumSize": {
+    "message": "Minimum size (MB)"
+  },
+  "optionsMostSites": {
+    "message": "Most sites need nothing more. For these, Siler reads what the site's own player loads:"
+  },
+  "optionsNeverCapture": {
+    "message": "Never capture from these sites"
+  },
+  "optionsNotFound": {
+    "message": "✗ Not found"
+  },
+  "optionsReset": {
+    "message": "Reset to defaults"
+  },
+  "optionsSave": {
+    "message": "Save"
+  },
+  "optionsSaved": {
+    "message": "Saved"
+  },
+  "optionsSendMatching": {
+    "message": "Send matching downloads to Siler. Hold Alt while clicking a link to skip."
+  },
+  "optionsShowDownloadButton": {
+    "message": "Show a Download button when you point at a video."
+  },
+  "optionsShowNotification": {
+    "message": "Show a notification when Siler can't take a download, and why."
+  },
+  "optionsTellMe": {
+    "message": "Tell me when a download stays in the browser"
+  },
+  "optionsTitle": {
+    "message": "Siler options"
+  },
+  "optionsVideosOnPages": {
+    "message": "Videos on pages"
+  },
+  "optionsYouTubeHint": {
+    "message": "Runs YouTube's own player code in the page to finish the video links."
+  },
+  "popupActive": {
+    "message": "active"
+  },
+  "popupAdd": {
+    "message": "Add"
+  },
+  "popupAppOlder": {
+    "message": "Siler $1 is older than this extension. Update Siler."
+  },
+  "popupBrowserHandlesSite": {
+    "message": "The browser handles this site's downloads and videos"
+  },
+  "popupCaptureDownloads": {
+    "message": "Capture downloads"
+  },
+  "popupCaptureOn": {
+    "message": "Capture on"
+  },
+  "popupChecking": {
+    "message": "Checking…"
+  },
+  "popupConnected": {
+    "message": "Connected · v$1"
+  },
+  "popupCouldntTakeVideo": {
+    "message": "Siler couldn't take the video."
+  },
+  "popupDismiss": {
+    "message": "Dismiss"
+  },
+  "popupDownloadN": {
+    "message": "Download $1 with Siler"
+  },
+  "popupExtensionOlder": {
+    "message": "This extension is older than Siler $1. Update the extension."
+  },
+  "popupFound": {
+    "message": "$1 found"
+  },
+  "popupHoldAlt": {
+    "message": "Hold Alt while clicking to skip"
+  },
+  "popupNotInstalled": {
+    "message": "Not installed"
+  },
+  "popupNotRegistered": {
+    "message": "The Siler app isn't registered with this browser yet. Open Siler → Settings → Browser and click Install."
+  },
+  "popupNotRunning": {
+    "message": "Not running — starts when needed"
+  },
+  "popupOpenSiler": {
+    "message": "Open Siler"
+  },
+  "popupOptions": {
+    "message": "Options"
+  },
+  "popupPasteALink": {
+    "message": "Paste a link to download"
+  },
+  "popupQueued": {
+    "message": "queued"
+  },
+  "popupSending": {
+    "message": "Sending to Siler…"
+  },
+  "popupSpeed": {
+    "message": "speed"
+  },
+  "popupTurnOffToLetBrowser": {
+    "message": "Turn off to let the browser handle this site's downloads and videos"
+  },
+  "popupVideosOnThisPage": {
+    "message": "Videos on this page"
+  }
+}

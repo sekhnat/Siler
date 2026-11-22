@@ -3,6 +3,12 @@
 //  - a Download button over videos hands the video to Siler.
 "use strict";
 
+// Chromium: answers of site APIs, copied by hook.js from the page's world.
+window.addEventListener("message", (e) => {
+  if (e.source !== window || !e.data?.silerBody || typeof e.data.url !== "string") return;
+  browser.runtime.sendMessage({ type: "media-body", url: e.data.url, text: e.data.text, pageUrl: location.href }).catch(() => {});
+});
+
 document.addEventListener(
   "click",
   (e) => {
@@ -47,7 +53,7 @@ document.addEventListener(
   },
   { capture: true, passive: true },
 );
-browser.runtime.onMessage.addListener((msg) => {
+silerOnMessage((msg) => {
   if (msg?.type === "video-clues") return Promise.resolve(silerMenuVideo ? silerVideoClues(silerMenuVideo) : null);
 });
 
@@ -89,7 +95,7 @@ browser.runtime.onMessage.addListener((msg) => {
       button:focus-visible{outline:2px solid #93c5fd;outline-offset:2px}
       button[data-busy]{opacity:.75;cursor:progress}
       svg{width:15px;height:15px;flex:none}
-    </style><button type="button" aria-label="Download this video with Siler" title="Download with Siler"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 20h14"/></svg><span>Download</span></button>`;
+    </style><button type="button" aria-label="${silerT("menuDownloadVideo")}" title="${silerT("menuDownload")}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 20h14"/></svg><span>${silerT("buttonDownload")}</span></button>`;
     button = root.querySelector("button");
     button.addEventListener("click", onClick);
     button.addEventListener("pointerenter", () => clearTimeout(hideTimer));
@@ -173,18 +179,18 @@ browser.runtime.onMessage.addListener((msg) => {
     if (busy || !target) return;
     busy = true;
     button.dataset.busy = "";
-    button.querySelector("span").textContent = "Sending…";
+    button.querySelector("span").textContent = silerT("buttonSending");
     const src = target.currentSrc || target.src || target.querySelector("source[src]")?.src || "";
     try {
       const r = await browser.runtime.sendMessage({ type: "video-button", src, pageUrl: location.href, ...silerVideoClues(target) });
-      button.querySelector("span").textContent = r?.ok ? "Sent to Siler" : "Not sent";
+      button.querySelector("span").textContent = r?.ok ? silerT("buttonSent") : silerT("buttonNotSent");
     } catch {
-      button.querySelector("span").textContent = "Not sent";
+      button.querySelector("span").textContent = silerT("buttonNotSent");
     }
     setTimeout(() => {
       busy = false;
       delete button.dataset.busy;
-      button.querySelector("span").textContent = "Download";
+      button.querySelector("span").textContent = silerT("buttonDownload");
       scheduleHide();
     }, 1800);
   }

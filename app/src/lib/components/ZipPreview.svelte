@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from "../i18n";
   import { ArrowLeft, FileArchive, Folder, FolderOpen, LoaderCircle, Lock, Search, TriangleAlert, X } from "@lucide/svelte";
   import { open } from "@tauri-apps/plugin-dialog";
   import { onMount } from "svelte";
@@ -67,7 +68,7 @@
   }
 
   async function browse() {
-    const got = await open({ directory: true, defaultPath: dir || undefined, title: "Save the files to" });
+    const got = await open({ directory: true, defaultPath: dir || undefined, title: t("zip-preview-save-the-files-to") });
     if (typeof got === "string") dir = got;
   }
 
@@ -84,7 +85,7 @@
         queueId,
         startPaused,
       });
-      toasts.show(`${n} ${n === 1 ? "file" : "files"} from the archive added`, "success");
+      toasts.show(t("zip-preview-added", { count: n }), "success");
       ondone();
     } catch (e) {
       toasts.error(e);
@@ -96,11 +97,11 @@
 
 <div class="zip">
   <div class="head">
-    <button class="icon-btn" onclick={onback} aria-label="Back"><ArrowLeft size={16} /></button>
+    <button class="icon-btn" onclick={onback} aria-label={t("zip-preview-back")}><ArrowLeft size={16} /></button>
     <div class="min">
       <h2 class="truncate"><FileArchive size={16} /> {archiveName}</h2>
       <div class="hint">
-        {#if listing}{files.length} files · {bytes(total)} unpacked · pick the ones you want{:else}Reading the archive's list of files…{/if}
+        {#if listing}{t("zip-preview-files-unpacked-pick-the-ones-you", { length: files.length, v: bytes(total) })}{:else}{t("zip-preview-reading-the-archive-s-list-of")}{/if}
       </div>
     </div>
   </div>
@@ -112,13 +113,13 @@
   {:else}
     <label class="search">
       <Search size={14} />
-      <input placeholder="Filter by name" bind:value={query} spellcheck="false" />
-      {#if query}<button class="icon-btn sm" onclick={() => (query = "")} aria-label="Clear"><X size={13} /></button>{/if}
+      <input placeholder={t("zip-preview-filter-by-name")} bind:value={query} spellcheck="false" />
+      {#if query}<button class="icon-btn sm" onclick={() => (query = "")} aria-label={t("zip-preview-clear")}><X size={13} /></button>{/if}
     </label>
     <div class="list">
       <div class="row head-row">
-        <input type="checkbox" checked={shownOn} onchange={() => setShown(!shownOn)} aria-label="Select all shown" />
-        <span>{chosen.length} of {files.length} selected{chosen.length ? ` · ${bytes(chosenSize)} (${bytes(fetchSize)} to fetch)` : ""}</span>
+        <input type="checkbox" checked={shownOn} onchange={() => setShown(!shownOn)} aria-label={t("zip-preview-select-all-shown")} />
+        <span>{t("zip-preview-of-selected", { length: chosen.length, length2: files.length })}{chosen.length ? t("zip-preview-size-to-fetch", { size: bytes(chosenSize), fetch: bytes(fetchSize) }) : ""}</span>
       </div>
       {#each shown as f (f.path)}
         <label class="row" class:off={!!f.unsupported} title={f.unsupported ?? f.path}>
@@ -130,24 +131,24 @@
           <span class="size">{bytes(f.size)}</span>
         </label>
       {:else}
-        <div class="hint none">Nothing matches the filter.</div>
+        <div class="hint none">{t("zip-preview-nothing-matches-the-filter")}</div>
       {/each}
     </div>
     <div class="field">
-      <span class="label">Save to <span class="hint">(folders inside the archive are kept)</span></span>
+      <span class="label">{t("zip-preview-save-to")} <span class="hint">{t("zip-preview-folders-inside-the-archive-are-kept")}</span></span>
       <div class="folder-pick">
         <input class="input" bind:value={dir} spellcheck="false" />
-        <button class="btn" onclick={browse} title="Choose folder"><FolderOpen size={15} /></button>
+        <button class="btn" onclick={browse} title={t("zip-preview-choose-folder")}><FolderOpen size={15} /></button>
       </div>
     </div>
   {/if}
 
   <div class="actions">
-    <button class="btn btn-ghost" onclick={onback}>Back</button>
+    <button class="btn btn-ghost" onclick={onback}>{t("zip-preview-back")}</button>
     <span class="grow"></span>
     <QueuePicker bind:value={queueId} />
-    <button class="btn" disabled={!chosen.length || busy} onclick={() => submit(true)}>Download later</button>
-    <button class="btn btn-primary" disabled={!chosen.length || busy} onclick={() => submit(false)}>Download selected</button>
+    <button class="btn" disabled={!chosen.length || busy} onclick={() => submit(true)}>{t("zip-preview-download-later")}</button>
+    <button class="btn btn-primary" disabled={!chosen.length || busy} onclick={() => submit(false)}>{t("zip-preview-download-selected")}</button>
   </div>
 </div>
 

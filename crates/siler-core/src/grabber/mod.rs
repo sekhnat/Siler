@@ -227,7 +227,7 @@ impl Engine {
             return Err(Error::Protocol("The project needs a name".into()));
         }
         let config = p.config.normalized();
-        crate::probe::parse_url(&config.start_url)?;
+        crate::probe::parse_web_url(&config.start_url)?;
         let json = serde_json::to_string(&config).map_err(|e| Error::Protocol(e.to_string()))?;
         self.inner().store().save_grab_project(p.id, name, &json)
     }
@@ -254,7 +254,7 @@ fn start(
     project_id: Option<i64>,
     unattended: bool,
 ) -> Result<u64> {
-    crate::probe::parse_url(&config.start_url)?;
+    crate::probe::parse_web_url(&config.start_url)?;
     let run_id = RUN_IDS.fetch_add(1, Relaxed);
     let token = CancellationToken::new();
     {

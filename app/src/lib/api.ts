@@ -63,6 +63,51 @@ export interface LoginRequest {
 export interface ProbeError {
   message: string;
   login: LoginRequest | null;
+  host_key: HostKeyRequest | null;
+}
+
+/** How the list looks (kept with the settings). */
+export interface UiSettings {
+  view: "cards" | "details";
+  columns: ColumnSetting[];
+  sort: string;
+  sort_reverse: boolean;
+  toolbar: string[];
+}
+
+export interface ColumnSetting {
+  id: string;
+  width: number;
+}
+
+export type InstallKind = "app_image" | "packaged" | "tarball" | "dev";
+
+export interface AppInfo {
+  version: string;
+  install: InstallKind;
+}
+
+/** What an update check found. */
+export interface UpdateInfo {
+  current: string;
+  latest: string;
+  newer: boolean;
+  url: string;
+  notes: string;
+  install: InstallKind;
+  appimage: string | null;
+  sha256: string | null;
+  checked_at: number;
+}
+
+/** An SFTP server whose key Siler hasn't seen before. */
+export interface HostKeyRequest {
+  host: string;
+  server: string;
+  port: number;
+  algorithm: string;
+  fingerprint: string;
+  key: string;
 }
 
 export type ProxyMode = "none" | "system" | "manual";
@@ -126,7 +171,10 @@ export interface Download {
   sync_every: number;
   sync_checked_at: number | null;
   file_missing: boolean;
+  /** The error as a code and its details, for the interface's language. */
+  error_code: { code: string; args: [string, string][] } | null;
   needs_login: LoginRequest | null;
+  needs_host_key: HostKeyRequest | null;
   speed: number;
   active_connections: number;
   segments: Segment[];
@@ -307,7 +355,7 @@ export interface ProgressItem {
 
 export type ContainerChoice = "auto" | "mp4" | "mkv" | "original";
 export type SubtitleMode = "embed" | "sidecar" | "none";
-export type ManifestKind = "hls" | "dash";
+export type ManifestKind = "hls" | "dash" | "hds" | "stream";
 export type OutputKind = "mp4" | "mkv" | "original";
 
 /** The tracks a media download takes. */
@@ -324,19 +372,27 @@ export interface MediaInfo {
   subtitles: SubtitleMode;
   labels: string[];
   sidecars: string[];
+  /** A recording (live stream, RTMP/MMS): it can be finished. */
+  live: boolean;
+  /** The recording was finished; what remains is the rebuild. */
+  finished: boolean;
 }
 
 export interface MediaProgress {
-  phase: "waiting" | "resolving" | "downloading" | "rebuilding" | "publishing";
+  phase: "waiting" | "resolving" | "downloading" | "recording" | "rebuilding" | "publishing";
   segments_done: number;
   segments_total: number;
   /** What the pieces add up to, once every piece's size is known. */
   bytes_total: number | null;
   permille: number;
+  /** A recording: seconds of the stream recorded so far. */
+  recorded_secs?: number | null;
+  /** A recording: times pieces of the stream were missed. */
+  gaps?: number;
 }
 
 /** What a probe of a link found: a plain file, a page, or a stream and its tracks. */
-export type MediaKindView = "direct" | "hls" | "dash" | "not_media" | "live" | "drm" | "unsupported";
+export type MediaKindView = "direct" | "hls" | "dash" | "hds" | "playlist" | "stream" | "not_media" | "drm" | "unsupported";
 
 export interface TrackView {
   id: string;
@@ -371,6 +427,10 @@ export interface MediaProbe {
   warnings: string[];
   dropped_drm: number;
   ffmpeg: boolean;
+  /** A live stream: recorded from now until Finish. */
+  live: boolean;
+  /** The links of a playlist. */
+  entries: { url: string; title: string | null }[];
 }
 
 export interface FfmpegStatus {
@@ -468,6 +528,11 @@ export interface Settings {
   quota: QuotaSettings;
   after_download: AfterDownload;
   open_metalinks: boolean;
+  check_updates: boolean;
+  skipped_version: string;
+  ui: UiSettings;
+  /** The interface's language; empty for the system's. */
+  language: string;
 }
 
 export interface Pending {
@@ -501,6 +566,7 @@ export interface Pending {
 
 export interface BrowserStatus {
   name: string;
+  family: "firefox" | "chromium";
   manifest_path: string;
   installed: boolean;
 }
@@ -608,6 +674,14 @@ export const api = {
   quit: (dontAsk: boolean) => invoke<void>("quit_app", { dontAsk }),
   submitLogin: (host: string, username: string, password: string, remember: boolean) =>
     invoke<void>("submit_login", { host, username, password, remember }),
+  chromiumExtension: () => invoke<{ path: string; browsers: string[] }>("chromium_extension"),
+  openChromiumExtensions: (browser: string) => invoke<void>("open_chromium_extensions", { browser }),
+  appInfo: () => invoke<AppInfo>("app_info"),
+  updateStatus: () => invoke<UpdateInfo | null>("update_status"),
+  checkUpdatesNow: () => invoke<UpdateInfo>("check_updates_now"),
+  installUpdate: () => invoke<void>("install_update"),
+  finish: (id: number) => invoke<void>("finish_download", { id }),
+  trustHostKey: (request: HostKeyRequest) => invoke<void>("trust_host_key", { request }),
   savedLogins: () => invoke<SavedLogin[]>("saved_logins"),
   forgetSavedLogin: (host: string) => invoke<void>("forget_saved_login", { host }),
   keyringAvailable: () => invoke<boolean>("keyring_available"),

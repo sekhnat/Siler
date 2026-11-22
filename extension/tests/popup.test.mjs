@@ -53,7 +53,12 @@ async function openPopup(videos) {
     querySelector: () => null,
     querySelectorAll: () => [],
   };
+  const messages = JSON.parse(fs.readFileSync(path.join(ext, "_locales/en/messages.json"), "utf8"));
   const browser = {
+    i18n: {
+      getMessage: (k, subs) => (messages[k]?.message ?? "").replace(/\$(\d)/g, (_, n) => [].concat(subs ?? [])[n - 1] ?? ""),
+      getUILanguage: () => "en",
+    },
     storage: { local: { get: (d) => later(d), set: () => later() }, onChanged: { addListener() {} } },
     tabs: { query: () => later([{ id: 7, url: "https://www.instagram.com/" }]) },
     runtime: {
@@ -68,7 +73,7 @@ async function openPopup(videos) {
     },
   };
   const ctx = vm.createContext({ document, browser, window: { close() {} }, console, URL, setTimeout });
-  for (const f of ["shared.js", "popup/popup.js"]) vm.runInContext(fs.readFileSync(path.join(ext, f), "utf8"), ctx, { filename: f });
+  for (const f of ["compat.js", "shared.js", "popup/popup.js"]) vm.runInContext(fs.readFileSync(path.join(ext, f), "utf8"), ctx, { filename: f });
   await new Promise((ok) => setTimeout(ok, 100));
   return { els, asked };
 }

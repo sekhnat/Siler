@@ -134,17 +134,23 @@ fn finish(
     Ok((format, items))
 }
 
+/// A link a download can be made from (web, FTP or SFTP).
 fn is_http(s: &str) -> bool {
-    url::Url::parse(s.trim())
-        .is_ok_and(|u| matches!(u.scheme(), "http" | "https") && u.host_str().is_some())
+    url::Url::parse(s.trim()).is_ok_and(|u| {
+        crate::transport::FILE_SCHEMES.contains(&u.scheme()) && u.host_str().is_some()
+    })
 }
 
-/// Every http(s) link in some text.
+/// Every web, FTP or SFTP link in some text.
 pub fn links(text: &str) -> Vec<ImportItem> {
     let mut out: Vec<ImportItem> = Vec::new();
     for word in text.split(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | '`'))
     {
-        let Some(start) = word.find("http://").or_else(|| word.find("https://")) else {
+        let Some(start) = ["http://", "https://", "ftp://", "ftps://", "sftp://"]
+            .iter()
+            .filter_map(|p| word.find(p))
+            .min()
+        else {
             continue;
         };
         let cand = word[start..].trim_end_matches(['.', ',', ';', ':', ')', ']', '}', '!', '?']);
@@ -255,7 +261,14 @@ mod tests {
         .unwrap();
         assert_eq!(f, ListFormat::Text);
         let urls: Vec<_> = items.iter().map(|i| i.url.as_str()).collect();
-        assert_eq!(urls, ["https://a.example/x.zip", "http://b.example/y.iso"]);
+        assert_eq!(
+            urls,
+            [
+                "https://a.example/x.zip",
+                "http://b.example/y.iso",
+                "ftp://c/z"
+            ]
+        );
         assert!(import(b"nothing here").is_err());
     }
 

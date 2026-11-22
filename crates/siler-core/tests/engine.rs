@@ -752,7 +752,7 @@ async fn rejects_unsupported_urls() {
     let e = engine(tmp.path(), |_| {}).await;
     assert!(
         e.add(NewDownload {
-            url: "ftp://example.com/x".into(),
+            url: "gopher://example.com/x".into(),
             ..Default::default()
         })
         .is_err()

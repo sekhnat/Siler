@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from "../i18n";
   import type { Snippet } from "svelte";
   import { fade, scale } from "svelte/transition";
   import { X } from "@lucide/svelte";
@@ -26,7 +27,7 @@
     {#if title}
       <header>
         <h2>{title}</h2>
-        <button class="icon-btn sm" onclick={onclose} aria-label="Close"><X size={16} /></button>
+        <button class="icon-btn sm" onclick={onclose} aria-label={t("modal-close")}><X size={16} /></button>
       </header>
     {/if}
     <div class="body">{@render children()}</div>

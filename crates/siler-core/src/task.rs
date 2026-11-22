@@ -1,8 +1,7 @@
 //! The transfer loop for one download: connection workers and their coordinator.
 
 use futures_util::StreamExt;
-use reqwest::header::{CONTENT_RANGE, RANGE};
-use reqwest::{StatusCode, Url};
+use reqwest::Url;
 use std::collections::HashMap;
 use std::os::unix::fs::FileExt;
 use std::path::PathBuf;
@@ -15,11 +14,10 @@ use tokio::sync::Notify;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
-use crate::error::describe;
-use crate::net::{Net, host_key, parse_challenge};
-use crate::probe::{build_request, busy, parse_content_range};
+use crate::net::{Net, host_key};
 use crate::ratelimit::RateLimiter;
 use crate::segment::Table;
+use crate::transport::{self, OpenError};
 use crate::{Error, RequestMeta, Result};
 
 pub(crate) const STOP_PAUSE: u8 = 1;
@@ -34,6 +32,9 @@ pub(crate) struct Running {
     pub cancel: CancellationToken,
     /// Cancelled once the download's task has fully stopped and its state is saved.
     pub finished: CancellationToken,
+    /// A recording (live stream, RTMP/MMS) should end now and be kept: unlike `cancel`, the
+    /// download goes on to build and publish what it has.
+    pub finish: CancellationToken,
     pub stop_reason: AtomicU8,
     /// Connections the user wants; changes take effect while the transfer runs.
     pub target: AtomicUsize,
@@ -69,6 +70,7 @@ impl Running {
         Running {
             cancel: CancellationToken::new(),
             finished: CancellationToken::new(),
+            finish: CancellationToken::new(),
             stop_reason: AtomicU8::new(0),
             target: AtomicUsize::new(connections.max(1) as usize),
             caps: Mutex::new(HashMap::new()),
@@ -282,94 +284,37 @@ async fn fetch(t: &Transfer, idx: usize, source: &Source) -> Result<(), WorkerEr
         return Ok(());
     }
 
-    let auth = t.net.auth_for(&source.url);
-    let sent = auth.as_ref().is_some_and(|a| a.ready());
-    // Cookies, referrer and the browser's headers belong to the download's own server.
-    let other_meta;
-    let meta = if source.index == 0 {
-        &t.meta
-    } else {
-        other_meta = RequestMeta {
-            user_agent: t.meta.user_agent.clone(),
-            ..Default::default()
-        };
-        &other_meta
-    };
-    let mut rb = build_request(
-        &t.net.client(),
-        source.url.clone(),
-        meta,
-        &t.user_agent,
-        auth.as_deref(),
-    );
-    if t.ranged {
-        rb = rb.header(
-            RANGE,
-            format!("bytes={}-{}", t.base + pos, t.base + end - 1),
-        );
-    }
-    let resp = rb
-        .send()
-        .await
-        .map_err(|e| WorkerError::Transient(describe(&e)))?;
-    let status = resp.status();
-    if status == StatusCode::UNAUTHORIZED {
-        let challenge = parse_challenge(resp.headers());
-        let realm = challenge.as_ref().and_then(|c| c.realm.clone());
-        let host = host_key(resp.url());
-        if let Some(c) = challenge
-            && t.net.entry(&host).learn(c, sent)
-        {
-            // A stale Digest nonce: the same login works with the new one.
-            return Err(WorkerError::Transient("login renewed".into()));
-        }
-        return Err(WorkerError::Fatal(Error::AuthRequired {
-            host,
-            realm,
-            rejected: sent,
-        }));
-    }
-    if status == StatusCode::PROXY_AUTHENTICATION_REQUIRED {
-        return Err(WorkerError::Fatal(Error::ProxyAuth));
-    }
-    if status == StatusCode::TOO_MANY_REQUESTS || status == StatusCode::SERVICE_UNAVAILABLE {
-        return Err(WorkerError::Throttled(
-            status.as_u16(),
-            busy(&resp).retry_after(),
-        ));
-    }
-    if !status.is_success() {
-        return Err(
-            if status.is_server_error() || status == StatusCode::REQUEST_TIMEOUT {
-                WorkerError::Transient(format!("HTTP {status}"))
+    let range = t.ranged.then(|| (t.base + pos, t.base + end));
+    let opened = match transport::kind(&source.url) {
+        transport::Kind::Http => {
+            // Cookies, referrer and the browser's headers belong to the download's own server.
+            let other_meta;
+            let meta = if source.index == 0 {
+                &t.meta
             } else {
-                WorkerError::Fatal(Error::Http(status.as_u16()))
-            },
-        );
-    }
-    if t.ranged {
-        if status == StatusCode::PARTIAL_CONTENT {
-            let start = resp
-                .headers()
-                .get(CONTENT_RANGE)
-                .and_then(|v| v.to_str().ok())
-                .and_then(parse_content_range)
-                .map(|r| r.0);
-            if start != Some(t.base + pos) {
-                return Err(WorkerError::Fatal(Error::Protocol(
-                    "The server returned an unexpected byte range".into(),
-                )));
-            }
-        } else if pos != 0 {
-            return Err(WorkerError::Fatal(Error::Protocol(
-                "The server stopped accepting range requests".into(),
-            )));
+                other_meta = RequestMeta {
+                    user_agent: t.meta.user_agent.clone(),
+                    ..Default::default()
+                };
+                &other_meta
+            };
+            transport::http::open_range(&t.net, &source.url, meta, &t.user_agent, range).await
         }
-    }
-
-    let mut stream = resp.bytes_stream();
+        _ => {
+            let (start, stop) = match range {
+                Some((a, b)) => (a, Some(b)),
+                None => (t.base, None),
+            };
+            transport::open_range(&t.net, &source.url, start, stop).await
+        }
+    };
+    let mut stream = opened.map_err(|e| match e {
+        OpenError::Transient(m) => WorkerError::Transient(m),
+        OpenError::Throttled(code, after) => WorkerError::Throttled(code, after),
+        OpenError::Fatal(e) => WorkerError::Fatal(e),
+    })?;
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| WorkerError::Transient(describe(&e)))?;
+        let chunk = chunk.map_err(WorkerError::Transient)?;
         if chunk.is_empty() {
             continue;
         }

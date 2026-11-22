@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from "../i18n";
   import { CalendarClock, FolderOpen, Globe, LoaderCircle, Plus, Save, Square, Trash2, TriangleAlert } from "@lucide/svelte";
   import { open } from "@tauri-apps/plugin-dialog";
   import { onMount } from "svelte";
@@ -11,7 +12,7 @@
 
   let { onclose }: { onclose: () => void } = $props();
 
-  const DAYS = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
+  const DAYS = [t("grabber-mo"), t("grabber-tu"), t("grabber-we"), t("grabber-th"), t("grabber-fr"), t("grabber-sa"), t("grabber-su")];
   const FILE_CATEGORIES = CATEGORIES.filter((c) => c.key !== "other");
 
   function freshConfig(): GrabConfig {
@@ -81,7 +82,7 @@
       try {
         p.name = new URL(p.config.start_url).host;
       } catch {
-        p.name = "Site";
+        p.name = t("grabber-site");
       }
     }
     return p;
@@ -97,7 +98,7 @@
     current.id = id;
     current.name = p.name;
     projects = (await attempt(api.grabProjects())) ?? projects;
-    toasts.show("Project saved", "success");
+    toasts.show(t("grabber-project-saved"), "success");
   }
 
   async function remove() {
@@ -121,7 +122,7 @@
   }
 
   async function browse() {
-    const got = await open({ directory: true, defaultPath: c.dir ?? undefined, title: c.save_pages ? "Save the site to" : "Save the files to" });
+    const got = await open({ directory: true, defaultPath: c.dir ?? undefined, title: c.save_pages ? t("grabber-save-the-site-to") : t("grabber-save-the-files-to") });
     if (typeof got === "string") current.config.dir = got;
   }
 
@@ -137,23 +138,23 @@
   };
 
   const SCOPES: { value: GrabScope; label: string }[] = [
-    { value: "same_host", label: "This server" },
-    { value: "same_site", label: "The whole site (its other servers too)" },
-    { value: "folder", label: "This folder and below" },
+    { value: "same_host", label: t("grabber-this-server") },
+    { value: "same_site", label: t("grabber-the-whole-site-its-other-servers") },
+    { value: "folder", label: t("grabber-this-folder-and-below") },
   ];
 </script>
 
-<Modal title="Site grabber" width={860} onclose={() => !running && onclose()}>
+<Modal title={t("grabber-site-grabber")} width={860} onclose={() => !running && onclose()}>
   <div class="layout">
     <aside>
-      <button class="proj" class:on={current.id === 0} onclick={newProject} disabled={running}><Plus size={14} /> New grab</button>
-      {#if projects.length}<div class="label side-label">Saved projects</div>{/if}
+      <button class="proj" class:on={current.id === 0} onclick={newProject} disabled={running}><Plus size={14} /> {t("grabber-new-grab")}</button>
+      {#if projects.length}<div class="label side-label">{t("grabber-saved-projects")}</div>{/if}
       {#each projects as p (p.id)}
         <button class="proj" class:on={current.id === p.id} onclick={() => load(p)} disabled={running}>
           <Globe size={14} />
           <span class="grow min">
             <span class="truncate pname">{p.name}</span>
-            <span class="hint truncate">{p.config.schedule.enabled ? "Scheduled · " : ""}{p.last_run ? `ran ${relativeTime(p.last_run)}` : "not run yet"}</span>
+            <span class="hint truncate">{p.config.schedule.enabled ? t("grabber-scheduled") : ""}{p.last_run ? t("grabber-ran", { when: relativeTime(p.last_run) }) : t("grabber-not-run-yet")}</span>
           </span>
         </button>
       {/each}
@@ -162,39 +163,39 @@
     <div class="form">
       <div class="grid2">
         <label class="field wide">
-          <span class="label">Start page</span>
+          <span class="label">{t("grabber-start-page")}</span>
           <input class="input mono" bind:value={current.config.start_url} placeholder="https://example.com/downloads/" spellcheck="false" disabled={running} />
         </label>
         <label class="field">
-          <span class="label">Project name</span>
-          <input class="input" bind:value={current.name} placeholder="Named after the site" disabled={running} />
+          <span class="label">{t("grabber-project-name")}</span>
+          <input class="input" bind:value={current.name} placeholder={t("grabber-named-after-the-site")} disabled={running} />
         </label>
       </div>
 
       <div class="grid3">
         <label class="field">
-          <span class="label">Follow links</span>
+          <span class="label">{t("grabber-follow-links")}</span>
           <select class="input" bind:value={current.config.depth} disabled={running}>
-            <option value={0}>Start page only</option>
-            {#each [1, 2, 3, 4, 5, 8] as n (n)}<option value={n}>{n} {n === 1 ? "level" : "levels"} deep</option>{/each}
+            <option value={0}>{t("grabber-start-page-only")}</option>
+            {#each [1, 2, 3, 4, 5, 8] as n (n)}<option value={n}>{t("grabber-deep", { n })}</option>{/each}
           </select>
         </label>
         <label class="field">
-          <span class="label">Stay within</span>
+          <span class="label">{t("grabber-stay-within")}</span>
           <select class="input" bind:value={current.config.scope} disabled={running}>
             {#each SCOPES as s (s.value)}<option value={s.value}>{s.label}</option>{/each}
           </select>
         </label>
         <label class="field">
-          <span class="label">At most</span>
+          <span class="label">{t("grabber-at-most")}</span>
           <select class="input" bind:value={current.config.max_pages} disabled={running}>
-            {#each [50, 200, 500, 2000, 10000] as n (n)}<option value={n}>{n} pages</option>{/each}
+            {#each [50, 200, 500, 2000, 10000] as n (n)}<option value={n}>{t("grabber-pages", { n })}</option>{/each}
           </select>
         </label>
       </div>
 
       <div class="field">
-        <span class="label">Files to find</span>
+        <span class="label">{t("grabber-files-to-find")}</span>
         <div class="chips">
           {#each FILE_CATEGORIES as cat (cat.key)}
             <button class="chip" class:on={c.filter.categories.includes(cat.key)} style:--c={cat.color} onclick={() => toggleCategory(cat.key)} disabled={running}>
@@ -203,42 +204,42 @@
           {/each}
         </div>
         <div class="grid3 tight">
-          <input class="input" bind:value={extText} placeholder="Also these extensions: epub, srt" spellcheck="false" disabled={running} />
-          <input class="input" bind:value={minMb} placeholder="At least … MB" inputmode="decimal" disabled={running} />
-          <input class="input" bind:value={maxMb} placeholder="At most … MB" inputmode="decimal" disabled={running} />
+          <input class="input" bind:value={extText} placeholder={t("grabber-also-these-extensions-epub-srt")} spellcheck="false" disabled={running} />
+          <input class="input" bind:value={minMb} placeholder={t("grabber-at-least-mb")} inputmode="decimal" disabled={running} />
+          <input class="input" bind:value={maxMb} placeholder={t("grabber-at-most-mb")} inputmode="decimal" disabled={running} />
         </div>
       </div>
 
       <div class="toggles">
         <button class="toggle" onclick={() => (current.config.save_pages = !c.save_pages)} disabled={running}>
           <span class="switch" class:on={c.save_pages}></span>
-          <span><b>Save the pages for offline browsing</b><span class="hint"> — with their pictures and styles; links point to the saved copies</span></span>
+          <span><b>{t("grabber-save-the-pages-for-offline-browsing")}</b><span class="hint"> {t("grabber-with-their-pictures-and-styles-links")}</span></span>
         </button>
         <button class="toggle" onclick={() => (current.config.filter.any_host = !c.filter.any_host)} disabled={running}>
           <span class="switch" class:on={c.filter.any_host}></span>
-          <span>Take files from other servers too <span class="hint">(sites often keep files elsewhere)</span></span>
+          <span>{t("grabber-take-files-from-other-servers-too")} <span class="hint">{t("grabber-sites-often-keep-files-elsewhere")}</span></span>
         </button>
         <button class="toggle" onclick={() => (current.config.robots = !c.robots)} disabled={running}>
           <span class="switch" class:on={c.robots}></span>
-          <span>Leave out what the site's robots.txt asks crawlers to</span>
+          <span>{t("grabber-leave-out-what-the-site-s")}</span>
         </button>
         <button class="toggle" onclick={() => (current.config.only_new = !c.only_new)} disabled={running || !current.id}>
           <span class="switch" class:on={c.only_new}></span>
-          <span>Only files this project hasn't found before {#if !current.id}<span class="hint">(save the project first)</span>{/if}</span>
+          <span>{t("grabber-only-files-this-project-hasn-t")} {#if !current.id}<span class="hint">{t("grabber-save-the-project-first")}</span>{/if}</span>
         </button>
       </div>
 
       <div class="grid2">
         <div class="field">
-          <span class="label">Save to</span>
+          <span class="label">{t("grabber-save-to")}</span>
           <div class="folder">
-            <input class="input" value={c.dir ?? ""} oninput={(e) => (current.config.dir = e.currentTarget.value || null)} placeholder={c.save_pages ? "Downloads/Sites" : "The category folders"} spellcheck="false" disabled={running} />
-            <button class="btn" onclick={browse} title="Choose folder" disabled={running}><FolderOpen size={15} /></button>
+            <input class="input" value={c.dir ?? ""} oninput={(e) => (current.config.dir = e.currentTarget.value || null)} placeholder={c.save_pages ? "Downloads/Sites" : t("grabber-the-category-folders")} spellcheck="false" disabled={running} />
+            <button class="btn" onclick={browse} title={t("grabber-choose-folder")} disabled={running}><FolderOpen size={15} /></button>
           </div>
         </div>
         {#if store.queues.length > 1}
           <div class="field">
-            <span class="label">Queue</span>
+            <span class="label">{t("grabber-queue")}</span>
             <QueuePicker bind:value={queueId} />
           </div>
         {/if}
@@ -248,11 +249,11 @@
         <div class="sched">
           <button class="toggle" onclick={() => (current.config.schedule.enabled = !c.schedule.enabled)} disabled={running}>
             <span class="switch" class:on={c.schedule.enabled}></span>
-            <CalendarClock size={14} /> Run on a schedule <span class="hint">(found files go straight to the queue)</span>
+            <CalendarClock size={14} /> {t("grabber-run-on-a-schedule")} <span class="hint">{t("grabber-found-files-go-straight-to-the")}</span>
           </button>
           {#if c.schedule.enabled}
             <div class="sched-row">
-              <span class="hint">at</span>
+              <span class="hint">{t("grabber-at")}</span>
               <input class="input time" type="time" value={hm(c.schedule.start_at)} onchange={(e) => (current.config.schedule.start_at = minutes(e.currentTarget.value))} />
               <div class="days">
                 {#each DAYS as d, i (d)}
@@ -271,12 +272,12 @@
           {:else if progress?.finished && progress.result}
             {@const r = progress.result}
             <div class="done">
-              <b>{r.files.length} {r.files.length === 1 ? "file" : "files"} found</b> on {r.pages} {r.pages === 1 ? "page" : "pages"}{r.saved ? ` · ${r.saved} saved for offline browsing` : ""}{r.blocked ? ` · ${r.blocked} left out for robots.txt` : ""}{r.errors ? ` · ${r.errors} couldn't be read` : ""}
+              <b>{t("grabber-found", { count: r.files.length })}</b> {t("grabber-on", { pages: r.pages })}{r.saved ? t("grabber-saved-offline", { n: r.saved }) : ""}{r.blocked ? t("grabber-left-out-robots", { n: r.blocked }) : ""}{r.errors ? t("grabber-couldnt-be-read", { n: r.errors }) : ""}
             </div>
           {:else}
             <div class="live">
               <LoaderCircle size={15} class="spin" />
-              <span>{progress?.pages_done ?? 0} pages read{progress?.pages_queued ? `, ${progress.pages_queued} to go` : ""} · {progress?.files_found ?? 0} files{progress?.saved ? ` · ${progress.saved} saved` : ""} · {bytes(progress?.bytes ?? 0)}</span>
+              <span>{t("grabber-pages-read", { n: progress?.pages_done ?? 0 })}{progress?.pages_queued ? t("grabber-to-go", { n: progress.pages_queued }) : ""}{t("grabber-files", { n: progress?.files_found ?? 0 })}{progress?.saved ? t("grabber-saved", { n: progress.saved }) : ""}{" · "}{bytes(progress?.bytes ?? 0)}</span>
             </div>
             {#if progress?.current}<div class="hint mono truncate">{progress.current}</div>{/if}
           {/if}
@@ -287,21 +288,21 @@
 
   {#snippet footer()}
     {#if current.id}
-      <button class="btn btn-ghost danger-text" onclick={remove} disabled={running}><Trash2 size={14} /> Delete</button>
+      <button class="btn btn-ghost danger-text" onclick={remove} disabled={running}><Trash2 size={14} /> {t("grabber-delete")}</button>
     {/if}
-    <button class="btn btn-ghost" onclick={save} disabled={!validUrl || saving || running}><Save size={14} /> {current.id ? "Save" : "Save as project"}</button>
+    <button class="btn btn-ghost" onclick={save} disabled={!validUrl || saving || running}><Save size={14} /> {current.id ? t("grabber-save") : t("grabber-save-as-project")}</button>
     <span class="grow"></span>
     {#if running}
-      <button class="btn" onclick={() => runId != null && api.grabCancel(runId)}><Square size={13} /> Stop</button>
+      <button class="btn" onclick={() => runId != null && api.grabCancel(runId)}><Square size={13} /> {t("grabber-stop")}</button>
     {:else if progress?.finished && progress.result}
       {#if progress.result.site_index}
-        <button class="btn" onclick={() => attempt(api.openSavedSite(progress.result!.site_index!))}><Globe size={14} /> Open saved site</button>
+        <button class="btn" onclick={() => attempt(api.openSavedSite(progress.result!.site_index!))}><Globe size={14} /> {t("grabber-open-saved-site")}</button>
       {/if}
-      <button class="btn" onclick={run} disabled={!validUrl}>Run again</button>
-      <button class="btn btn-primary" onclick={review} disabled={!progress.result.files.length}>Review {progress.result.files.length} files</button>
+      <button class="btn" onclick={run} disabled={!validUrl}>{t("grabber-run-again")}</button>
+      <button class="btn btn-primary" onclick={review} disabled={!progress.result.files.length}>{t("grabber-review-files", { length: progress.result.files.length })}</button>
     {:else}
-      <button class="btn btn-ghost" onclick={onclose}>Close</button>
-      <button class="btn btn-primary" onclick={run} disabled={!validUrl}>Start</button>
+      <button class="btn btn-ghost" onclick={onclose}>{t("grabber-close")}</button>
+      <button class="btn btn-primary" onclick={run} disabled={!validUrl}>{t("grabber-start")}</button>
     {/if}
   {/snippet}
 </Modal>

@@ -19,8 +19,10 @@ pub(crate) struct Source {
     pub kind: Kind,
     /// After redirects.
     pub final_url: Url,
-    /// Set for HLS and DASH sources that could be read.
+    /// Set for HLS, DASH and HDS sources that could be read.
     pub presentation: Option<Presentation>,
+    /// The links of a plain playlist (M3U, PLS, ASX).
+    pub entries: Vec<siler_media::playlist::Entry>,
 }
 
 /// Turns a parse error into the message the user sees.
@@ -52,8 +54,9 @@ async fn source(http: &Http, url: &Url, lim: &ParseLimits, io: &Limiters<'_>) ->
         head.final_url.path(),
     );
     let final_url = head.final_url.clone();
+    let mut entries = Vec::new();
     let presentation = match kind {
-        Kind::Hls | Kind::Dash => {
+        Kind::Hls | Kind::Dash | Kind::Hds | Kind::Playlist => {
             let body = if head.complete {
                 head.body
             } else {
@@ -68,11 +71,16 @@ async fn source(http: &Http, url: &Url, lim: &ParseLimits, io: &Limiters<'_>) ->
                 .await?
                 .body
             };
-            Some(if kind == Kind::Hls {
-                hls_presentation(http, &final_url, &body, lim, io).await?
-            } else {
-                dash::parse(&body, &final_url, lim).map_err(map_parse)?
-            })
+            match kind {
+                Kind::Hls => Some(hls_presentation(http, &final_url, &body, lim, io).await?),
+                Kind::Dash => Some(dash_presentation(&body, &final_url, lim)?),
+                Kind::Hds => Some(hds_presentation(http, &final_url, &body, lim, io).await?),
+                _ => {
+                    entries =
+                        siler_media::playlist::parse(&body, &final_url, lim).map_err(map_parse)?;
+                    None
+                }
+            }
         }
         _ => None,
     };
@@ -80,6 +88,7 @@ async fn source(http: &Http, url: &Url, lim: &ParseLimits, io: &Limiters<'_>) ->
         kind,
         final_url,
         presentation,
+        entries,
     })
 }
 
@@ -121,10 +130,7 @@ async fn inline(
     }
     let body = m.body.as_bytes();
     let (kind, presentation) = match m.kind.as_str() {
-        "dash" => (
-            Kind::Dash,
-            dash::parse(body, &base, lim).map_err(map_parse)?,
-        ),
+        "dash" => (Kind::Dash, dash_presentation(body, &base, lim)?),
         "hls" => (
             Kind::Hls,
             hls_presentation(http, &base, body, lim, io).await?,
@@ -139,7 +145,42 @@ async fn inline(
         kind,
         final_url: base,
         presentation: Some(presentation),
+        entries: Vec::new(),
     })
+}
+
+/// A DASH presentation, as of now (a live MPD lists the segments available at this moment).
+fn dash_presentation(body: &[u8], url: &Url, lim: &ParseLimits) -> Result<Presentation> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    dash::parse_at(body, url, lim, Some(now)).map_err(map_parse)
+}
+
+/// An HDS presentation: the manifest, and the bootstraps it names by address.
+async fn hds_presentation(
+    http: &Http,
+    url: &Url,
+    body: &[u8],
+    lim: &ParseLimits,
+    io: &Limiters<'_>,
+) -> Result<Presentation> {
+    let manifest = siler_media::hds::parse_manifest(body, url, lim).map_err(map_parse)?;
+    let mut fetched = HashMap::new();
+    for u in manifest.bootstrap_urls() {
+        let f = http::fetch_bounded(
+            http,
+            &u,
+            Req::Derived,
+            lim.max_manifest_bytes as u64,
+            Overflow::Refuse,
+            io,
+        )
+        .await?;
+        fetched.insert(u, f.body);
+    }
+    manifest.presentation(&fetched, lim).map_err(map_parse)
 }
 
 /// Builds the HLS presentation: a master with its media playlists, or a bare media playlist

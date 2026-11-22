@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from "../i18n";
   import { ExternalLink, LoaderCircle, MousePointerClick, TriangleAlert } from "@lucide/svelte";
   import { listen } from "@tauri-apps/api/event";
   import { onMount } from "svelte";
@@ -28,7 +29,7 @@
   });
 
   function done() {
-    toasts.show("Link updated — the download continues", "success");
+    toasts.show(t("refresh-link-link-updated-the-download-continues"), "success");
     onclose();
   }
 
@@ -63,39 +64,39 @@
   }
 </script>
 
-<Modal title="Refresh download link" width={540} onclose={close}>
+<Modal title={t("refresh-link-refresh-download-link")} width={540} onclose={close}>
   <p class="intro">
-    If the link to <b>{d.filename ?? nameFromUrl(d.url)}</b> expired, give Siler a new one. The {bytes(d.downloaded)} already downloaded are kept.
+    {t("refresh-link-if-the-link-to")} <b>{d.filename ?? nameFromUrl(d.url)}</b> {t("refresh-link-expired-give-siler-a-new-one", { v: bytes(d.downloaded) })}
   </p>
 
   <form onsubmit={submit} class="field">
-    <span class="label">New address</span>
+    <span class="label">{t("refresh-link-new-address")}</span>
     <div class="row">
       <!-- svelte-ignore a11y_autofocus -->
       <input class="input mono" bind:value={url} placeholder="https://…" spellcheck="false" autofocus />
       <button class="btn btn-primary" type="submit" disabled={!looksLikeUrl(url) || busy}>
-        {#if busy}<LoaderCircle size={14} class="spin" />{/if} Update
+        {#if busy}<LoaderCircle size={14} class="spin" />{/if} {t("refresh-link-update")}
       </button>
     </div>
   </form>
 
   {#if page}
-    <div class="or">or</div>
+    <div class="or">{t("refresh-link-or")}</div>
     <div class="catch" class:on={waiting}>
       {#if waiting}
         <MousePointerClick size={20} />
         <div class="min">
-          <div class="t">Click the download link on the page again</div>
-          <div class="hint">Siler will take the new link from Firefox and continue this download. Waiting for 2 minutes.</div>
+          <div class="t">{t("refresh-link-click-the-download-link-on-the")}</div>
+          <div class="hint">{t("refresh-link-siler-will-take-the-new-link")}</div>
         </div>
         <LoaderCircle size={16} class="spin" />
       {:else}
         <ExternalLink size={20} />
         <div class="min">
-          <div class="t">Get a fresh link from {host(page) || "the website"}</div>
-          <div class="hint truncate">Opens the page the download came from.</div>
+          <div class="t">{(host(page) ? t("refresh-link-get-a-fresh-link-from", { host: host(page) }) : t("refresh-link-get-a-fresh-link-from-the-website"))}</div>
+          <div class="hint truncate">{t("refresh-link-opens-the-page-the-download-came")}</div>
         </div>
-        <button class="btn" onclick={openPage}>Open page</button>
+        <button class="btn" onclick={openPage}>{t("refresh-link-open-page")}</button>
       {/if}
     </div>
   {/if}
@@ -105,7 +106,7 @@
   {/if}
 
   {#snippet footer()}
-    <button class="btn btn-ghost" onclick={close}>Cancel</button>
+    <button class="btn btn-ghost" onclick={close}>{t("refresh-link-cancel")}</button>
   {/snippet}
 </Modal>
 

@@ -44,7 +44,10 @@ pub fn classify(head: &[u8], content_type: Option<&str>, path: &str) -> Kind {
     if trimmed.starts_with(b"WEBVTT") {
         return Kind::WebVtt;
     }
-    if contains(&lower_prefix, b"<f4m") || contains(&lower_prefix, b"urn:adobe:f4m") {
+    if contains(&lower_prefix, b"<f4m")
+        || contains(&lower_prefix, b"urn:adobe:f4m")
+        || contains(&lower_prefix, b"ns.adobe.com/f4m")
+    {
         return Kind::Hds;
     }
     if trimmed.starts_with(b"[playlist]")

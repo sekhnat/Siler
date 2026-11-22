@@ -8,3 +8,4 @@ node_modules/
 /extension/.amo-upload-uuid
 /app/src-tauri/resources/
 /app/src-tauri/binaries/
+/dist/

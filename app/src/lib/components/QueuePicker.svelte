@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from "../i18n";
   import { onMount } from "svelte";
   import { api, type Queue } from "../api";
 
@@ -13,8 +14,8 @@
 </script>
 
 {#if queues.length > 1}
-  <label class="queue" title="The queue these downloads go into">
-    <span class="hint">Queue</span>
+  <label class="queue" title={t("queue-picker-the-queue-these-downloads-go-into")}>
+    <span class="hint">{t("queue-picker-queue")}</span>
     <select class="input" bind:value>
       {#each queues as q (q.id)}
         <option value={q.id}>{q.name}</option>
