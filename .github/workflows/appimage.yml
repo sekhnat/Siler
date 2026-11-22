@@ -40,7 +40,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential curl file xz-utils patchelf zsync \
+            build-essential curl file xz-utils patchelf zsync zip \
             libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev libxdo-dev
 
       - name: The tag matches the app's version
@@ -93,7 +93,7 @@ jobs:
 
       - name: Extension and interface checks
         run: |
-          node --test extension/tests/
+          node --test extension/tests/*.test.mjs
           (cd app && pnpm check && node locales/check.mjs)
 
       - name: The Chromium extension

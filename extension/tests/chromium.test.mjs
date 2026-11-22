@@ -1,5 +1,5 @@
 // The Chromium build: the same scripts as Firefox's, run as a service worker without the
-// Firefox-only parts of webRequest. `node --test extension/tests/`.
+// Firefox-only parts of webRequest. `node --test extension/tests/*.test.mjs`.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";

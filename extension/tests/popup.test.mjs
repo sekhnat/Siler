@@ -1,4 +1,4 @@
-// The popup, run against a stand-in page and browser: `node --test extension/tests/`.
+// The popup, run against a stand-in page and browser: `node --test extension/tests/*.test.mjs`.
 // Firefox answers the popup's questions asynchronously (storage, the active tab, the
 // background); the stand-in does too, so start-up order matters here as it does there.
 import { test } from "node:test";

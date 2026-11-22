@@ -1,4 +1,4 @@
-// Tests for the extension's video feed and site recognisers: `node --test extension/tests/`.
+// Tests for the extension's video feed and site recognisers: `node --test extension/tests/*.test.mjs`.
 // The scripts are plain background scripts; they are loaded here into a context of their own.
 import { test } from "node:test";
 import assert from "node:assert/strict";

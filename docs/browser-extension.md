@@ -89,5 +89,5 @@ The YouTube solver and its parser libraries are vendored unmodified in `extensio
 ## Notes for reviewers and developers
 
 - **Mozilla review:** the YouTube solver compiles YouTube's player script with `Function`. `web-ext lint` reports this as `DANGEROUS_EVAL`, a warning that doesn't stop unlisted signing.
-- **Tests:** `node --test extension/tests/` checks the request rules and each recogniser against recorded, scrubbed answers in `extension/tests/fixtures/`. The app's DASH parser reads the same YouTube manifest snapshot in its own tests.
+- **Tests:** `node --test extension/tests/*.test.mjs` checks the request rules and each recogniser against recorded, scrubbed answers in `extension/tests/fixtures/`. The app's DASH parser reads the same YouTube manifest snapshot in its own tests.
 - **Protocol 2:** the extension 0.3.0 and the app 0.6.0 (and later) speak protocol 2, which adds video details to a hand-over. An older app still takes plain downloads.

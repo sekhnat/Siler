@@ -29,7 +29,7 @@ cd app && pnpm install && pnpm tauri dev
 cd app && pnpm check
 
 # Extension tests
-node --test extension/tests/
+node --test extension/tests/*.test.mjs
 
 # The translation catalog against the code (every key used, none unused)
 node app/locales/check.mjs

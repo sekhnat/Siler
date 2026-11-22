@@ -59,7 +59,7 @@ such as "the server doesn't send parts of files" (`error-text`). These stay Engl
 1. Copy `extension/_locales/en/messages.json` to `extension/_locales/<lang>/messages.json`
    (`de`, `fr`, `pt_BR`, `zh_CN`: an underscore, not a hyphen).
 2. Translate each `message`; leave the keys and `$1`, `$2` (the values put in) as they are.
-3. Run `node --test extension/tests/`.
+3. Run `node --test extension/tests/*.test.mjs`.
 
 The browser picks the language itself, from its own interface language.
 
