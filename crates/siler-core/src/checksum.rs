@@ -256,9 +256,29 @@ pub fn hash_range(
     cancel: &AtomicBool,
 ) -> std::io::Result<Option<Vec<String>>> {
     let mut f = std::fs::File::open(path)?;
+    hash_open(
+        &mut f,
+        algos,
+        offset,
+        len,
+        progress,
+        cancel,
+        &mut vec![0u8; 1 << 20],
+    )
+}
+
+/// [`hash_range`] on a file that is already open, reading through `buf`.
+fn hash_open(
+    f: &mut std::fs::File,
+    algos: &[Algo],
+    offset: u64,
+    len: Option<u64>,
+    progress: Option<&AtomicU64>,
+    cancel: &AtomicBool,
+    buf: &mut [u8],
+) -> std::io::Result<Option<Vec<String>>> {
     f.seek(SeekFrom::Start(offset))?;
     let mut hashers: Vec<Hasher> = algos.iter().map(|a| a.hasher()).collect();
-    let mut buf = vec![0u8; 1 << 20];
     let mut left = len.unwrap_or(u64::MAX);
     while left > 0 {
         if cancel.load(Relaxed) {
@@ -298,10 +318,21 @@ pub fn bad_pieces(
     progress: Option<&AtomicU64>,
     cancel: &AtomicBool,
 ) -> std::io::Result<Option<Vec<usize>>> {
+    // One open file and one buffer for every piece: a metalink can list thousands.
+    let mut f = std::fs::File::open(path)?;
+    let mut buf = vec![0u8; 1 << 20];
     let mut bad = Vec::new();
     for (i, want) in pieces.hashes.iter().enumerate() {
         let (a, b) = pieces.range(i, total);
-        match hash_range(path, &[pieces.algo], a, Some(b - a), progress, cancel)? {
+        match hash_open(
+            &mut f,
+            &[pieces.algo],
+            a,
+            Some(b - a),
+            progress,
+            cancel,
+            &mut buf,
+        )? {
             None => return Ok(None),
             Some(got) if !got[0].eq_ignore_ascii_case(want) => bad.push(i),
             Some(_) => {}

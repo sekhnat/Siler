@@ -313,6 +313,8 @@ async fn fetch(t: &Transfer, idx: usize, source: &Source) -> Result<(), WorkerEr
         OpenError::Throttled(code, after) => WorkerError::Throttled(code, after),
         OpenError::Fatal(e) => WorkerError::Fatal(e),
     })?;
+    // Where this connection's bytes not yet handed to the disk start.
+    let mut unflushed = pos;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(WorkerError::Transient)?;
         if chunk.is_empty() {
@@ -329,7 +331,7 @@ async fn fetch(t: &Transfer, idx: usize, source: &Source) -> Result<(), WorkerEr
             // be seen at the end of the segment: stop here, before this chunk is written.
             return Err(WorkerError::Released);
         }
-        let finished = {
+        let (finished, written_to) = {
             let mut table = t.run.table.lock().unwrap();
             let seg = &mut table.segs[idx];
             // The segment may have been shortened by a split while we were reading.
@@ -343,8 +345,12 @@ async fn fetch(t: &Transfer, idx: usize, source: &Source) -> Result<(), WorkerEr
                 source.bytes.fetch_add(n as u64, Relaxed);
                 source.fails.store(0, Relaxed);
             }
-            seg.done()
+            (seg.done(), seg.pos)
         };
+        if finished || written_to - unflushed >= WRITEBACK_STEP {
+            start_writeback(&t.file, unflushed, written_to - unflushed);
+            unflushed = written_to;
+        }
         if finished {
             return Ok(());
         }
@@ -361,6 +367,29 @@ async fn fetch(t: &Transfer, idx: usize, source: &Source) -> Result<(), WorkerEr
     } else {
         Err(WorkerError::Transient("connection closed early".into()))
     }
+}
+
+/// How much a connection writes before the kernel is asked to start putting it on disk.
+/// Left alone, the kernel may keep most of a fast download in memory until the final flush,
+/// which then holds up the finish for as long as the disk needs to write it all.
+const WRITEBACK_STEP: u64 = 32 << 20;
+
+/// Starts writing `len` bytes of `file` from `from` to disk, without waiting for them.
+fn start_writeback(file: &std::fs::File, from: u64, len: u64) {
+    #[cfg(target_os = "linux")]
+    if len > 0 {
+        use std::os::fd::AsRawFd;
+        let (Ok(from), Ok(len)) = (i64::try_from(from), i64::try_from(len)) else {
+            return;
+        };
+        // SAFETY: the descriptor stays open for the call (`file` is borrowed), and the call
+        // only reads its plain integer arguments. A failure only means no early writeback.
+        unsafe {
+            libc::sync_file_range(file.as_raw_fd(), from, len, libc::SYNC_FILE_RANGE_WRITE);
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (file, from, len);
 }
 
 pub(crate) fn backoff(attempt: u32) -> Duration {

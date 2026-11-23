@@ -25,7 +25,7 @@ Browser extension ──native messaging (stdio)──► siler-nmhost ──Uni
 
 ## Download engine
 
-- Data is written into a preallocated `<name>.siler.part` file using positional writes. Progress is checkpointed about once a second, on pause and on quit.
+- Data is written into a preallocated `<name>.siler.part` file using positional writes. Every 32 MiB a connection asks the kernel to start writing its part to disk, so the flush when the download finishes is short; that flush runs off the async runtime, and the download is only marked finished once its data is on disk. Progress is checkpointed about once a second, on pause and on quit, and the database's write-ahead log is folded back in whenever nothing is downloading.
 - Resuming re-probes the URL. If the size, ETag or Last-Modified changed, the download starts over and shows a notice.
 - How bytes are fetched is a transport per URL scheme (`crates/siler-core/src/transport/`): HTTP(S) with reqwest, FTP/FTPS with a small client of Siler's own, and SFTP with russh. A transport answers two questions, what a file is (`probe`) and its bytes from one offset to another (`open_range`); segments, connection limits, retries, mirrors, speed limits and the quota are the same for all of them.
 - The HTTP client is HTTP/1.1 only and sends `Accept-Encoding: identity`. This makes each connection a real TCP connection, and keeps byte ranges pointing at the file itself.

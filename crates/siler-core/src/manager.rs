@@ -304,6 +304,8 @@ impl Engine {
         let weak = Arc::downgrade(&inner);
         inner.rt.spawn(async move {
             let mut iv = tokio::time::interval(Duration::from_millis(250));
+            // After a stall (a suspended laptop), one tick, not a burst of catch-up ticks.
+            iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 iv.tick().await;
                 match weak.upgrade() {
@@ -2080,7 +2082,8 @@ impl Inner {
     fn tick(self: &Arc<Self>) {
         self.check_quota();
         let mut guard = self.state();
-        if guard.running.is_empty() {
+        let went_idle = guard.running.is_empty();
+        if went_idle {
             if guard.idle_reported {
                 return;
             }
@@ -2119,6 +2122,9 @@ impl Inner {
             .collect();
         drop(guard);
         self.emit(Event::Progress { items, total_speed });
+        if went_idle {
+            self.store.lock().unwrap().idle_maintenance();
+        }
     }
 
     /// Starts queued downloads while there are free slots.
@@ -2947,14 +2953,23 @@ impl Inner {
             self.save_source_stats(id, &sources);
             match outcome? {
                 Outcome::Stopped => {
-                    let _ = t.file.sync_data();
+                    let t = t.clone();
+                    let _ = tokio::task::spawn_blocking(move || t.file.sync_data()).await;
                     return Ok(Outcome::Stopped);
                 }
                 Outcome::Done => {}
             }
             let size = total.unwrap_or_else(|| run.downloaded.load(Relaxed));
-            t.file.set_len(size)?;
-            t.file.sync_all()?;
+            // Waiting for the disk can take seconds: not on the runtime's own threads. Most
+            // of the data is already written (`task` starts writeback as it goes), and
+            // `sync_data` still covers the new length, which reading the file back needs.
+            let t2 = t.clone();
+            tokio::task::spawn_blocking(move || {
+                t2.file.set_len(size)?;
+                t2.file.sync_data()
+            })
+            .await
+            .map_err(|e| Error::Protocol(e.to_string()))??;
             let job = Finish {
                 dir: dir.clone(),
                 name: name.clone(),

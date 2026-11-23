@@ -32,6 +32,10 @@ jobs:
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
       CARGO_TERM_COLOR: always
+      # Released binaries only: about a fifth smaller, no faster, and over twice the build
+      # time, so local release builds keep Cargo.toml's thin LTO.
+      CARGO_PROFILE_RELEASE_LTO: fat
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
     steps:
       - uses: actions/checkout@v4
         with:

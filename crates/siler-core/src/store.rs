@@ -133,6 +133,14 @@ fn u(v: i64) -> u64 {
     u64::try_from(v).unwrap_or(0)
 }
 
+impl Drop for Store {
+    fn drop(&mut self) {
+        // Refreshes the query planner's statistics where SQLite thinks they're worth it;
+        // cheap, and nothing is lost if it fails.
+        let _ = self.conn.execute_batch("PRAGMA optimize");
+    }
+}
+
 impl Store {
     pub fn open(path: &Path) -> Result<Store> {
         let conn = Connection::open(path)?;
@@ -142,6 +150,17 @@ impl Store {
         let store = Store { conn };
         store.migrate()?;
         Ok(store)
+    }
+
+    /// When nothing is downloading: fold the write-ahead log back into the database and
+    /// empty it, rather than leaving it on disk until the next automatic checkpoint.
+    pub fn idle_maintenance(&self) {
+        if let Err(e) = self
+            .conn
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
+        {
+            tracing::debug!(%e, "WAL checkpoint skipped");
+        }
     }
 
     fn migrate(&self) -> Result<()> {
@@ -544,5 +563,28 @@ mod tests {
         // Opening again is a no-op.
         drop(store);
         assert_eq!(Store::open(&path).unwrap().load_all().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn idle_maintenance_empties_the_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("siler.db");
+        let wal = dir.path().join("siler.db-wal");
+        let store = Store::open(&path).unwrap();
+        for i in 0..50 {
+            store
+                .save_value("quota", &format!("{{\"n\":{i}}}"))
+                .unwrap();
+        }
+        assert!(std::fs::metadata(&wal).unwrap().len() > 0);
+        store.idle_maintenance();
+        assert_eq!(std::fs::metadata(&wal).unwrap().len(), 0);
+        // Nothing was lost: it's in the database itself now.
+        drop(store);
+        let store = Store::open(&path).unwrap();
+        assert_eq!(
+            store.load_value("quota").unwrap().as_deref(),
+            Some("{\"n\":49}")
+        );
     }
 }
