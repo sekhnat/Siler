@@ -7,6 +7,7 @@
 
 pub mod batch;
 mod category;
+mod checkpoint;
 pub mod checksum;
 mod error;
 pub mod extras;
@@ -19,6 +20,7 @@ mod manager;
 pub mod media;
 pub mod metalink;
 mod net;
+mod partfile;
 pub mod postrun;
 mod probe;
 pub mod proxy;

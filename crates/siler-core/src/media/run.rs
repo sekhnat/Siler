@@ -924,6 +924,7 @@ pub(super) fn publish(
         target_name
     };
     let path = dir.join(&final_name);
+    crate::partfile::publishable(&out)?;
     std::fs::rename(&out, &path)?;
     let final_stem = final_name
         .rsplit_once('.')

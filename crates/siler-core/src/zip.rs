@@ -251,11 +251,12 @@ pub fn target(path: &str) -> Option<(Vec<String>, String)> {
     Some((parts, name))
 }
 
-/// Unpacks the compressed bytes in `part` into `out` (a stored entry is only checked) and
-/// checks the size and CRC-32. Returns false when cancelled.
+/// Unpacks the compressed bytes in `part` into `out`, a new empty file (a stored entry is
+/// only checked, and needs none), and checks the size and CRC-32. Returns false when
+/// cancelled.
 pub fn unpack(
     part: &Path,
-    out: &Path,
+    out: Option<std::fs::File>,
     e: &ZipEntry,
     progress: &AtomicU64,
     cancel: &AtomicBool,
@@ -271,9 +272,8 @@ pub fn unpack(
     let mut writer = if e.method == 0 {
         None
     } else {
-        Some(std::io::BufWriter::new(
-            std::fs::File::create(out).map_err(io)?,
-        ))
+        let out = out.ok_or("Unpacking failed: nowhere to unpack to")?;
+        Some(std::io::BufWriter::new(out))
     };
     let mut crc = crc32fast::Hasher::new();
     let mut total = 0u64;
@@ -447,7 +447,8 @@ pub(crate) mod tests {
                 std::fs::write(&part, &zip[data as usize..(data + e.compressed) as usize]).unwrap();
                 let out = dir.path().join("out");
                 let p = AtomicU64::new(0);
-                assert!(unpack(&part, &out, &e, &p, &AtomicBool::new(false)).unwrap());
+                let file = || Some(crate::partfile::replace(&out).unwrap());
+                assert!(unpack(&part, file(), &e, &p, &AtomicBool::new(false)).unwrap());
                 let got = if e.method == 0 {
                     std::fs::read(&part).unwrap()
                 } else {
@@ -460,7 +461,7 @@ pub(crate) mod tests {
                 let last = bad.len() - 1;
                 bad[last] ^= 0xff;
                 std::fs::write(&part, bad).unwrap();
-                assert!(unpack(&part, &out, &e, &p, &AtomicBool::new(false)).is_err());
+                assert!(unpack(&part, file(), &e, &p, &AtomicBool::new(false)).is_err());
             }
         }
     }

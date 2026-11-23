@@ -89,6 +89,9 @@ pub struct Settings {
     /// Global speed limit in bytes/s, 0 = unlimited.
     pub global_speed_limit: u64,
     pub max_retries: u32,
+    /// Flush the partial file to disk before each progress checkpoint, so a power cut can't
+    /// leave resume trusting data that never reached the disk ("Extra-safe resume").
+    pub durable_checkpoints: bool,
     /// Segments are never split below this size.
     pub min_split_size: u64,
     pub resume_on_startup: bool,
@@ -288,6 +291,7 @@ impl Default for Settings {
             connections: 8,
             global_speed_limit: 0,
             max_retries: 10,
+            durable_checkpoints: false,
             min_split_size: 1024 * 1024,
             resume_on_startup: true,
             user_agent: DEFAULT_USER_AGENT.to_string(),

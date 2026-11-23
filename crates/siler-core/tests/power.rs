@@ -868,3 +868,39 @@ async fn grab_projects_find_only_new_files() {
     assert_eq!(projects.len(), 1);
     assert!(projects[0].last_run.is_some());
 }
+
+#[tokio::test]
+async fn unpacking_never_writes_through_a_planted_link() {
+    let srv = Server::start().await;
+    let big = data(600_000, 21);
+    let zip = siler_core::zip::make_zip(&[("big.bin", &big, true)], false);
+    srv.file("/b.zip", zip.clone());
+    let tmp = tempfile::tempdir().unwrap();
+    let e = engine(tmp.path(), |_| {}).await;
+    let listing = e
+        .zip_list(&srv.url("/b.zip"), &Default::default())
+        .await
+        .unwrap();
+    let dir = tmp.path().join("out");
+    std::fs::create_dir_all(&dir).unwrap();
+    let precious = tmp.path().join("precious");
+    std::fs::write(&precious, b"not yours").unwrap();
+    std::os::unix::fs::symlink(&precious, dir.join(".big.bin.siler-unpack")).unwrap();
+    let id = e
+        .add(NewDownload {
+            url: srv.url("/b.zip"),
+            filename: Some("big.bin".into()),
+            dir: Some(dir.clone()),
+            zip_entry: Some(listing.entries[0].entry(listing.archive_size)),
+            ..Default::default()
+        })
+        .unwrap();
+    let d = finished(&e, id).await;
+    assert_eq!(d.status, Status::Failed, "{d:?}");
+    assert_eq!(
+        d.error_code.as_ref().map(|c| c.code.as_str()),
+        Some("unsafe-part")
+    );
+    assert_eq!(std::fs::read(&precious).unwrap(), b"not yours");
+    assert!(!dir.join("big.bin").exists());
+}

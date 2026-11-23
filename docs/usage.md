@@ -113,6 +113,8 @@ siler --import links.txt
 - **SFTP server keys:** the first connection to an SFTP server shows its key's fingerprint and asks whether to trust it (as `ssh` does). Trusted keys are kept in Siler's own `known_hosts` (next to its database); `~/.ssh/known_hosts` is read too. A key that changed is refused.
 - **Proxies for FTP and SFTP:** they go where the proxy settings (or the script) say: through a SOCKS proxy, or an HTTP or HTTPS proxy with `CONNECT`.
 - **Connections:** connections per download, simultaneous downloads and a per-server connection limit are in Settings → Transfers.
+- **Extra-safe resume** (Settings → Transfers, off by default): progress is only saved after the downloaded data is on the disk, so a power cut or a crash of the whole computer can't leave a resumed download with gaps. It costs a flush to disk about once a second while downloading. Without it, Siler itself crashing or being killed is still safe.
+- **Fetched twice** (in a download's details): data that was received and thrown away, from dropped connections, a download that had to start over or damaged pieces fetched again, with how many times the file's size came over the network in all (shown above 1.05×), and the number of retries. A data quota counts these bytes too, as your provider does.
 
 ## Desktop
 

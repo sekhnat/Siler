@@ -486,6 +486,20 @@ fn assert_complete(d: &DownloadInfo, expected: &[u8]) {
     assert!(!part.exists(), "part file left behind");
 }
 
+/// Every byte received went into the file or was counted as waste.
+fn assert_traffic_adds_up(d: &DownloadInfo) -> siler_core::Traffic {
+    let t = d.traffic.expect("traffic measured");
+    assert_eq!(
+        t.wire,
+        d.total_size.unwrap() + t.wasted,
+        "received {} for {} with {} wasted",
+        t.wire,
+        d.total_size.unwrap(),
+        t.wasted
+    );
+    t
+}
+
 // ---------------------------------------------------------------- tests
 
 #[tokio::test]
@@ -514,6 +528,11 @@ async fn segmented_download_matches_source() {
     assert_complete(&d, &srv.data(SIZE));
     assert_eq!(d.filename.as_deref(), Some("a.bin"));
     assert_eq!(d.resumable, Some(true));
+    // Nothing went wrong. Splitting near the end may cut off a few chunks already in
+    // flight, which is all that may be fetched twice.
+    let t = assert_traffic_adds_up(&d);
+    assert_eq!(t.retries, 0);
+    assert!(t.wasted < SIZE as u64 / 50, "{t:?}");
 }
 
 #[tokio::test]
@@ -526,6 +545,8 @@ async fn slow_connection_gets_its_work_split() {
     let id = add(&e, srv.url("/file/a.bin?slowfirst=262144"));
     let d = wait_finished(&e, id).await;
     assert_complete(&d, &srv.data(SIZE));
+    // A split may cut off what a connection already has in flight: counted, not lost.
+    assert_traffic_adds_up(&d);
     assert!(
         started.elapsed() < Duration::from_secs(4),
         "took {:?}",
@@ -576,6 +597,8 @@ async fn pause_and_resume() {
     let d = wait_finished(&e, id).await;
     assert_complete(&d, &srv.data(SIZE));
     assert!(d.notice.is_none(), "unexpected restart: {:?}", d.notice);
+    // Counted across the pause, including what was in flight when it came.
+    assert_traffic_adds_up(&d);
 }
 
 #[tokio::test]
@@ -594,6 +617,8 @@ async fn resumes_after_restart() {
     let e = Engine::open(tmp.path().join("data")).unwrap();
     let d = wait_finished(&e, id).await;
     assert_complete(&d, &srv.data(SIZE));
+    // Counted across quitting and starting again.
+    assert_traffic_adds_up(&d);
     let served_after = srv.shared.served.load(SeqCst) - served_before;
     assert!(
         served_after < SIZE as u64 - MIB,
@@ -616,6 +641,8 @@ async fn restarts_when_file_changes_on_server() {
     let d = wait_finished(&e, id).await;
     assert_complete(&d, &srv.data(SIZE));
     assert!(d.notice.is_some());
+    // The old version's bytes were thrown away.
+    assert!(assert_traffic_adds_up(&d).wasted > MIB);
 }
 
 #[tokio::test]
@@ -626,6 +653,47 @@ async fn recovers_from_dropped_connections() {
     let id = add(&e, srv.url("/file/a.bin?flaky=3"));
     let d = wait_finished(&e, id).await;
     assert_complete(&d, &srv.data(SIZE));
+    let t = assert_traffic_adds_up(&d);
+    assert!(t.retries >= 3, "{t:?}");
+}
+
+#[tokio::test]
+async fn a_restart_without_ranges_counts_what_it_threw_away() {
+    let srv = Server::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let e = engine(tmp.path(), |_| {}).await;
+    // Without ranges a dropped connection starts the file over: its 100 KB are fetched again.
+    let id = add(&e, srv.url("/file/a.bin?norange=true&flaky=2&rate=4194304"));
+    let d = wait_finished(&e, id).await;
+    assert_complete(&d, &srv.data(SIZE));
+    let t = assert_traffic_adds_up(&d);
+    assert!(t.retries >= 1, "{t:?}");
+    assert!(t.wasted >= 90_000 * u64::from(t.retries), "{t:?}");
+}
+
+#[tokio::test]
+async fn traffic_is_absent_until_measured_and_cleared_by_a_restart() {
+    let srv = Server::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let e = engine(tmp.path(), |s| s.connections = 4).await;
+    let id = e
+        .add(NewDownload {
+            url: srv.url("/file/a.bin?flaky=2"),
+            start_paused: true,
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(e.get(id).unwrap().traffic, None, "nothing measured yet");
+    e.resume(id).unwrap();
+    let d = wait_finished(&e, id).await;
+    assert_complete(&d, &srv.data(SIZE));
+    assert!(assert_traffic_adds_up(&d).retries >= 2);
+
+    // Downloaded again: counted afresh, without the first time's retries.
+    e.restart(id).await.unwrap();
+    let d = wait_finished(&e, id).await;
+    assert_complete(&d, &srv.data(SIZE));
+    assert_eq!(assert_traffic_adds_up(&d).retries, 0);
 }
 
 #[tokio::test]
@@ -1652,4 +1720,257 @@ async fn keeps_files_up_to_date() {
     assert_eq!(d.sync_every, 3600);
     let dir = d.dir.unwrap();
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+}
+
+// ---------------------------------------------------------------- partial-file safety
+
+fn mode_of(p: &Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::symlink_metadata(p).unwrap().permissions().mode() & 0o777
+}
+
+/// What a new file gets: 0666 less this process's umask.
+fn usual_mode() -> u32 {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap();
+    let umask = status
+        .lines()
+        .find_map(|l| l.strip_prefix("Umask:"))
+        .map(|v| u32::from_str_radix(v.trim(), 8).unwrap())
+        .unwrap();
+    0o666 & !umask
+}
+
+fn part_of(d: &DownloadInfo) -> PathBuf {
+    siler_core::filename::part_path(d.dir.as_ref().unwrap(), d.filename.as_ref().unwrap())
+}
+
+/// Starts a slow download and pauses it part-way.
+async fn paused_part(e: &Engine, srv: &Server) -> (i64, PathBuf) {
+    let id = add(e, srv.url("/file/a.bin?rate=1048576"));
+    wait_for(e, id, |d| d.downloaded > MIB).await;
+    e.pause(id).unwrap();
+    let d = wait_for(e, id, |d| d.status == Status::Paused).await;
+    (id, part_of(&d))
+}
+
+fn refused_as_unsafe(d: &DownloadInfo) {
+    assert_eq!(d.status, Status::Failed, "{d:?}");
+    assert_eq!(
+        d.error_code.as_ref().map(|c| c.code.as_str()),
+        Some("unsafe-part"),
+        "{:?}",
+        d.error
+    );
+}
+
+#[tokio::test]
+async fn never_writes_through_a_planted_part_link() {
+    let srv = Server::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let e = engine(tmp.path(), |s| s.connections = 4).await;
+    let (id, part) = paused_part(&e, &srv).await;
+    let precious = tmp.path().join("precious");
+    std::fs::write(&precious, b"not yours").unwrap();
+    std::fs::remove_file(&part).unwrap();
+    std::os::unix::fs::symlink(&precious, &part).unwrap();
+
+    e.resume(id).unwrap();
+    refused_as_unsafe(&wait_finished(&e, id).await);
+    assert_eq!(std::fs::read(&precious).unwrap(), b"not yours");
+    assert!(
+        std::fs::symlink_metadata(&part)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+
+    // A link that points nowhere is refused as well, not followed into a new file.
+    std::fs::remove_file(&part).unwrap();
+    let nowhere = tmp.path().join("nowhere");
+    std::os::unix::fs::symlink(&nowhere, &part).unwrap();
+    e.resume(id).unwrap();
+    refused_as_unsafe(&wait_finished(&e, id).await);
+    assert!(!nowhere.exists());
+}
+
+#[tokio::test]
+async fn never_writes_into_a_part_with_other_names() {
+    let srv = Server::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let e = engine(tmp.path(), |s| s.connections = 4).await;
+    let (id, part) = paused_part(&e, &srv).await;
+    let other = tmp.path().join("other-name");
+    std::fs::hard_link(&part, &other).unwrap();
+    let before = std::fs::read(&other).unwrap();
+
+    e.resume(id).unwrap();
+    refused_as_unsafe(&wait_finished(&e, id).await);
+    assert_eq!(std::fs::read(&other).unwrap(), before);
+}
+
+#[tokio::test]
+async fn partials_are_owner_only_and_finished_files_are_not() {
+    let srv = Server::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let e = engine(tmp.path(), |s| s.connections = 4).await;
+    let (id, part) = paused_part(&e, &srv).await;
+    assert_eq!(mode_of(&part), 0o600, "a fresh partial");
+
+    // A partial from before (0644) is continued, and tightened.
+    std::fs::set_permissions(&part, std::os::unix::fs::PermissionsExt::from_mode(0o644)).unwrap();
+    let paused = e.get(id).unwrap().downloaded;
+    e.resume(id).unwrap();
+    wait_for(&e, id, |d| d.downloaded > paused).await;
+    if part.exists() {
+        assert_eq!(mode_of(&part), 0o600, "a resumed partial");
+    }
+    let d = wait_finished(&e, id).await;
+    assert_complete(&d, &srv.data(SIZE));
+    assert!(d.notice.is_none(), "it was continued: {:?}", d.notice);
+    assert_eq!(mode_of(&path_of(&d)), usual_mode(), "the published file");
+}
+
+#[tokio::test]
+async fn starting_over_replaces_only_our_own_partial() {
+    let srv = Server::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let e = engine(tmp.path(), |s| s.connections = 4).await;
+
+    // The file changed on the server: the old partial (0644, from before) is replaced.
+    let (id, part) = paused_part(&e, &srv).await;
+    std::fs::set_permissions(&part, std::os::unix::fs::PermissionsExt::from_mode(0o644)).unwrap();
+    srv.bump_version();
+    e.resume(id).unwrap();
+    let d = wait_finished(&e, id).await;
+    assert_complete(&d, &srv.data(SIZE));
+    assert!(d.notice.is_some());
+
+    // The same with a link where the partial was: refused, and the link's target untouched.
+    let (id, part) = paused_part(&e, &srv).await;
+    let precious = tmp.path().join("precious");
+    std::fs::write(&precious, b"not yours").unwrap();
+    std::fs::remove_file(&part).unwrap();
+    std::os::unix::fs::symlink(&precious, &part).unwrap();
+    srv.bump_version();
+    e.resume(id).unwrap();
+    refused_as_unsafe(&wait_finished(&e, id).await);
+    assert_eq!(std::fs::read(&precious).unwrap(), b"not yours");
+}
+
+#[tokio::test]
+async fn publishing_replaces_a_link_at_the_destination() {
+    let srv = Server::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let e = engine(tmp.path(), |s| s.connections = 4).await;
+    let dl = tmp.path().join("dl");
+    std::fs::create_dir_all(&dl).unwrap();
+    let precious = tmp.path().join("precious");
+    std::fs::write(&precious, b"not yours").unwrap();
+    std::os::unix::fs::symlink(&precious, dl.join("a.bin")).unwrap();
+    let id = e
+        .add(NewDownload {
+            url: srv.url("/file/a.bin"),
+            on_conflict: Some(OnConflict::Overwrite),
+            ..Default::default()
+        })
+        .unwrap();
+    let d = wait_finished(&e, id).await;
+    assert_complete(&d, &srv.data(SIZE));
+    assert_eq!(path_of(&d), dl.join("a.bin"));
+    assert!(
+        !std::fs::symlink_metadata(dl.join("a.bin"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(std::fs::read(&precious).unwrap(), b"not yours");
+}
+
+// ---------------------------------------------------------------- crash safety
+
+/// The download that `survives_being_killed` kills: it runs in a process of its own.
+#[tokio::test]
+#[ignore = "run by survives_being_killed, in a process of its own"]
+async fn killed_child() {
+    let Ok(dir) = std::env::var("SILER_KILLED_DIR") else {
+        return;
+    };
+    let url = std::env::var("SILER_KILLED_URL").unwrap();
+    let durable = std::env::var("SILER_KILLED_DURABLE").is_ok();
+    let e = engine(Path::new(&dir), |s| {
+        s.connections = 4;
+        s.durable_checkpoints = durable;
+    })
+    .await;
+    add(&e, url);
+    // Until it is killed.
+    tokio::time::sleep(Duration::from_secs(60)).await;
+}
+
+/// Killed mid-transfer (SIGKILL, between two checkpoints), the download resumes from what
+/// was saved and the file comes out whole, in both checkpoint modes. A killed process keeps
+/// its written data in the page cache, so this shows the order of writes and checkpoints is
+/// safe; surviving a power cut needs a real disk and a hard reset.
+#[tokio::test]
+async fn survives_being_killed() {
+    for durable in [false, true] {
+        let srv = Server::start().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "killed_child", "--ignored", "--quiet"])
+            .env("SILER_KILLED_DIR", tmp.path())
+            .env("SILER_KILLED_URL", srv.url("/file/a.bin?rate=524288"))
+            .envs(durable.then_some(("SILER_KILLED_DURABLE", "1")))
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while srv.shared.served.load(SeqCst) < 4 * MIB {
+            assert!(Instant::now() < deadline, "the child didn't download");
+            assert!(child.try_wait().unwrap().is_none(), "the child ended");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        // Half-way between two checkpoints.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let served_before = srv.shared.served.load(SeqCst);
+
+        let e = Engine::open(tmp.path().join("data")).unwrap();
+        let id = e.list()[0].id;
+        let d = wait_finished(&e, id).await;
+        assert_complete(&d, &srv.data(SIZE));
+        let again = srv.shared.served.load(SeqCst) - served_before;
+        assert!(
+            again < SIZE as u64 - MIB,
+            "durable: {durable}: fetched {again} again, so it didn't resume"
+        );
+        e.shutdown().await;
+    }
+}
+
+/// A download that fails keeps its progress, and that progress is good to resume from.
+#[tokio::test]
+async fn a_failed_download_resumes_from_what_it_kept() {
+    let srv = Server::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let e = engine(tmp.path(), |s| {
+        s.connections = 4;
+        s.max_retries = 0;
+    })
+    .await;
+    // Every connection drops after 100 KB, and nothing is retried.
+    let id = add(&e, srv.url("/file/a.bin?flaky=1000&rate=1048576"));
+    let failed = wait_finished(&e, id).await;
+    assert_eq!(failed.status, Status::Failed);
+    assert!(
+        failed.downloaded > 0 && !failed.segments.is_empty(),
+        "{failed:?}"
+    );
+
+    srv.shared.requests.store(usize::MAX / 2, SeqCst); // no more drops
+    e.resume(id).unwrap();
+    let d = wait_finished(&e, id).await;
+    assert_complete(&d, &srv.data(SIZE));
+    assert!(d.notice.is_none(), "it was continued: {:?}", d.notice);
 }

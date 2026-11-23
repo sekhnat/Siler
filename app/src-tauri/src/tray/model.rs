@@ -410,6 +410,7 @@ mod tests {
             media: None,
             phase: None,
             source_bytes: vec![],
+            traffic: None,
         }
     }
 

@@ -29,7 +29,8 @@
 
 **Fast and resilient**
 - Segmented downloads over many connections, with dynamic splitting: a free connection takes over half of the largest remaining piece. The connection count can change while a download runs.
-- Pause and resume across restarts and crashes; passing network failures are retried, honouring `Retry-After`.
+- Pause and resume across restarts and crashes; passing network failures are retried, honouring `Retry-After`. **Extra-safe resume** makes it survive a power cut too, and the details show how much a flaky connection made Siler fetch twice.
+- Partial files are private to you, and Siler never writes through a link someone left where its partial file goes.
 - Mirrors and multi-source downloads, and metalinks with piece hashes.
 - **Expired links refresh themselves**: Siler asks the original address again, or the browser the link came from finds it on its page in a background tab. Siler checks that the file is still the same and continues where it was.
 - HTTP(S), **FTP, FTPS and SFTP**, through the same proxy; SFTP checks the server's key the way `ssh` does.

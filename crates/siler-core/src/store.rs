@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use crate::extras::Extras;
 use crate::media::{JobKind, MediaRecord};
 use crate::queue::Queue;
-use crate::{Category, OnConflict, RequestMeta, Result, Segment, Settings, Status};
+use crate::{Category, OnConflict, RequestMeta, Result, Segment, Settings, Status, Traffic};
 
 /// Everything Siler knows about one download, including secrets needed to resume it.
 #[derive(Debug, Clone)]
@@ -47,6 +47,10 @@ pub(crate) struct Record {
     /// The media details of a media download.
     pub media: Option<MediaRecord>,
     pub extras: Extras,
+    /// What it cost on the network so far, across runs.
+    pub traffic: Traffic,
+    /// The connection count is chosen by Siler, up to `connections` (not used yet).
+    pub auto_connections: bool,
 }
 
 const SCHEMA_V1: &str = "
@@ -116,6 +120,13 @@ CREATE TABLE grab_seen (
     url        TEXT NOT NULL,
     PRIMARY KEY (project_id, url)
 );
+";
+
+const SCHEMA_V6: &str = "
+ALTER TABLE downloads ADD COLUMN wire_bytes INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE downloads ADD COLUMN wasted_bytes INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE downloads ADD COLUMN retries INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE downloads ADD COLUMN auto_connections INTEGER NOT NULL DEFAULT 0;
 ";
 
 /// A saved site-grabber project: id, name, config JSON, last run.
@@ -195,6 +206,12 @@ impl Store {
             tx.pragma_update(None, "user_version", 5)?;
             tx.commit()?;
         }
+        if version < 6 {
+            let tx = self.conn.unchecked_transaction()?;
+            tx.execute_batch(SCHEMA_V6)?;
+            tx.pragma_update(None, "user_version", 6)?;
+            tx.commit()?;
+        }
         Ok(())
     }
 
@@ -230,6 +247,10 @@ impl Store {
             (":kind", Box::new(r.kind.as_str())),
             (":media", Box::new(r.media.as_ref().map(to_json))),
             (":extras", Box::new(to_json(&r.extras))),
+            (":wire_bytes", Box::new(i(r.traffic.wire))),
+            (":wasted_bytes", Box::new(i(r.traffic.wasted))),
+            (":retries", Box::new(r.traffic.retries)),
+            (":auto_connections", Box::new(r.auto_connections)),
         ]
     }
 
@@ -243,11 +264,12 @@ impl Store {
             "INSERT INTO downloads (url, final_url, filename, dir, category, total_size, downloaded, status,
                 resumable, error, notice, etag, last_modified, meta, connections, speed_limit, created_at,
                 completed_at, segments, position, on_conflict, queue_id, sync_every, sync_checked_at,
-                kind, media, extras)
+                kind, media, extras, wire_bytes, wasted_bytes, retries, auto_connections)
              VALUES (:url, :final_url, :filename, :dir, :category, :total_size, :downloaded, :status,
                 :resumable, :error, :notice, :etag, :last_modified, :meta, :connections, :speed_limit,
                 :created_at, :completed_at, :segments, :position, :on_conflict, :queue_id,
-                :sync_every, :sync_checked_at, :kind, :media, :extras)",
+                :sync_every, :sync_checked_at, :kind, :media, :extras, :wire_bytes, :wasted_bytes,
+                :retries, :auto_connections)",
             &Self::values(r),
         )?;
         Ok(self.conn.last_insert_rowid())
@@ -264,18 +286,35 @@ impl Store {
                 speed_limit=:speed_limit, created_at=:created_at, completed_at=:completed_at,
                 segments=:segments, position=:position, on_conflict=:on_conflict,
                 queue_id=:queue_id, sync_every=:sync_every, sync_checked_at=:sync_checked_at,
-                kind=:kind, media=:media, extras=:extras
+                kind=:kind, media=:media, extras=:extras, wire_bytes=:wire_bytes,
+                wasted_bytes=:wasted_bytes, retries=:retries, auto_connections=:auto_connections
              WHERE id=:id",
             &values,
         )?;
         Ok(())
     }
 
-    pub fn update_progress(&self, id: i64, downloaded: u64, segments: &[Segment]) -> Result<()> {
+    pub fn update_progress(
+        &self,
+        id: i64,
+        downloaded: u64,
+        segments: &[Segment],
+        traffic: Traffic,
+    ) -> Result<()> {
         let segs = serde_json::to_string(segments).unwrap_or_else(|_| "[]".into());
         self.conn
-            .prepare_cached("UPDATE downloads SET downloaded=?1, segments=?2 WHERE id=?3")?
-            .execute(params![i(downloaded), segs, id])?;
+            .prepare_cached(
+                "UPDATE downloads SET downloaded=?1, segments=?2, wire_bytes=?3, wasted_bytes=?4,
+                    retries=?5 WHERE id=?6",
+            )?
+            .execute(params![
+                i(downloaded),
+                segs,
+                i(traffic.wire),
+                i(traffic.wasted),
+                traffic.retries,
+                id
+            ])?;
         Ok(())
     }
 
@@ -495,6 +534,12 @@ fn row_to_record(row: &Row) -> rusqlite::Result<Record> {
             .get::<_, Option<String>>("media")?
             .and_then(|m| serde_json::from_str(&m).ok()),
         extras: serde_json::from_str(&row.get::<_, String>("extras")?).unwrap_or_default(),
+        traffic: Traffic {
+            wire: u(row.get("wire_bytes")?),
+            wasted: u(row.get("wasted_bytes")?),
+            retries: row.get("retries")?,
+        },
+        auto_connections: row.get("auto_connections")?,
     })
 }
 
@@ -557,6 +602,21 @@ mod tests {
             crate::checksum::Checksum::parse("900150983cd24fb0d6963f7d28e17f72").ok();
         store.update(&r).unwrap();
         assert_eq!(store.load_all().unwrap()[0].extras, r.extras);
+        // Counted from 6 on: an old row has measured nothing.
+        assert_eq!(recs[0].traffic, Traffic::default());
+        assert!(!recs[0].auto_connections);
+        let traffic = Traffic {
+            wire: 5 << 30,
+            wasted: 7,
+            retries: 3,
+        };
+        store
+            .update_progress(r.id, 10, &[Segment::new(0, 20)], traffic)
+            .unwrap();
+        assert_eq!(store.load_all().unwrap()[0].traffic, traffic);
+        r.traffic.retries = 4;
+        store.update(&r).unwrap();
+        assert_eq!(store.load_all().unwrap()[0].traffic.retries, 4);
         store.save_value("quota", "{}").unwrap();
         assert_eq!(store.load_value("quota").unwrap().as_deref(), Some("{}"));
         assert!(store.load_settings().unwrap().is_none());

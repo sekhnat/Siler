@@ -35,6 +35,9 @@
   const recording = $derived(isRecording(d));
   const history = $derived(store.perHistory[d.id] ?? []);
   const path = $derived(d.dir && d.filename ? `${d.dir}/${d.filename}` : d.dir);
+  // Received ÷ kept; shown only when a noticeable share was fetched twice.
+  const amplification = $derived(d.traffic && d.downloaded > 0 ? d.traffic.wire / d.downloaded : 0);
+  const wasteShown = $derived(amplification > 1.05 && (d.traffic?.wasted ?? 0) > 0);
 
   /** What a media download is doing now, in words. */
   function mediaPhase(m: NonNullable<Download["media_progress"]>): string {
@@ -169,6 +172,14 @@
       {:else if d.resumable === false}<span class="pill" style:--c="var(--warn)">{t("detail-panel-not-supported")}</span>
       {:else}<span class="muted">{t("detail-panel-unknown")}</span>{/if}
     </dd>
+    {#if wasteShown}
+      <dt>{t("detail-panel-retransferred")}</dt>
+      <dd title={t("detail-panel-retransferred-hint")}>{t("detail-panel-retransferred-value", { bytes: bytes(d.traffic?.wasted ?? 0), times: amplification.toFixed(1) })}</dd>
+    {/if}
+    {#if d.traffic?.retries}
+      <dt>{t("detail-panel-retries")}</dt>
+      <dd>{d.traffic.retries}</dd>
+    {/if}
     <dt>{t("detail-panel-speed-limit")}</dt>
     <dd class="limit-wrap">
       <button class="limit" onclick={() => (limitMenu = !limitMenu)}><Gauge size={13} /> {limitLabel(d.speed_limit)}</button>

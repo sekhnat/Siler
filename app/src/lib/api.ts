@@ -228,6 +228,7 @@ export interface Download {
   /** The path inside the archive, for a file fetched out of a ZIP. */
   zip_path: string | null;
   command: CommandResult | null;
+  traffic?: Traffic;
   /** Checking or unpacking a finished transfer. */
   phase?: PhaseProgress | null;
 }
@@ -388,6 +389,16 @@ export interface ProgressItem {
   media?: MediaProgress | null;
   phase?: PhaseProgress | null;
   source_bytes?: number[];
+  traffic?: Traffic;
+}
+
+/** What a download cost on the network beyond its own bytes; absent until measured. */
+export interface Traffic {
+  /** Every byte received. */
+  wire: number;
+  /** Received bytes thrown away (dropped connections, restarts, damaged pieces). */
+  wasted: number;
+  retries: number;
 }
 
 export type ContainerChoice = "auto" | "mp4" | "mkv" | "original";
@@ -541,6 +552,7 @@ export interface Settings {
   global_speed_limit: number;
   max_retries: number;
   min_split_size: number;
+  durable_checkpoints: boolean;
   resume_on_startup: boolean;
   user_agent: string;
   auto_start_browser_downloads: boolean;

@@ -58,6 +58,11 @@ pub(crate) struct Running {
     /// Phase and piece counts of a media download (None for a file).
     pub media: Mutex<Option<crate::media::MediaProgress>>,
     pub downloaded: AtomicU64,
+    /// Bytes received from the network, every one counted once, whether kept or not.
+    pub wire: AtomicU64,
+    /// Received bytes thrown away: see [`crate::Traffic`].
+    pub wasted: AtomicU64,
+    pub retries: AtomicU32,
     pub ranged: AtomicBool,
     pub active: AtomicU32,
     pub speed: AtomicU64,
@@ -84,11 +89,29 @@ impl Running {
             table: Mutex::new(Table::default()),
             media: Mutex::new(None),
             downloaded: AtomicU64::new(0),
+            wire: AtomicU64::new(0),
+            wasted: AtomicU64::new(0),
+            retries: AtomicU32::new(0),
             ranged: AtomicBool::new(false),
             active: AtomicU32::new(0),
             speed: AtomicU64::new(0),
             limiter: RateLimiter::new(speed_limit),
             sample: Mutex::new((Instant::now(), 0, 0.0)),
+        }
+    }
+
+    /// Continues counting from what the download's earlier runs cost.
+    pub fn seed_traffic(&self, t: crate::Traffic) {
+        self.wire.store(t.wire, Relaxed);
+        self.wasted.store(t.wasted, Relaxed);
+        self.retries.store(t.retries, Relaxed);
+    }
+
+    pub fn traffic(&self) -> crate::Traffic {
+        crate::Traffic {
+            wire: self.wire.load(Relaxed),
+            wasted: self.wasted.load(Relaxed),
+            retries: self.retries.load(Relaxed),
         }
     }
 
@@ -315,11 +338,19 @@ async fn fetch(t: &Transfer, idx: usize, source: &Source) -> Result<(), WorkerEr
     })?;
     // Where this connection's bytes not yet handed to the disk start.
     let mut unflushed = pos;
+    // Whatever this attempt receives and doesn't write is waste, however it ends.
+    let mut attempt = Attempt {
+        run: &t.run,
+        received: 0,
+        kept: 0,
+    };
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(WorkerError::Transient)?;
         if chunk.is_empty() {
             continue;
         }
+        t.run.wire.fetch_add(chunk.len() as u64, Relaxed);
+        attempt.received += chunk.len() as u64;
         t.global.acquire(chunk.len() as u64).await;
         t.run.limiter.acquire(chunk.len() as u64).await;
         if t.global.over_budget() {
@@ -342,6 +373,7 @@ async fn fetch(t: &Transfer, idx: usize, source: &Source) -> Result<(), WorkerEr
                     .map_err(|e| WorkerError::Fatal(e.into()))?;
                 seg.pos += n as u64;
                 t.run.downloaded.fetch_add(n as u64, Relaxed);
+                attempt.kept += n as u64;
                 source.bytes.fetch_add(n as u64, Relaxed);
                 source.fails.store(0, Relaxed);
             }
@@ -366,6 +398,23 @@ async fn fetch(t: &Transfer, idx: usize, source: &Source) -> Result<(), WorkerEr
         Ok(())
     } else {
         Err(WorkerError::Transient("connection closed early".into()))
+    }
+}
+
+/// One attempt at a range: on its end, what it received but didn't write (a dropped
+/// connection's last chunk, the tail past a segment that was split meanwhile) is waste.
+struct Attempt<'a> {
+    run: &'a Running,
+    received: u64,
+    kept: u64,
+}
+
+impl Drop for Attempt<'_> {
+    fn drop(&mut self) {
+        let lost = self.received.saturating_sub(self.kept);
+        if lost > 0 {
+            self.run.wasted.fetch_add(lost, Relaxed);
+        }
     }
 }
 
@@ -612,6 +661,8 @@ pub(crate) async fn transfer(
                                 // Can't resume mid-stream without ranges: start over.
                                 let seg = &mut table.segs[idx];
                                 t.run.downloaded.fetch_sub(seg.downloaded(), Relaxed);
+                                // Fetched again from the start: what it had is waste now.
+                                t.run.wasted.fetch_add(seg.downloaded(), Relaxed);
                                 seg.pos = seg.start;
                             }
                             table.busy[idx] = true;
@@ -628,6 +679,7 @@ pub(crate) async fn transfer(
                     } else {
                         Some(src)
                     };
+                    t.run.retries.fetch_add(1, Relaxed);
                     match retry_src {
                         Some(s) => crew.spawn(&t, idx, s, retry_delay(attempt, after)),
                         None => t.run.table.lock().unwrap().busy[idx] = false,

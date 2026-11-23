@@ -235,6 +235,9 @@ pub struct DownloadInfo {
     pub zip_path: Option<String>,
     /// The command run after it finished.
     pub command: Option<crate::extras::CommandResult>,
+    /// What it cost on the network beyond its own bytes (see [`Traffic`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub traffic: Option<Traffic>,
 }
 
 /// One address of a download, with what it delivered.
@@ -310,6 +313,26 @@ pub struct ProgressItem {
     /// Bytes per source, in the order of `DownloadInfo::sources`, when there are mirrors.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub source_bytes: Vec<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub traffic: Option<Traffic>,
+}
+
+/// What a download cost on the network beyond its own bytes: everything received (`wire`),
+/// the part of it thrown away (a dropped connection's unwritten bytes, a restart's discarded
+/// data, damaged pieces fetched again), and the retries it took. Counted over the download's
+/// whole life, across pauses; absent until something was measured.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct Traffic {
+    pub wire: u64,
+    pub wasted: u64,
+    pub retries: u32,
+}
+
+impl Traffic {
+    /// None when nothing was measured (a download from before Siler counted, or not started).
+    pub fn measured(self) -> Option<Traffic> {
+        (self.wire > 0).then_some(self)
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]

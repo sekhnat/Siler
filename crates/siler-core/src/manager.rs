@@ -1,6 +1,6 @@
 use reqwest::Url;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
@@ -8,6 +8,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::runtime::Handle;
 use tokio::sync::broadcast;
 
+use crate::Traffic;
+use crate::checkpoint::{Checkpoints, Snapshot};
 use crate::checksum::{self, Algo, Checksum, ChecksumSource};
 use crate::error::MediaError;
 use crate::extras::{CommandResult, Extras, Mirror, MirrorOrigin, VerifyResult};
@@ -16,6 +18,7 @@ use crate::media::{
     self, FfmpegStatus, JobKind, MediaInfo, MediaProbe, MediaRecord, NewMediaDownload, SourceHint,
 };
 use crate::net::{Login, Net, host_key};
+use crate::partfile;
 use crate::probe::{self, ProbeResult};
 use crate::proxy::ProxyRoute;
 use crate::queue::{MAIN_QUEUE, Queue};
@@ -151,6 +154,7 @@ fn reset_progress(r: &mut Record) {
     r.error = None;
     r.notice = None;
     r.completed_at = None;
+    r.traffic = Traffic::default();
 }
 
 /// Renames, or copies and deletes when the target is on another filesystem.
@@ -517,6 +521,8 @@ impl Engine {
             kind: JobKind::File,
             media: None,
             extras,
+            traffic: Traffic::default(),
+            auto_connections: false,
         };
         rec.id = self.inner.store.lock().unwrap().insert(&rec)?;
         let id = rec.id;
@@ -1568,6 +1574,8 @@ impl Engine {
                 link,
                 ..Default::default()
             },
+            traffic: Traffic::default(),
+            auto_connections: false,
         };
         rec.id = self.inner.store.lock().unwrap().insert(&rec)?;
         let id = rec.id;
@@ -2068,6 +2076,7 @@ impl Inner {
             sources: source_views(r, run),
             zip_path: r.extras.zip_entry.as_ref().map(|z| z.path.clone()),
             command: r.extras.command.clone(),
+            traffic: run.map_or(r.traffic, Running::traffic).measured(),
         }
     }
 
@@ -2117,6 +2126,7 @@ impl Inner {
                         .get(&id)
                         .map(|r| source_views(r, Some(run)).iter().map(|v| v.bytes).collect())
                         .unwrap_or_default(),
+                    traffic: run.traffic().measured(),
                 }
             })
             .collect();
@@ -2238,6 +2248,7 @@ impl Inner {
             rec.needs_host_key = None;
             rec.extras.refresh.expired = false;
             let run = Arc::new(Running::new(rec.speed_limit, rec.connections));
+            run.seed_traffic(rec.traffic);
             running.insert(id, run.clone());
             if let Err(e) = self.persist_and_emit(rec, Some(&run)) {
                 tracing::warn!("failed to persist download {id}: {e}");
@@ -2563,6 +2574,7 @@ impl Inner {
                         rec.downloaded = run.downloaded.load(Relaxed);
                     }
                     drop(table);
+                    rec.traffic = run.traffic();
                     match (&result, reason) {
                         (_, STOP_SHUTDOWN) => {
                             // Keep the "running" status on disk so it resumes on next start.
@@ -2570,6 +2582,7 @@ impl Inner {
                                 id,
                                 rec.downloaded,
                                 &rec.segments,
+                                rec.traffic,
                             );
                         }
                         (Err(e), 0) if seek.is_some() => {
@@ -2838,6 +2851,10 @@ impl Inner {
             segments.clear();
             notice = Some("The partial file was missing, so the download started over.");
         }
+        if segments.is_empty() && !rec.segments.is_empty() {
+            // Starting over: what it had will be fetched again.
+            run.wasted.fetch_add(rec.downloaded, Relaxed);
+        }
 
         let ranged = probe.resumable && total.is_some();
         let primary = Url::parse(&probe.final_url).map_err(|e| Error::InvalidUrl(e.to_string()))?;
@@ -2875,15 +2892,15 @@ impl Inner {
                 }
             };
             let part = filename::part_path(&dir, &name);
-            let file = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(false)
-                .open(&part)?;
+            // Never through a link or into a file with other names (see `partfile`). Our own
+            // partial is continued, or replaced when the download starts over.
+            let file = match (own_part, segments.is_empty()) {
+                (true, false) => partfile::resume(&part)?,
+                (true, true) => partfile::replace(&part)?,
+                (false, _) => partfile::create(&part)?,
+            };
             *run.part.lock().unwrap() = Some(part.clone());
             if segments.is_empty() {
-                file.set_len(0)?;
                 if let Some(total) = total.filter(|&t| t > 0) {
                     preallocate(&file, total)?;
                 }
@@ -2932,15 +2949,34 @@ impl Inner {
             global: self.global.clone(),
             ranged,
         });
+        // Never claims more than the mode promises is on disk (see `checkpoint`).
+        let checkpoints = Checkpoints::new(s.durable_checkpoints);
         let checkpoint = || {
-            if run.ranged.load(Relaxed) {
-                let segs = run.table.lock().unwrap().segs.clone();
-                let _ = self.store.lock().unwrap().update_progress(
-                    id,
-                    run.downloaded.load(Relaxed),
-                    &segs,
-                );
+            if !run.ranged.load(Relaxed) {
+                return;
             }
+            let snap = {
+                // Taken together: a chunk is written and counted under this lock.
+                let table = run.table.lock().unwrap();
+                Snapshot {
+                    downloaded: run.downloaded.load(Relaxed),
+                    segments: table.segs.clone(),
+                    traffic: run.traffic(),
+                }
+            };
+            let (t, me) = (t.clone(), self.clone());
+            checkpoints.save(
+                snap,
+                move || t.file.sync_data(),
+                move |snap| {
+                    let _ = me.store.lock().unwrap().update_progress(
+                        id,
+                        snap.downloaded,
+                        &snap.segments,
+                        snap.traffic,
+                    );
+                },
+            );
         };
         let limits = Limits {
             min_split: s.min_split_size,
@@ -2950,8 +2986,23 @@ impl Inner {
         let mut repaired = false;
         loop {
             let outcome = task::transfer(t.clone(), limits.clone(), &checkpoint).await;
+            checkpoints.settle().await;
             self.save_source_stats(id, &sources);
-            match outcome? {
+            let outcome = match outcome {
+                Ok(outcome) => outcome,
+                Err(e) => {
+                    // `run` saves the segments next: what they cover must be on disk first,
+                    // as on a pause.
+                    let t = t.clone();
+                    match tokio::task::spawn_blocking(move || t.file.sync_data()).await {
+                        Ok(Err(sync)) => tracing::warn!(%sync, "couldn't flush a failed download"),
+                        Err(join) => tracing::warn!(%join, "couldn't flush a failed download"),
+                        Ok(Ok(())) => {}
+                    }
+                    return Err(e);
+                }
+            };
+            match outcome {
                 Outcome::Stopped => {
                     let t = t.clone();
                     let _ = tokio::task::spawn_blocking(move || t.file.sync_data()).await;
@@ -2985,6 +3036,7 @@ impl Inner {
                     repaired = true;
                     let segs = repair_segments(size, &bad);
                     let left: u64 = bad.iter().map(|(a, b)| b - a).sum();
+                    run.wasted.fetch_add(left, Relaxed);
                     *run.table.lock().unwrap() = Table::new(segs);
                     run.downloaded.store(size - left, Relaxed);
                     self.note(
@@ -3264,10 +3316,15 @@ impl Inner {
                 stop.clone(),
             );
             let r = tokio::task::spawn_blocking(move || {
-                zip::unpack(&part, &dest, &entry, &run2.phase_done, &stop2)
+                // The scratch file is in the user's folder: never through what is there.
+                let out = match entry.method {
+                    0 => None,
+                    _ => Some(partfile::replace(&dest)?),
+                };
+                Ok::<_, Error>(zip::unpack(&part, out, &entry, &run2.phase_done, &stop2))
             })
             .await
-            .map_err(|e| Error::Protocol(e.to_string()))?;
+            .map_err(|e| Error::Protocol(e.to_string()))??;
             match r {
                 Ok(true) => {}
                 Ok(false) => {
@@ -3357,6 +3414,7 @@ impl Inner {
             name.clone()
         };
         let path = dir.join(&final_name);
+        partfile::publishable(&out)?;
         std::fs::rename(&out, &path)?;
         if out != job.part {
             let _ = std::fs::remove_file(&job.part);
@@ -3364,6 +3422,7 @@ impl Inner {
         run.part.lock().unwrap().take();
         let r = st.records.get_mut(&id).ok_or(Error::NotFound)?;
         r.filename = Some(final_name.clone());
+        r.traffic = run.traffic();
         r.status = Status::Completed;
         r.completed_at = Some(now_ms());
         r.segments.clear();

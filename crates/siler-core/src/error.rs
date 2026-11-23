@@ -29,6 +29,10 @@ pub enum Error {
     Exists(String),
     #[error("The file was moved or deleted")]
     FileMissing,
+    /// Something other than Siler's own partial file is where it writes the download: a link,
+    /// or a file with other names.
+    #[error("{} is a link or has other names pointing at it, so Siler won't write to it", .0.display())]
+    UnsafePart(std::path::PathBuf),
     /// The server answered 401: it wants a login, or refused the one sent.
     #[error("{}", auth_message(host, *rejected, *asked))]
     AuthRequired {
@@ -207,6 +211,7 @@ impl Error {
             Error::LinkMismatch(text) => ("text", vec![("text", text.clone())]),
             Error::Exists(name) => ("exists", vec![("name", name.clone())]),
             Error::FileMissing => ("file-missing", vec![]),
+            Error::UnsafePart(path) => ("unsafe-part", vec![("path", path.display().to_string())]),
             Error::AuthRequired {
                 host,
                 rejected,

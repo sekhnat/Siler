@@ -14,7 +14,7 @@ use reqwest::{StatusCode, Url};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
 use siler_media::policy;
 
@@ -283,12 +283,11 @@ pub(crate) async fn fetch_object(
         if Some(len) != resume_from {
             return Err(Error::Protocol("The partial file changed on disk".into()));
         }
-        tokio::fs::OpenOptions::new()
-            .append(true)
-            .open(&part)
-            .await?
+        let mut file = crate::partfile::resume_async(part.clone()).await?;
+        file.seek(std::io::SeekFrom::End(0)).await?;
+        file
     } else {
-        tokio::fs::File::create(&part).await?
+        crate::partfile::replace_async(part.clone()).await?
     };
     // Until a piece is complete, its bytes are taken back if this stops (a failure, a pause
     // that drops this future): only a finished piece counts. A whole file keeps its part.
@@ -366,11 +365,13 @@ pub(crate) async fn fetch_whole_chunked(
                 sized(n);
             }
             total = size.or(total);
-            let file = tokio::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&part)
-                .await?;
+            let file = if have > 0 {
+                let mut file = crate::partfile::resume_async(part.clone()).await?;
+                file.seek(std::io::SeekFrom::End(0)).await?;
+                file
+            } else {
+                crate::partfile::replace_async(part.clone()).await?
+            };
             (file, Some(last - start + 1))
         } else {
             // The whole file instead of a range: start over and take all of it.
@@ -378,7 +379,7 @@ pub(crate) async fn fetch_whole_chunked(
             if let Some(n) = resp.content_length() {
                 sized(n);
             }
-            (tokio::fs::File::create(&part).await?, None)
+            (crate::partfile::replace_async(part.clone()).await?, None)
         };
         let mut written = 0u64;
         let mut stream = resp.into_stream();
@@ -654,5 +655,37 @@ mod tests {
             .expect("fetched");
         assert_eq!(n, 100_000);
         assert_eq!(std::fs::read(&dest).expect("read"), body);
+    }
+
+    #[tokio::test]
+    async fn an_object_is_never_written_through_a_planted_link() {
+        let (url, _asked, _body) = ranged_server(true).await;
+        let net = Arc::new(Net::new(&Default::default(), None).expect("net"));
+        let http = Http::new(net, &url, RequestMeta::default(), "ua", true);
+        let limit = RateLimiter::new(0);
+        let lim = Limiters {
+            global: &limit,
+            run: &limit,
+            count: None,
+        };
+        let t = tempfile::tempdir().expect("tempdir");
+        let precious = t.path().join("precious");
+        std::fs::write(&precious, b"not yours").expect("write");
+        let dest = t.path().join("obj.bin");
+        std::os::unix::fs::symlink(&precious, part_of(&dest)).expect("symlink");
+        let unsafe_part = |r: Result<u64>| matches!(r, Err(Error::UnsafePart(_)));
+
+        // A piece, a whole file continued from its part, and one fetched in ranges.
+        assert!(unsafe_part(
+            fetch_object(&http, &url, &dest, Some((0, 999)), false, &lim).await
+        ));
+        assert!(unsafe_part(
+            fetch_object(&http, &url, &dest, None, true, &lim).await
+        ));
+        assert!(unsafe_part(
+            fetch_whole_chunked(&http, &url, &dest, 32_768, &lim, &|_| {}).await
+        ));
+        assert_eq!(std::fs::read(&precious).expect("read"), b"not yours");
+        assert!(!dest.exists());
     }
 }

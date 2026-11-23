@@ -452,6 +452,7 @@
         <input class="input mono" bind:value={s.user_agent} spellcheck="false" />
         <div class="hint">{t("settings-used-for-links-added-by-hand")}</div>
       </div>
+      {@render toggle(t("settings-extra-safe-resume"), t("settings-extra-safe-resume-hint"), s.durable_checkpoints, (v) => (s.durable_checkpoints = v))}
       {@render toggle(t("settings-auto-refresh-links"), t("settings-auto-refresh-links-hint"), s.auto_refresh_links, (v) => (s.auto_refresh_links = v))}
       {@render toggle(t("settings-data-quota"), t("settings-download-at-most-so-much-in"), s.quota.enabled, (v) => (s.quota.enabled = v))}
       {#if s.quota.enabled}
