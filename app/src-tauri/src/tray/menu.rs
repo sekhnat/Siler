@@ -82,6 +82,9 @@ fn download(line: &Line) -> MenuItem<Tray> {
             engine(app, |e| e.finish(id))
         }));
     }
+    actions.push(item(&tr("tray-show-progress"), move |app| {
+        crate::progress::open(app, id, ksni::current_xdg_activation_token())
+    }));
     actions.push(item(&tr("tray-pause"), move |app| {
         engine(app, |e| e.pause(id))
     }));

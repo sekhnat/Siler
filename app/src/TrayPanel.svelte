@@ -3,7 +3,7 @@
   // The window is see-through and as tall as this content.
   import { onMount } from "svelte";
   import { listen } from "@tauri-apps/api/event";
-  import { CircleAlert, CircleStop, ExternalLink, FolderOpen, Gauge, Pause, Play, X } from "@lucide/svelte";
+  import { AppWindow, CircleAlert, CircleStop, ExternalLink, FolderOpen, Gauge, Pause, Play, X } from "@lucide/svelte";
   import { t } from "./lib/i18n";
   import { api, type Download, type Settings } from "./lib/api";
   import { bytes, duration, limitLabel, nameFromUrl, relativeTime, speed } from "./lib/format";
@@ -19,10 +19,26 @@
   const FINISHED_SHOWN = 3;
 
   let settings = $state<Settings | null>(null);
+  /** Siler's icon lists the downloads; the progress windows' icon lists those windows. */
+  let mode = $state<"downloads" | "stack">("downloads");
+  let stackIds = $state<number[]>([]);
+  const stacked = $derived(stackIds.map((id) => store.items[id]).filter((d): d is Download => !!d));
+
+  async function setMode(m: "downloads" | "stack") {
+    mode = m;
+    if (m === "stack") {
+      const list = await api.progressInTray().catch(() => []);
+      stackIds = list.map((d) => d.id);
+    }
+  }
+
+  async function restore(id: number) {
+    await attempt(api.progressRestore(id));
+  }
   let confirming = $state<number | null>(null);
   let limitOpen = $state(false);
   let panel: HTMLElement;
-  let list: HTMLElement;
+  let list = $state<HTMLElement>();
 
   const needsYou = (d: Download) => !!(d.needs_login || d.needs_host_key || d.needs_link) && d.status !== "completed";
   const byQueue = (a: Download, b: Download) => a.position - b.position || a.id - b.id;
@@ -105,7 +121,9 @@
     const stopRepainting = repaintWhole();
     store.init();
     api.getSettings().then((s) => (settings = s));
+    api.panelMode().then(setMode);
     const unlisten = [
+      listen<"downloads" | "stack">("panel-mode", (e) => setMode(e.payload)),
       listen<Settings>("settings-changed", (e) => (settings = e.payload)),
       listen("tray-opened", () => {
         confirming = null;
@@ -149,6 +167,29 @@
     <span class="total num">↓ {speed(running.length ? store.totalSpeed : 0)}</span>
   </header>
 
+  {#if mode === "stack"}
+  <div class="list" bind:this={list}>
+    <h3>{t("tray-panel-progress-windows")}</h3>
+    {#each stacked as d (d.id)}
+      <button class="item running stacked" onclick={() => restore(d.id)} title={t("tray-panel-restore")}>
+        <div class="top">
+          <span class="name truncate" title={nameOf(d)}>{nameOf(d)}</span>
+          <span class="restore"><AppWindow size={14} /></span>
+        </div>
+        <div class="bar">
+          <ProgressBar value={progressOf(d)} status={d.status} height={6} />
+          <span class="pct num">{d.total_size || d.media_progress ? `${Math.floor(progressOf(d))}%` : ""}</span>
+        </div>
+        <div class="line num truncate">{d.status === "downloading" ? runningLine(d) : `${statusText(d)} · ${sizeText(d)}`}</div>
+      </button>
+    {/each}
+  </div>
+  <footer>
+    <button class="btn btn-ghost btn-sm" onclick={() => attempt(api.progressRestoreAll())}><AppWindow size={13} />{t("tray-stack-restore-all")}</button>
+    <span class="grow"></span>
+    <button class="btn btn-sm open" onclick={openSiler}>{t("tray-panel-open-siler")}</button>
+  </footer>
+  {:else}
   <div class="list" bind:this={list}>
     {#each running as d (d.id)}
       <div class="item running">
@@ -270,6 +311,7 @@
     </div>
     <button class="btn btn-sm open" onclick={openSiler}>{t("tray-panel-open-siler")}</button>
   </footer>
+  {/if}
 </main>
 
 <Toasts />
@@ -447,6 +489,26 @@
     gap: 3px;
     padding: 24px 18px;
     text-align: center;
+  }
+  .stacked {
+    display: block;
+    width: 100%;
+    text-align: left;
+    font: inherit;
+    color: inherit;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+  }
+  .stacked:hover .restore {
+    color: var(--accent-text);
+  }
+  .restore {
+    color: var(--muted);
+    display: flex;
+  }
+  .grow {
+    flex: 1;
   }
   footer {
     flex: none;

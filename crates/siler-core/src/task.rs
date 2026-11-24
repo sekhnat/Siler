@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 use crate::gate::HostGates;
 use crate::net::{Net, host_key};
 use crate::ratelimit::RateLimiter;
-use crate::segment::Table;
+use crate::segment::{ConnState, Table};
 use crate::transport::{self, OpenError};
 use crate::{Error, RequestMeta, Result};
 
@@ -288,6 +288,13 @@ impl Drop for ActiveGuard<'_> {
     }
 }
 
+/// Records what the connection on segment `idx` is doing.
+fn conn(t: &Transfer, idx: usize, state: ConnState) {
+    if let Some(c) = t.run.table.lock().unwrap().conns.get_mut(idx) {
+        *c = state;
+    }
+}
+
 async fn worker(
     t: Arc<Transfer>,
     idx: usize,
@@ -299,6 +306,7 @@ async fn worker(
     // lock without awaiting, so a released worker never leaves a half-recorded chunk.
     let run = async {
         if !delay.is_zero() {
+            conn(&t, idx, ConnState::Retrying);
             tokio::time::sleep(delay).await;
         }
         let source = &t.sources[src];
@@ -329,10 +337,12 @@ async fn fetch(t: &Transfer, idx: usize, source: &Source) -> Result<(), WorkerEr
     let opened = match transport::kind(&source.url) {
         transport::Kind::Http => {
             // A server that told another download to wait gets nothing new from this one.
+            conn(t, idx, ConnState::Waiting);
             _pass = match t.gates.enter(&source.host, &t.run.cancel).await {
                 Some(p) => p,
                 None => return Err(WorkerError::Released),
             };
+            conn(t, idx, ConnState::Connecting);
             // Cookies, referrer and the browser's headers belong to the download's own server.
             let other_meta;
             let meta = if source.index == 0 {
@@ -355,6 +365,7 @@ async fn fetch(t: &Transfer, idx: usize, source: &Source) -> Result<(), WorkerEr
                 })
         }
         _ => {
+            conn(t, idx, ConnState::Connecting);
             let (start, stop) = match range {
                 Some((a, b)) => (a, Some(b)),
                 None => (t.base, None),
@@ -367,6 +378,7 @@ async fn fetch(t: &Transfer, idx: usize, source: &Source) -> Result<(), WorkerEr
         OpenError::Throttled(code, after) => WorkerError::Throttled(code, after),
         OpenError::Fatal(e) => WorkerError::Fatal(e),
     })?;
+    conn(t, idx, ConnState::Receiving);
     // Where this connection's bytes not yet handed to the disk start.
     let mut unflushed = pos;
     // Whatever this attempt receives and doesn't write is waste, however it ends.
@@ -632,7 +644,7 @@ pub(crate) async fn transfer(
                         return Err(Error::Protocol(format!("Connection worker crashed: {e}")));
                     }
                 };
-                t.run.table.lock().unwrap().busy[idx] = false;
+                t.run.table.lock().unwrap().release(idx);
                 crew.forget(idx);
                 let source = &t.sources[src];
                 let others = Crew::usable(&t) > 1;
@@ -703,6 +715,7 @@ pub(crate) async fn transfer(
                                 seg.pos = seg.start;
                             }
                             table.busy[idx] = true;
+                            table.conns[idx] = ConnState::Retrying;
                         }
                         attempt
                     };
@@ -724,7 +737,7 @@ pub(crate) async fn transfer(
                     t.run.retries.fetch_add(1, Relaxed);
                     match retry_src {
                         Some(s) => crew.spawn(&t, idx, s, delay),
-                        None => t.run.table.lock().unwrap().busy[idx] = false,
+                        None => t.run.table.lock().unwrap().release(idx),
                     }
                 }
                 crew.fill(&t, wanted, limits.min_split);

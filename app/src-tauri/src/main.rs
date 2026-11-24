@@ -12,6 +12,7 @@ mod logging;
 mod logins;
 mod media;
 mod power;
+mod progress;
 mod skins;
 mod sound;
 mod tools;
@@ -423,6 +424,7 @@ fn forward_engine_events(app: AppHandle, engine: Engine, activity: watch::Sender
         loop {
             match rx.recv().await {
                 Ok(ev) => {
+                    progress::on_event(&app, &ev);
                     let settings = engine.settings();
                     match &ev {
                         Event::Completed { .. } => {
@@ -530,7 +532,7 @@ fn forward_engine_events(app: AppHandle, engine: Engine, activity: watch::Sender
                         let visible = app
                             .try_state::<AppState>()
                             .is_some_and(|s| s.ui_visible.load(Ordering::Relaxed));
-                        if !visible && !tray::panel::is_open() {
+                        if !visible && !tray::panel::is_open() && !progress::any_shown() {
                             continue;
                         }
                     }
@@ -884,6 +886,9 @@ fn main() {
                     app.state::<AppState>()
                         .tray_available
                         .store(has_tray, Ordering::Relaxed);
+                    if has_tray {
+                        tray::stack::start(handle.clone());
+                    }
                     // Without a tray, a hidden window couldn't be brought back.
                     if !args.background || !has_tray {
                         show_main(app.handle());
@@ -901,6 +906,9 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            if let WindowEvent::Destroyed = event {
+                progress::destroyed(window.label());
+            }
             if window.label() != "main" {
                 return;
             }
@@ -1024,6 +1032,19 @@ fn main() {
             commands::get_when_done,
             commands::set_when_done,
             commands::test_sound,
+            progress::get_download,
+            progress::show_progress,
+            progress::progress_to_tray,
+            progress::progress_restore,
+            progress::progress_restore_all,
+            progress::progress_in_tray,
+            progress::set_on_done,
+            progress::remember_server_speed_limit,
+            progress::server_speed_limit,
+            progress::set_progress_details,
+            progress::set_complete_dialog,
+            progress::open_with,
+            tray::panel::panel_mode,
             skins::list_skins,
             skins::import_skin,
             skins::export_skin,

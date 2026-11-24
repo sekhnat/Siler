@@ -67,6 +67,16 @@ siler --import links.txt
 - **Speed limits:** global and per download, including custom values. A **data quota** allows at most so many MB every so many hours; downloads wait for the next period, and a banner offers **Ignore for this period**.
 - **A command after each download** (Settings → Transfers): any program, with `{path}`, `{dir}`, `{name}`, `{url}` and `{size}` filled in. Its exit code and output show with the download. **Try it on a file…** tests it first.
 
+## Progress windows
+
+Like IDM, a download you start gets a small window of its own (Settings → General → **Progress windows** turns them off). It opens when the download really starts: from the Add window, a browser hand-over, **Resume** or **Start now** on one download. Downloads started by a queue, **Resume all** or Siler's start-up don't open one. A double-click on a running download, **Show progress** in its right-click menu, or **Show progress** in the tray menu opens it at any time.
+
+- **Download status:** the address, status, size, how much is done, speed, time left and whether it can be resumed, with **Hide details**, **Pause**/**Resume** and **Cancel** (Cancel pauses the download and closes the window; it stays in the list). The details show where each connection starts in the file and a table of connections: what each has fetched and what it is doing (connecting, receiving data, waiting for the server, trying again, finished).
+- **Speed limiter:** a limit for this download, and **Remember this limit** for its server: every new download from that server then starts with it (Settings → Transfers lists it beside the server's connection limit).
+- **Options on completion:** show the **Download complete** window, open the file, and then quit Siler, sleep, hibernate or shut down. Sleep, hibernate and shut down count down for a minute first, as a queue's do.
+- **Minimize** (the − in its title bar, or Esc) puts the window away in the tray. All the windows put away there share one tray icon, which shows their overall progress and a bar per window (up to three). A click on it brings back the only window, or with several opens a list of them beside the icon; its right-click menu brings back one or all of them. Without a tray, the window is minimised instead.
+- **Download complete** (Settings → General → **“Download complete” windows**) shows where the file went, with **Open**, **Open with…** (the desktop's application chooser), **Open folder** and **Don’t show this window again**. It opens for downloads that had a progress window, or for any download whose options ask for it.
+
 ## The list
 
 - **Cards or Details:** the toolbar's view button switches between cards and a **Details** table. In Details, click a column's title to sort by it (again to reverse), drag its edge to resize it, drag the title to move it, and right-click the titles to choose the columns: name, size, progress, speed, time left, status, queue, server, type, added, finished, connections.

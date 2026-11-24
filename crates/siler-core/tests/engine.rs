@@ -14,9 +14,9 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use siler_core::proxy::{ProxyMode, ProxyScheme};
 use siler_core::{
-    AfterDone, Category, DownloadInfo, EditDownload, Engine, Error, Event, Login, LoginRequest,
-    MAIN_QUEUE, NewDownload, OnConflict, Queue, QueueMove, RequestMeta, ServerLimit, Settings,
-    Status,
+    AfterDone, Category, ConnState, DownloadInfo, EditDownload, Engine, Error, Event, Login,
+    LoginRequest, MAIN_QUEUE, NewDownload, OnConflict, Queue, QueueMove, RequestMeta, ServerLimit,
+    Settings, Status,
 };
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -538,6 +538,92 @@ async fn segmented_download_matches_source() {
     // that they are all accounted for is checked.
     let t = assert_traffic_adds_up(&d);
     assert_eq!(t.retries, 0);
+}
+
+#[tokio::test]
+async fn progress_says_what_each_connection_does() {
+    let srv = Server::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let e = engine(tmp.path(), |s| s.connections = 4).await;
+    let mut events = e.subscribe();
+    let id = add(&e, srv.url("/file/a.bin?rate=4194304"));
+    // While it runs, one state per segment, and some connection receiving.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "no progress with a receiving connection"
+        );
+        let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(5), events.recv()).await else {
+            continue;
+        };
+        if let Event::Progress { items, .. } = ev
+            && let Some(p) = items.iter().find(|p| p.id == id)
+            && !p.segments.is_empty()
+        {
+            assert_eq!(p.conns.len(), p.segments.len());
+            if p.conns.contains(&ConnState::Receiving) {
+                break;
+            }
+        }
+    }
+    let d = wait_finished(&e, id).await;
+    assert_complete(&d, &srv.data(SIZE));
+    assert_eq!(d.conns.len(), d.segments.len());
+    assert!(
+        d.conns.iter().all(|c| *c == ConnState::Finished),
+        "{:?}",
+        d.conns
+    );
+}
+
+#[tokio::test]
+async fn a_speed_limit_remembered_for_the_server_is_used() {
+    let srv = Server::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let e = engine(tmp.path(), |s| s.remember_speed_limit("127.0.0.1", 2 * MIB)).await;
+    let size = 3 * MIB as usize;
+    let started = Instant::now();
+    let id = add(&e, srv.url(&format!("/file/a.bin?size={size}")));
+    let d = wait_finished(&e, id).await;
+    assert_complete(&d, &srv.data(size));
+    assert_eq!(
+        d.speed_limit,
+        2 * MIB,
+        "the server's limit became the download's"
+    );
+    let elapsed = started.elapsed().as_secs_f64();
+    assert!(elapsed > 1.3, "3 MiB at 2 MiB/s took {elapsed:.2}s");
+}
+
+#[tokio::test]
+async fn on_completion_options_are_kept() {
+    let srv = Server::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let on_done = siler_core::extras::OnDone {
+        complete_dialog: Some(false),
+        open_file: true,
+        after: AfterDone::Sleep,
+    };
+    let id = {
+        let e = engine(tmp.path(), |_| {}).await;
+        let id = e
+            .add(NewDownload {
+                url: srv.url("/file/a.bin"),
+                start_paused: true,
+                ..Default::default()
+            })
+            .unwrap();
+        e.set_on_done(id, Some(on_done.clone())).unwrap();
+        assert_eq!(e.get(id).unwrap().on_done.as_ref(), Some(&on_done));
+        e.shutdown().await;
+        id
+    };
+    let e = Engine::open(tmp.path().join("data")).unwrap();
+    assert_eq!(e.get(id).unwrap().on_done, Some(on_done));
+    // Back to what the settings say.
+    e.set_on_done(id, Some(Default::default())).unwrap();
+    assert_eq!(e.get(id).unwrap().on_done, None);
 }
 
 #[tokio::test]
@@ -1512,6 +1598,7 @@ async fn connections_shared_per_server() {
     s.server_limits = vec![ServerLimit {
         host: "127.0.0.1".into(),
         connections: 32,
+        speed_limit: 0,
     }];
     e.set_settings(s).unwrap();
     let da = wait_finished(&e, a).await;

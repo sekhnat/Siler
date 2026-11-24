@@ -199,6 +199,127 @@ fn draw(logo: &Logo, size: usize, look: &Look) -> Vec<u8> {
         .collect()
 }
 
+/// How the progress windows' icon looks: a ring around a down arrow, over one bar for each
+/// window in the tray (up to three).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StackLook {
+    pub ring: Ring,
+    pub bars: u8,
+    pub accent: [u8; 3],
+}
+
+impl StackLook {
+    pub fn of(ring: Ring, windows: usize, accent: [u8; 3]) -> StackLook {
+        StackLook {
+            ring,
+            bars: windows.clamp(1, 3) as u8,
+            accent,
+        }
+    }
+}
+
+const ARROW: [u8; 3] = [0x22, 0xc5, 0x5e];
+
+/// Whether a point of the unit square is on the arrow, or on one of the bars under it.
+fn on_glyph(x: f32, y: f32, bars: u8) -> (bool, bool) {
+    let shaft = (0.445..0.555).contains(&x) && (0.20..0.42).contains(&y);
+    // A triangle pointing down: (0.29, 0.40) (0.71, 0.40) (0.5, 0.60).
+    let head = (0.40..0.60).contains(&y) && (x - 0.5).abs() <= 0.21 * (0.60 - y) / 0.20;
+    let bar = (0..bars).any(|i| {
+        let top = 0.64 + f32::from(i) * 0.075;
+        (0.33..0.67).contains(&x) && (top..top + 0.045).contains(&y)
+    });
+    (shaft || head, bar)
+}
+
+fn draw_stack(size: usize, look: &StackLook) -> Vec<u8> {
+    let mut px = vec![[0f32; 4]; size * size];
+    let s = size as f32;
+    // Four by four samples a pixel for the glyph's edges.
+    const N: usize = 4;
+    for y in 0..size {
+        for x in 0..size {
+            let (mut arrow, mut bar) = (0f32, 0f32);
+            for sy in 0..N {
+                for sx in 0..N {
+                    let fx = (x as f32 + (sx as f32 + 0.5) / N as f32) / s;
+                    let fy = (y as f32 + (sy as f32 + 0.5) / N as f32) / s;
+                    let (a, b) = on_glyph(fx, fy, look.bars);
+                    arrow += f32::from(u8::from(a));
+                    bar += f32::from(u8::from(b));
+                }
+            }
+            let n = (N * N) as f32;
+            let p = &mut px[y * size + x];
+            over(p, paint(look.accent, bar / n));
+            over(p, paint(ARROW, arrow / n));
+        }
+    }
+    ring(&mut px, size, look.ring, look.accent);
+    argb(px)
+}
+
+/// The progress ring around the edge of an icon.
+fn ring(px: &mut [[f32; 4]], size: usize, ring: Ring, accent: [u8; 3]) {
+    let s = size as f32;
+    let centre = s / 2.0;
+    let outer = centre - 0.5;
+    let inner = outer - (s * 0.11).max(2.5);
+    let (colour, fraction) = match ring {
+        Ring::None => return,
+        Ring::At(p) => (accent, f32::from(p) / 100.0),
+        Ring::Arc => (accent, 0.25),
+        Ring::Recording => (RECORDING, 1.0),
+    };
+    for y in 0..size {
+        for x in 0..size {
+            let (dx, dy) = (x as f32 + 0.5 - centre, y as f32 + 0.5 - centre);
+            let d = dx.hypot(dy);
+            let band = cover(outer - d).min(cover(d - inner));
+            if band > 0.0 {
+                let p = &mut px[y * size + x];
+                over(p, paint(TRACK, band * 0.45));
+                let turn = dx.atan2(-dy).rem_euclid(std::f32::consts::TAU) / std::f32::consts::TAU;
+                if turn < fraction {
+                    over(p, paint(colour, band));
+                }
+            }
+        }
+    }
+}
+
+/// Premultiplied pixels as ARGB32 in network byte order.
+fn argb(px: Vec<[f32; 4]>) -> Vec<u8> {
+    px.into_iter()
+        .flat_map(|[r, g, b, a]| {
+            let straight = |c: f32| {
+                if a > 0.0 {
+                    (c / a).round().min(255.0) as u8
+                } else {
+                    0
+                }
+            };
+            [
+                (a * 255.0).round() as u8,
+                straight(r),
+                straight(g),
+                straight(b),
+            ]
+        })
+        .collect()
+}
+
+pub fn render_stack(look: &StackLook) -> Vec<ksni::Icon> {
+    SIZES
+        .iter()
+        .map(|&size| ksni::Icon {
+            width: size as i32,
+            height: size as i32,
+            data: draw_stack(size, look),
+        })
+        .collect()
+}
+
 pub fn render(logo: &Logo, look: &Look) -> Vec<ksni::Icon> {
     SIZES
         .iter()
@@ -249,6 +370,24 @@ mod tests {
         let d = draw(&logo, 64, &look);
         let [_, r, g, b] = pixel(&d, 64, 51, 51);
         assert_eq!([r, g, b], NEEDS_YOU);
+    }
+
+    #[test]
+    fn the_stack_shows_an_arrow_and_a_bar_per_window() {
+        let look = StackLook::of(Ring::At(50), 2, ACCENT);
+        for icon in render_stack(&look) {
+            assert_eq!(icon.data.len(), (icon.width * icon.height * 4) as usize);
+        }
+        let d = draw_stack(64, &look);
+        let [a, r, g, b] = pixel(&d, 64, 32, 20);
+        assert!(a > 240 && [r, g, b] == ARROW, "the arrow's shaft");
+        let bar = |y| pixel(&d, 64, 32, y);
+        assert_eq!(bar(42)[1..], ACCENT, "first bar");
+        assert_eq!(bar(47)[1..], ACCENT, "second bar");
+        assert_eq!(bar(52)[0], 0, "no third bar");
+        let [a, r, g, b] = pixel(&d, 64, 60, 32);
+        assert!(a > 240 && [r, g, b] == ACCENT, "the ring's done half");
+        assert_eq!(StackLook::of(Ring::Arc, 9, ACCENT).bars, 3);
     }
 
     #[test]

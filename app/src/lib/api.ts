@@ -80,6 +80,8 @@ export interface UiSettings {
   skin: string;
   /** Empty for what the skin says. */
   toolbar_style: ToolbarStyle | "";
+  /** Progress windows show each connection. */
+  progress_details: boolean;
 }
 
 export type ToolbarStyle = "mixed" | "icons" | "text";
@@ -165,7 +167,10 @@ export interface ProxyRoute {
 
 export interface ServerLimit {
   host: string;
+  /** 0 = the general limit. */
   connections: number;
+  /** Bytes per second each new download from it starts with; 0 = none. */
+  speed_limit: number;
 }
 
 export interface SavedLogin {
@@ -177,6 +182,17 @@ export interface Segment {
   start: number;
   end: number;
   pos: number;
+}
+
+/** What the connection working on a segment is doing. */
+export type ConnState = "idle" | "waiting" | "connecting" | "receiving" | "retrying" | "finished";
+
+/** What happens when one download finishes (its progress window's options). */
+export interface OnDone {
+  /** Show the "Download complete" window; null = as the settings say. */
+  complete_dialog: boolean | null;
+  open_file: boolean;
+  after: AfterDone;
 }
 
 export interface Download {
@@ -215,6 +231,8 @@ export interface Download {
   speed: number;
   active_connections: number;
   segments: Segment[];
+  /** What the connection on each of `segments` is doing. */
+  conns: ConnState[];
   /** A media download (a video or audio stream) rather than a file. */
   media: MediaInfo | null;
   /** The phase and piece counts of a media download while it runs. */
@@ -228,6 +246,8 @@ export interface Download {
   /** The path inside the archive, for a file fetched out of a ZIP. */
   zip_path: string | null;
   command: CommandResult | null;
+  /** What happens when it finishes, beyond what the settings say. */
+  on_done: OnDone | null;
   traffic?: Traffic;
   /** The HTTP version its own server answers over (1 or 2), while it runs. */
   protocol?: number;
@@ -388,6 +408,7 @@ export interface ProgressItem {
   speed: number;
   active_connections: number;
   segments: Segment[];
+  conns: ConnState[];
   media?: MediaProgress | null;
   phase?: PhaseProgress | null;
   source_bytes?: number[];
@@ -564,6 +585,10 @@ export interface Settings {
   close_to_tray: boolean;
   /** A left click on the tray icon opens the panel (otherwise Siler's window). */
   tray_opens_panel: boolean;
+  /** A download the user starts gets its own progress window. */
+  progress_dialog: boolean;
+  /** A download whose progress window was shown gets a "Download complete" window. */
+  complete_dialog: boolean;
   confirm_quit: boolean;
   on_conflict: OnConflict;
   categories: CategoryRule[];
@@ -777,6 +802,21 @@ export const api = {
   grabCancel: (runId: number) => invoke<void>("grab_cancel", { runId }),
   reviewGrab: (files: GrabFile[], queueId: number | null) => invoke<number>("review_grab", { files, queueId }),
   openSavedSite: (path: string) => invoke<void>("open_saved_site", { path }),
+  get: (id: number) => invoke<Download>("get_download", { id }),
+  showProgress: (id: number) => invoke<void>("show_progress", { id }),
+  progressToTray: (id: number) => invoke<void>("progress_to_tray", { id }),
+  progressRestore: (id: number) => invoke<void>("progress_restore", { id }),
+  progressRestoreAll: () => invoke<void>("progress_restore_all"),
+  /** The downloads whose progress windows are in the tray. */
+  progressInTray: () => invoke<Download[]>("progress_in_tray"),
+  setOnDone: (id: number, onDone: OnDone | null) => invoke<void>("set_on_done", { id, onDone }),
+  /** Remembers a speed limit for the server of `url` (0 forgets it). */
+  rememberServerSpeedLimit: (url: string, bytesPerSec: number) => invoke<void>("remember_server_speed_limit", { url, bytesPerSec }),
+  serverSpeedLimit: (url: string) => invoke<number>("server_speed_limit", { url }),
+  setProgressDetails: (shown: boolean) => invoke<void>("set_progress_details", { shown }),
+  setCompleteDialog: (shown: boolean) => invoke<void>("set_complete_dialog", { shown }),
+  openWith: (id: number) => invoke<void>("open_with", { id }),
+  panelMode: () => invoke<"downloads" | "stack">("panel_mode"),
 };
 
 /** A readable message from a rejected command (a string, or a `ProbeError`). */

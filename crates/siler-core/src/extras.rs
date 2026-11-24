@@ -38,6 +38,21 @@ pub struct Extras {
     /// How far refreshing an expired link got.
     #[serde(skip_serializing_if = "crate::refresh::Attempts::is_default")]
     pub(crate) refresh: crate::refresh::Attempts,
+    /// What happens when this download finishes, beyond what the settings say.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on_done: Option<OnDone>,
+}
+
+/// What happens when one download finishes (its progress window's "Options on completion").
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OnDone {
+    /// Show the "Download complete" window; `None` = as the settings say.
+    pub complete_dialog: Option<bool>,
+    /// Open the file.
+    pub open_file: bool,
+    /// Then quit Siler, or put the computer to sleep or shut it down.
+    pub after: crate::AfterDone,
 }
 
 /// An error as a code and its details (see `Error::code_args`).

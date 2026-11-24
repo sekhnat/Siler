@@ -1,6 +1,6 @@
 <script lang="ts">
   import { t } from "./lib/i18n";
-  import { ArrowDownToLine, ArrowUpToLine, ChevronDown, ChevronUp, CircleStop, Copy, ExternalLink, FileOutput, FolderOpen, KeyRound, Link2, ListOrdered, Pause, Play, RefreshCcwDot, RefreshCw, RotateCcw, ShieldCheck, SlidersHorizontal, Trash2, Zap } from "@lucide/svelte";
+  import { Activity, ArrowDownToLine, ArrowUpToLine, ChevronDown, ChevronUp, CircleStop, Copy, ExternalLink, FileOutput, FolderOpen, KeyRound, Link2, ListOrdered, Pause, Play, RefreshCcwDot, RefreshCw, RotateCcw, ShieldCheck, SlidersHorizontal, Trash2, Zap } from "@lucide/svelte";
   import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
   import { listen } from "@tauri-apps/api/event";
   import { onMount } from "svelte";
@@ -272,7 +272,8 @@
     if (d.status === "completed") {
       if (d.file_missing) redownloadFor = d;
       else attempt(api.openFile(d.id));
-    } else if (canResume(d.status)) attempt(api.resume(d.id));
+    } else if (isActive(d.status)) attempt(api.showProgress(d.id));
+    else if (canResume(d.status)) attempt(api.resume(d.id));
   }
 
   // ------------------------------------------------------------ actions
@@ -318,6 +319,12 @@
         icon: FolderOpen,
         disabled: !(one && one.dir),
         run: () => one && attempt(api.showInFolder(one.id)),
+      },
+      {
+        label: t("main-show-progress"),
+        icon: Activity,
+        disabled: !(one && one.status !== "completed"),
+        run: () => one && attempt(api.showProgress(one.id)),
       },
       "separator",
     ];

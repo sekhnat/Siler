@@ -35,11 +35,47 @@ impl CategoryRule {
     }
 }
 
-/// A different connection limit for one server (and its subdomains).
+/// Different limits for one server (and its subdomains).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ServerLimit {
     pub host: String,
+    /// 0 = the general limit.
     pub connections: u8,
+    /// Bytes per second each new download from it starts with; 0 = none.
+    #[serde(default)]
+    pub speed_limit: u64,
+}
+
+/// A host name as server limits are kept: lowercase, no port, path or `www.`.
+pub fn server_host(input: &str) -> String {
+    let h = input.trim().to_ascii_lowercase();
+    // Accept pasted URLs and `host:port`.
+    let h = h.split("://").last().unwrap_or(&h);
+    let h = h.split(['/', ':']).next().unwrap_or("").trim_matches('.');
+    h.strip_prefix("www.").unwrap_or(h).to_string()
+}
+
+/// The most specific of `limits` that applies to `host` and sets what `pick` reads.
+fn server_limit<T: Copy + Default + PartialEq>(
+    limits: &[ServerLimit],
+    host: &str,
+    pick: impl Fn(&ServerLimit) -> T,
+) -> Option<T> {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    limits
+        .iter()
+        .filter(|l| pick(l) != T::default())
+        .filter(|l| {
+            let h = l.host.as_str();
+            host == h || host.ends_with(&format!(".{h}"))
+        })
+        .max_by_key(|l| l.host.len())
+        .map(pick)
+}
+
+/// The speed limit new downloads from `host` start with; 0 = none.
+pub fn server_speed_limit(limits: &[ServerLimit], host: &str) -> u64 {
+    server_limit(limits, host, |l| l.speed_limit).unwrap_or(0)
 }
 
 /// Sounds for download events. Each plays the desktop theme's sound unless a file is chosen.
@@ -102,6 +138,10 @@ pub struct Settings {
     pub close_to_tray: bool,
     /// A left click on the tray icon opens the panel (otherwise Siler's window).
     pub tray_opens_panel: bool,
+    /// A download the user starts gets its own progress window.
+    pub progress_dialog: bool,
+    /// A download whose progress window was shown gets a "Download complete" window.
+    pub complete_dialog: bool,
     /// Ask before quitting while downloads are running.
     pub confirm_quit: bool,
     /// What to do when the target file already exists.
@@ -169,6 +209,8 @@ pub struct UiSettings {
     pub skin: String,
     /// `mixed`, `icons` or `text`; empty for what the skin says.
     pub toolbar_style: String,
+    /// Progress windows show each connection.
+    pub progress_details: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -211,6 +253,7 @@ impl Default for UiSettings {
             toolbar: DEFAULT_TOOLBAR.iter().map(|s| s.to_string()).collect(),
             skin: "siler".into(),
             toolbar_style: String::new(),
+            progress_details: true,
         }
     }
 }
@@ -302,6 +345,8 @@ impl Default for Settings {
             notify_on_complete: true,
             close_to_tray: true,
             tray_opens_panel: true,
+            progress_dialog: true,
+            complete_dialog: true,
             confirm_quit: true,
             on_conflict: OnConflict::Ask,
             categories: default_categories(),
@@ -363,16 +408,27 @@ impl Settings {
     /// The connection limit for a server (host name without port); 0 = no limit.
     /// The most specific matching exception wins.
     pub fn connection_limit(&self, host: &str) -> usize {
-        let host = host.trim_end_matches('.').to_ascii_lowercase();
-        self.server_limits
-            .iter()
-            .filter(|l| {
-                let h = l.host.as_str();
-                host == h || host.ends_with(&format!(".{h}"))
-            })
-            .max_by_key(|l| l.host.len())
-            .map(|l| l.connections)
+        server_limit(&self.server_limits, host, |l| l.connections)
             .unwrap_or(self.max_connections_per_server) as usize
+    }
+
+    /// Remembers (or, with 0, forgets) the speed limit for downloads from `host`.
+    pub fn remember_speed_limit(&mut self, host: &str, bytes_per_sec: u64) {
+        let host = server_host(host);
+        if host.is_empty() {
+            return;
+        }
+        match self.server_limits.iter_mut().find(|l| l.host == host) {
+            Some(l) => l.speed_limit = bytes_per_sec,
+            None if bytes_per_sec > 0 => self.server_limits.push(ServerLimit {
+                host,
+                connections: 0,
+                speed_limit: bytes_per_sec,
+            }),
+            None => {}
+        }
+        self.server_limits
+            .retain(|l| l.connections > 0 || l.speed_limit > 0);
     }
 
     /// A conflict policy for downloads added without a dialog, where nobody can be asked.
@@ -401,13 +457,12 @@ impl Settings {
         self.server_limits = std::mem::take(&mut self.server_limits)
             .into_iter()
             .filter_map(|mut l| {
-                let h = l.host.trim().to_ascii_lowercase();
-                // Accept pasted URLs and `host:port`.
-                let h = h.split("://").last().unwrap_or(&h);
-                let h = h.split(['/', ':']).next().unwrap_or("").trim_matches('.');
-                l.host = h.strip_prefix("www.").unwrap_or(h).to_string();
-                l.connections = l.connections.clamp(1, 128);
-                (!l.host.is_empty() && hosts.insert(l.host.clone())).then_some(l)
+                l.host = server_host(&l.host);
+                l.connections = l.connections.min(128);
+                (!l.host.is_empty()
+                    && (l.connections > 0 || l.speed_limit > 0)
+                    && hosts.insert(l.host.clone()))
+                .then_some(l)
             })
             .collect();
         if self.user_agent.trim().is_empty() {
@@ -474,6 +529,38 @@ mod tests {
     }
 
     #[test]
+    fn remembered_speed_limits() {
+        let mut s = Settings {
+            max_connections_per_server: 12,
+            server_limits: vec![ServerLimit {
+                host: "example.com".into(),
+                connections: 4,
+                speed_limit: 0,
+            }],
+            ..Default::default()
+        };
+        s.remember_speed_limit("https://www.Example.com/file.iso", 50_000);
+        s.remember_speed_limit("cdn.other.org:8443", 10_000);
+        let s = s.normalized();
+        assert_eq!(s.server_limits.len(), 2);
+        assert_eq!(
+            server_speed_limit(&s.server_limits, "dl.example.com"),
+            50_000
+        );
+        assert_eq!(
+            server_speed_limit(&s.server_limits, "cdn.other.org"),
+            10_000
+        );
+        assert_eq!(server_speed_limit(&s.server_limits, "other.org"), 0);
+        // A speed-only entry leaves the connections to the general limit.
+        assert_eq!(s.connection_limit("cdn.other.org"), 12);
+        assert_eq!(s.connection_limit("example.com"), 4);
+        let mut s = s;
+        s.remember_speed_limit("cdn.other.org", 0);
+        assert_eq!(s.server_limits.len(), 1);
+    }
+
+    #[test]
     fn per_server_limits() {
         let s = Settings {
             max_connections_per_server: 12,
@@ -481,14 +568,17 @@ mod tests {
                 ServerLimit {
                     host: "https://www.Example.com/x".into(),
                     connections: 4,
+                    speed_limit: 0,
                 },
                 ServerLimit {
                     host: "cdn.example.com:8443".into(),
                     connections: 2,
+                    speed_limit: 0,
                 },
                 ServerLimit {
                     host: "  ".into(),
                     connections: 9,
+                    speed_limit: 0,
                 },
             ],
             ..Default::default()
@@ -500,6 +590,7 @@ mod tests {
         assert_eq!(s.connection_limit("dl.example.com"), 4);
         assert_eq!(s.connection_limit("a.cdn.example.com"), 2);
         assert_eq!(s.connection_limit("notexample.com"), 12);
+        assert_eq!(server_speed_limit(&s.server_limits, "example.com"), 0);
         assert_eq!(
             Settings {
                 max_connections_per_server: 0,

@@ -407,6 +407,7 @@ mod tests {
             speed,
             active_connections: 1,
             segments: vec![],
+            conns: vec![],
             media: None,
             phase: None,
             source_bytes: vec![],

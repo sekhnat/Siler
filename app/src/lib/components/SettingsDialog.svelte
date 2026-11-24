@@ -61,7 +61,7 @@
   }
 
   function addLimit() {
-    s.server_limits = [...s.server_limits, { host: "", connections: 4 }];
+    s.server_limits = [...s.server_limits, { host: "", connections: 4, speed_limit: 0 }];
   }
 
   // FFmpeg is looked at when the Media tab opens.
@@ -310,6 +310,8 @@
       )}
       {@render toggle(t("settings-ask-before-quitting"), t("settings-confirm-when-quitting-would-pause-running"), s.confirm_quit, (v) => (s.confirm_quit = v))}
       {@render toggle(t("settings-notifications"), t("settings-notify-when-a-download-finishes-or"), s.notify_on_complete, (v) => (s.notify_on_complete = v))}
+      {@render toggle(t("settings-progress-windows"), t("settings-progress-windows-hint"), s.progress_dialog, (v) => (s.progress_dialog = v))}
+      {@render toggle(t("settings-complete-windows"), t("settings-complete-windows-hint"), s.complete_dialog, (v) => (s.complete_dialog = v))}
       {@render toggle(t("settings-resume-on-startup"), t("settings-continue-unfinished-downloads-when-siler-starts"), s.resume_on_startup, (v) => (s.resume_on_startup = v))}
       {@render toggle(t("settings-keep-the-computer-awake"), t("settings-don-t-let-it-go-to"), s.prevent_sleep, (v) => (s.prevent_sleep = v))}
       {@render toggle(
@@ -425,7 +427,15 @@
         {#each s.server_limits as limit, i (i)}
           <div class="limit">
             <input class="input" bind:value={limit.host} placeholder={t("settings-example-com")} spellcheck="false" />
-            <input class="input num" type="number" min="1" max="128" bind:value={limit.connections} title={t("settings-connections")} />
+            <input class="input num" type="number" min="0" max="128" bind:value={limit.connections} title={t("settings-connections")} />
+            <input
+              class="input num"
+              type="number"
+              min="0"
+              bind:value={() => Math.round(limit.speed_limit / 1024), (v) => (limit.speed_limit = Math.max(0, Math.round(Number(v) || 0)) * 1024)}
+              title={t("settings-server-speed-limit")}
+              placeholder="KB/s"
+            />
             <button class="icon-btn sm" title={t("settings-remove")} onclick={() => (s.server_limits = s.server_limits.filter((_, j) => j !== i))}><X size={15} /></button>
           </div>
         {/each}
@@ -876,7 +886,7 @@
   }
   .limit {
     display: grid;
-    grid-template-columns: 1fr 90px auto;
+    grid-template-columns: 1fr 72px 90px auto;
     gap: 6px;
     align-items: center;
     margin-top: 8px;

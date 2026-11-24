@@ -67,6 +67,7 @@ class DownloadStore {
           d.speed = p.speed;
           d.active_connections = p.active_connections;
           d.segments = p.segments;
+          d.conns = p.conns;
           if (p.media !== undefined) d.media_progress = p.media;
           d.phase = p.phase ?? null;
           if (p.source_bytes) p.source_bytes.forEach((b, i) => d.sources[i] && (d.sources[i].bytes = b));

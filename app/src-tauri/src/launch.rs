@@ -68,3 +68,23 @@ fn reap(mut child: Child) {
         let _ = child.wait();
     });
 }
+
+/// Asks the desktop (its xdg-desktop-portal) which application to open `path` with.
+pub async fn open_with_chooser(path: &std::path::Path) -> zbus::Result<()> {
+    use std::collections::HashMap;
+    use std::os::fd::AsFd;
+    use zbus::zvariant::{Fd, Value};
+
+    let file = std::fs::File::open(path).map_err(|e| zbus::Error::Failure(e.to_string()))?;
+    let conn = zbus::Connection::session().await?;
+    let options: HashMap<&str, Value<'_>> = HashMap::from([("ask", Value::from(true))]);
+    conn.call_method(
+        Some("org.freedesktop.portal.Desktop"),
+        "/org/freedesktop/portal/desktop",
+        Some("org.freedesktop.portal.OpenURI"),
+        "OpenFile",
+        &("", Fd::from(file.as_fd()), options),
+    )
+    .await?;
+    Ok(())
+}

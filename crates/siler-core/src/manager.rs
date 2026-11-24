@@ -26,7 +26,8 @@ use crate::queue::{MAIN_QUEUE, Queue};
 use crate::quota::{Quota, QuotaStatus};
 use crate::ratelimit::RateLimiter;
 use crate::scheduler::{self, Edge};
-use crate::segment::{self, Segment, Table};
+use crate::segment::{self, ConnState, Segment, Table};
+use crate::settings::server_speed_limit;
 use crate::store::{Record, Store};
 use crate::task::{
     self, Limits, Outcome, Running, STOP_PAUSE, STOP_QUOTA, STOP_SHUTDOWN, Source, Transfer,
@@ -203,6 +204,27 @@ fn visible_segments(segs: &[Segment]) -> Vec<Segment> {
         Vec::new()
     } else {
         segs.to_vec()
+    }
+}
+
+/// The segments shown, with what each one's connection is doing (`conns` from a running
+/// table; otherwise each segment is finished or idle).
+fn visible_conns(segs: &[Segment], conns: Option<&[ConnState]>) -> Vec<ConnState> {
+    if segs.iter().any(|s| s.end == u64::MAX) {
+        return Vec::new();
+    }
+    match conns {
+        Some(c) if c.len() == segs.len() => c.to_vec(),
+        _ => segs
+            .iter()
+            .map(|s| {
+                if s.done() {
+                    ConnState::Finished
+                } else {
+                    ConnState::Idle
+                }
+            })
+            .collect(),
     }
 }
 
@@ -1301,6 +1323,18 @@ impl Engine {
         Ok(removed.len())
     }
 
+    /// What happens when the download finishes; `None` = what the settings say.
+    pub fn set_on_done(&self, id: i64, on_done: Option<crate::extras::OnDone>) -> Result<()> {
+        let mut st = self.inner.state();
+        let State {
+            records, running, ..
+        } = &mut *st;
+        let rec = records.get_mut(&id).ok_or(Error::NotFound)?;
+        rec.extras.on_done = on_done.filter(|o| *o != Default::default());
+        let run = running.get(&id);
+        self.inner.persist_and_emit(rec, run.map(|a| a.as_ref()))
+    }
+
     /// Per-download speed limit in bytes/s (0 = unlimited).
     pub fn set_speed_limit(&self, id: i64, bytes_per_sec: u64) -> Result<()> {
         let mut st = self.inner.state();
@@ -2011,13 +2045,16 @@ impl Inner {
     }
 
     fn info(&self, r: &Record, run: Option<&Running>) -> DownloadInfo {
-        let (downloaded, speed, active, segments) = match run {
+        let (downloaded, speed, active, segments, conns) = match run {
             Some(run) => {
                 let table = run.table.lock().unwrap();
-                let segs = if table.segs.is_empty() {
-                    r.segments.clone()
+                let (segs, conns) = if table.segs.is_empty() {
+                    (r.segments.clone(), visible_conns(&r.segments, None))
                 } else {
-                    table.segs.clone()
+                    (
+                        table.segs.clone(),
+                        visible_conns(&table.segs, Some(&table.conns)),
+                    )
                 };
                 (
                     if table.segs.is_empty() && !r.kind.is_media() {
@@ -2028,9 +2065,16 @@ impl Inner {
                     run.speed.load(Relaxed),
                     run.active.load(Relaxed),
                     segs,
+                    conns,
                 )
             }
-            None => (r.downloaded, 0, 0, r.segments.clone()),
+            None => (
+                r.downloaded,
+                0,
+                0,
+                r.segments.clone(),
+                visible_conns(&r.segments, None),
+            ),
         };
         let file_missing = r.status == Status::Completed
             && match (&r.dir, &r.filename) {
@@ -2070,6 +2114,7 @@ impl Inner {
             speed,
             active_connections: active,
             segments: visible_segments(&segments),
+            conns,
             media: r.media.as_ref().map(|m| MediaInfo {
                 manifest: m.manifest,
                 output: m.output,
@@ -2087,6 +2132,7 @@ impl Inner {
             sources: source_views(r, run),
             zip_path: r.extras.zip_entry.as_ref().map(|z| z.path.clone()),
             command: r.extras.command.clone(),
+            on_done: r.extras.on_done.clone(),
             traffic: run.map_or(r.traffic, Running::traffic).measured(),
             protocol: run.and_then(Running::protocol),
         }
@@ -2125,13 +2171,21 @@ impl Inner {
             .map(|(&id, run)| {
                 let speed = run.sample_speed();
                 total_speed += speed;
+                let (segments, conns) = {
+                    let table = run.table.lock().unwrap();
+                    (
+                        visible_segments(&table.segs),
+                        visible_conns(&table.segs, Some(&table.conns)),
+                    )
+                };
                 ProgressItem {
                     id,
                     downloaded: run.downloaded.load(Relaxed),
                     total_size: st.records.get(&id).and_then(|r| r.total_size),
                     speed,
                     active_connections: run.active.load(Relaxed),
-                    segments: visible_segments(&run.table.lock().unwrap().segs),
+                    segments,
+                    conns,
                     media: run.media.lock().unwrap().clone(),
                     phase: run.phase.lock().unwrap().map(|name| crate::PhaseProgress {
                         name,
@@ -2212,7 +2266,10 @@ impl Inner {
     }
 
     pub(crate) fn schedule(self: &Arc<Self>) {
-        let max = self.settings.read().unwrap().max_concurrent;
+        let (max, server_limits) = {
+            let s = self.settings.read().unwrap();
+            (s.max_concurrent, s.server_limits.clone())
+        };
         let mut st = self.state();
         if st.shutting_down || self.quota.reached() || self.global.over_budget() {
             return;
@@ -2271,6 +2328,13 @@ impl Inner {
             rec.needs_login = None;
             rec.needs_host_key = None;
             rec.extras.refresh.expired = false;
+            if rec.speed_limit == 0 {
+                // A limit remembered for its server becomes the download's own.
+                rec.speed_limit = url::Url::parse(&rec.url)
+                    .ok()
+                    .and_then(|u| u.host_str().map(|h| server_speed_limit(&server_limits, h)))
+                    .unwrap_or(0);
+            }
             let run = Arc::new(Running::new(rec.speed_limit, rec.connections));
             run.seed_traffic(rec.traffic);
             running.insert(id, run.clone());

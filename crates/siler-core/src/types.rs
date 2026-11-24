@@ -221,6 +221,8 @@ pub struct DownloadInfo {
     pub speed: u64,
     pub active_connections: u32,
     pub segments: Vec<Segment>,
+    /// What the connection on each of `segments` is doing.
+    pub conns: Vec<crate::ConnState>,
     /// A media download (video or audio stream) rather than a plain file.
     pub media: Option<crate::media::MediaInfo>,
     /// The expected checksum.
@@ -235,6 +237,8 @@ pub struct DownloadInfo {
     pub zip_path: Option<String>,
     /// The command run after it finished.
     pub command: Option<crate::extras::CommandResult>,
+    /// What happens when it finishes, beyond what the settings say.
+    pub on_done: Option<crate::extras::OnDone>,
     /// What it cost on the network beyond its own bytes (see [`Traffic`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub traffic: Option<Traffic>,
@@ -307,6 +311,8 @@ pub struct ProgressItem {
     pub speed: u64,
     pub active_connections: u32,
     pub segments: Vec<Segment>,
+    /// What the connection on each of `segments` is doing.
+    pub conns: Vec<crate::ConnState>,
     /// Phase and piece counts of a media download.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub media: Option<crate::media::MediaProgress>,

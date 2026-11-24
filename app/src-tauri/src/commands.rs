@@ -343,7 +343,7 @@ pub struct AddArgs {
 }
 
 #[tauri::command]
-pub fn add_download(state: State<'_, AppState>, args: AddArgs) -> Res<i64> {
+pub fn add_download(app: AppHandle, state: State<'_, AppState>, args: AddArgs) -> Res<i64> {
     let meta = pending_meta(&state, args.pending_id).unwrap_or_default();
     let extra = args.pending_id.and_then(|id| {
         let p = state.pending.lock().unwrap();
@@ -372,6 +372,9 @@ pub fn add_download(state: State<'_, AppState>, args: AddArgs) -> Res<i64> {
         })
         .map_err(err)?;
     forget_pending(&state, args.pending_id);
+    if !args.start_paused {
+        crate::progress::want(&app, id);
+    }
     Ok(id)
 }
 
@@ -419,7 +422,7 @@ pub struct AddMediaArgs {
 
 /// Adds a stream as a media download with the chosen tracks, or the default ones.
 #[tauri::command]
-pub async fn add_media(state: State<'_, AppState>, args: AddMediaArgs) -> Res<i64> {
+pub async fn add_media(app: AppHandle, state: State<'_, AppState>, args: AddMediaArgs) -> Res<i64> {
     let meta = pending_meta(&state, args.pending_id).unwrap_or_default();
     let hint = pending_hint(&state, args.pending_id, &args.url);
     let link = pending_link(&state, args.pending_id, &args.url);
@@ -442,6 +445,9 @@ pub async fn add_media(state: State<'_, AppState>, args: AddMediaArgs) -> Res<i6
         .await
         .map_err(err)?;
     forget_pending(&state, args.pending_id);
+    if !args.start_paused {
+        crate::progress::want(&app, id);
+    }
     Ok(id)
 }
 
@@ -504,8 +510,10 @@ pub fn pause(state: State<'_, AppState>, id: i64) -> Res<()> {
 }
 
 #[tauri::command]
-pub fn resume(state: State<'_, AppState>, id: i64) -> Res<()> {
-    state.engine.resume(id).map_err(err)
+pub fn resume(app: AppHandle, state: State<'_, AppState>, id: i64) -> Res<()> {
+    state.engine.resume(id).map_err(err)?;
+    crate::progress::want(&app, id);
+    Ok(())
 }
 
 #[tauri::command]
@@ -529,8 +537,10 @@ pub fn resume_all(state: State<'_, AppState>) -> Res<()> {
 }
 
 #[tauri::command]
-pub fn start_now(state: State<'_, AppState>, id: i64) -> Res<()> {
-    state.engine.start_now(id).map_err(err)
+pub fn start_now(app: AppHandle, state: State<'_, AppState>, id: i64) -> Res<()> {
+    state.engine.start_now(id).map_err(err)?;
+    crate::progress::want(&app, id);
+    Ok(())
 }
 
 #[tauri::command]
@@ -774,8 +784,8 @@ fn path_of(app: &AppHandle, id: i64) -> Res<PathBuf> {
         .ok_or_else(|| tr("command-no-file-yet"))
 }
 
-/// Opens a finished file with its default application.
-pub fn open_path(app: &AppHandle, id: i64) -> Res<()> {
+/// The file of a finished download, which is still there.
+pub fn finished_path(app: &AppHandle, id: i64) -> Res<PathBuf> {
     let d = download(app, id)?;
     if d.status != Status::Completed {
         return Err(tr("command-not-finished-yet"));
@@ -784,7 +794,12 @@ pub fn open_path(app: &AppHandle, id: i64) -> Res<()> {
     if !path.exists() {
         return Err(siler_core::Error::FileMissing.to_string());
     }
-    crate::launch::open(&path).map_err(err)
+    Ok(path)
+}
+
+/// Opens a finished file with its default application.
+pub fn open_path(app: &AppHandle, id: i64) -> Res<()> {
+    crate::launch::open(finished_path(app, id)?).map_err(err)
 }
 
 /// Shows the file (or the partial file) selected in its folder.

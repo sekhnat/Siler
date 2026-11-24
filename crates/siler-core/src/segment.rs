@@ -27,6 +27,23 @@ impl Segment {
     }
 }
 
+/// What the connection working on a segment is doing, as the progress window shows it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnState {
+    /// No connection is working on it.
+    #[default]
+    Idle,
+    /// Held back until its server lets another request through.
+    Waiting,
+    /// Connecting and sending the request, until the server's answer arrives.
+    Connecting,
+    Receiving,
+    /// Failed; tried again after a pause.
+    Retrying,
+    Finished,
+}
+
 /// Splits `total` bytes into at most `conns` equal segments of at least `min_size` bytes.
 pub(crate) fn initial(total: u64, conns: usize, min_size: u64) -> Vec<Segment> {
     if total == 0 {
@@ -43,17 +60,33 @@ pub(crate) fn initial(total: u64, conns: usize, min_size: u64) -> Vec<Segment> {
         .collect()
 }
 
-/// Segments plus which of them currently have a worker attached.
+/// Segments plus which of them currently have a worker attached, and what it is doing.
 #[derive(Debug, Default)]
 pub(crate) struct Table {
     pub segs: Vec<Segment>,
     pub busy: Vec<bool>,
+    pub conns: Vec<ConnState>,
 }
 
 impl Table {
     pub fn new(segs: Vec<Segment>) -> Self {
         let busy = vec![false; segs.len()];
-        Table { segs, busy }
+        let conns = segs.iter().map(Self::resting).collect();
+        Table { segs, busy, conns }
+    }
+
+    fn resting(seg: &Segment) -> ConnState {
+        if seg.done() {
+            ConnState::Finished
+        } else {
+            ConnState::Idle
+        }
+    }
+
+    /// The segment's worker let go of it.
+    pub fn release(&mut self, i: usize) {
+        self.busy[i] = false;
+        self.conns[i] = Self::resting(&self.segs[i]);
     }
 
     /// Claims the unfinished, unclaimed segment with the most bytes left.
@@ -62,6 +95,7 @@ impl Table {
             .filter(|&i| !self.busy[i] && !self.segs[i].done())
             .max_by_key(|&i| self.segs[i].remaining())?;
         self.busy[i] = true;
+        self.conns[i] = ConnState::Waiting;
         Some(i)
     }
 
@@ -80,6 +114,7 @@ impl Table {
         self.segs[i].end = mid;
         self.segs.push(Segment::new(mid, seg.end));
         self.busy.push(true);
+        self.conns.push(ConnState::Waiting);
         Some(self.segs.len() - 1)
     }
 
@@ -119,6 +154,7 @@ mod tests {
         assert_eq!(t.segs[0].end, 60);
         assert_eq!(t.segs[n], Segment::new(60, 100));
         assert!(t.busy[n]);
+        assert_eq!(t.conns.len(), t.segs.len());
         // remaining 40/40/20: next split halves a 40 segment; then pieces < 2*min are refused.
         assert!(t.split_largest(10).is_some());
         assert!(t.split_largest(25).is_none());

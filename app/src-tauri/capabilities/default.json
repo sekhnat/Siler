@@ -6,7 +6,9 @@
     "main",
     "add",
     "countdown",
-    "tray"
+    "tray",
+    "progress-*",
+    "complete-*"
   ],
   "permissions": [
     "core:default",
@@ -15,6 +17,10 @@
     "core:window:allow-hide",
     "core:window:allow-show",
     "core:window:allow-set-focus",
+    "core:window:allow-set-title",
+    "core:window:allow-set-size",
+    "core:window:allow-minimize",
+    "core:window:allow-start-dragging",
     "dialog:allow-open",
     "dialog:allow-save",
     "drag:default"

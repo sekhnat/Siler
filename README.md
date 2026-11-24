@@ -63,10 +63,15 @@
 - Ready for translation: every word is in a catalog ([Translating Siler](docs/translating.md)).
 
 **At home on Linux**
+- **A progress window for each download**, as in IDM: status, speed and time left, where each connection starts in the file and what it is doing, its own speed limit (remembered for the server if you like), and what to do when it finishes (open the file, quit, sleep or shut down), then a **Download complete** window. Minimize them and they wait in the tray, all under one icon.
 - **A tray panel:** click the tray icon to see each download's progress and speed, pause, resume or cancel them, and set a speed limit. The icon fills a progress ring, and the right-click menu lists the running downloads.
 - Starts with your session if you like, waiting in the tray; notifications and sounds; keeps the computer awake while downloads run; drag finished files out of the list. Wayland and X11.
 
 <table>
+  <tr>
+    <td align="center" valign="top" width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/progress-window-dark.png"><source media="(prefers-color-scheme: light)" srcset="docs/images/progress-window-light.png"><img src="docs/images/progress-window-light.png" alt="A download's progress window: status, size, speed and time left, a strip of where each of eight connections starts, and a table of what each connection is doing" width="400"></picture><br><sub><b>Follow one download in its own window</b></sub></td>
+    <td align="center" valign="top" width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/progress-tray-dark.png"><source media="(prefers-color-scheme: light)" srcset="docs/images/progress-tray-light.png"><img src="docs/images/progress-tray-light.png" alt="Three progress windows put away in the tray, listed beside their shared tray icon with their progress and speed" width="300"></picture><br><sub><b>Minimized progress windows share one tray icon</b></sub></td>
+  </tr>
   <tr>
     <td align="center" valign="top" width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/add-video-dark.png"><source media="(prefers-color-scheme: light)" srcset="docs/images/add-video-light.png"><img src="docs/images/add-video-light.png" alt="The Add window with a stream's qualities, audio languages and subtitles" width="400"></picture><br><sub><b>Pick the quality, audio and subtitles of a stream</b></sub></td>
     <td align="center" valign="top" width="50%"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-dark.png"><source media="(prefers-color-scheme: light)" srcset="docs/images/settings-light.png"><img src="docs/images/settings-light.png" alt="Settings: connections per download, simultaneous downloads, connections per server, speed limit" width="400"></picture><br><sub><b>Tune connections, limits and quotas</b></sub></td>

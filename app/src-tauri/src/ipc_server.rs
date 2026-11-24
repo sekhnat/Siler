@@ -315,7 +315,14 @@ pub fn handle_add(app: &AppHandle, items: Vec<BrowserItem>, opts: &AddOptions) -
                         queue_id: opts.queue_id,
                         ..Default::default()
                     };
-                    if let Err(e) = engine.add_media(nd).await {
+                    let added = engine.add_media(nd).await;
+                    if let Ok(id) = added
+                        && !opts.later
+                        && !opts.silent
+                    {
+                        crate::progress::want(&app, id);
+                    }
+                    if let Err(e) = added {
                         // Show the Add window (with the same folder and queue): it explains
                         // why this stream can't be downloaded, or offers it as a file.
                         tracing::warn!("stream {url}: {e}");
@@ -339,8 +346,10 @@ pub fn handle_add(app: &AppHandle, items: Vec<BrowserItem>, opts: &AddOptions) -
                 queue_id: opts.queue_id,
                 ..Default::default()
             };
-            if let Err(e) = state.engine.add(nd) {
-                errors.push(e.to_string());
+            match state.engine.add(nd) {
+                Ok(id) if !opts.later && !silent => crate::progress::want(app, id),
+                Ok(_) => {}
+                Err(e) => errors.push(e.to_string()),
             }
         }
         if errors.len() == count {

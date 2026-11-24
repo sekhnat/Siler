@@ -58,10 +58,10 @@ pub use refresh::{
 };
 pub use scheduler::Schedule;
 pub use scope::site_of;
-pub use segment::Segment;
+pub use segment::{ConnState, Segment};
 pub use settings::{
     AfterDownload, CategoryRule, ColumnSetting, ServerLimit, Settings, SoundSettings, UiSettings,
-    default_categories,
+    default_categories, server_host, server_speed_limit,
 };
 pub use siler_media::select::{ContainerChoice, Selection, SubtitleMode};
 pub use siler_media::{ManifestKind, TrackId};

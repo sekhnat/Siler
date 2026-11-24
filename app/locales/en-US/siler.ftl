@@ -1443,3 +1443,74 @@ toolbar-label-when-done = When done
 toolbar-label-sort = Sort
 toolbar-label-table = Table
 toolbar-label-cards = Cards
+
+## Progress windows (one per download) and their tray icon
+
+window-progress = Download progress — Siler
+window-download-complete = Download complete — Siler
+power-download-finished = “{ $name }” has finished
+tray-show-progress = Show progress
+tray-stack-title = Siler progress windows
+tray-stack-tooltip =
+    { $count ->
+        [one] 1 progress window
+       *[other] { $count } progress windows
+    }
+tray-stack-paused = paused
+tray-stack-restore-all = Restore all
+progress-to-tray = Put away in the tray
+progress-close = Close
+progress-tab-status = Download status
+progress-tab-limit = Speed limiter
+progress-tab-done = Options on completion
+progress-status = Status
+progress-file-size = File size
+progress-downloaded = Downloaded
+progress-transfer-rate = Transfer rate
+progress-time-left = Time left
+progress-resume-capability = Resume capability
+progress-yes = Yes
+progress-no = No
+progress-unknown = Unknown
+progress-use-limiter = Use the speed limiter
+progress-max-speed = Maximum speed
+progress-remember-limit = Remember this limit for { $host }
+progress-limit-hint = A remembered limit is used by every new download from that server.
+progress-show-complete = Show the “Download complete” window
+progress-open-file = Open the file
+progress-when-done = Then
+progress-when-done-hint = Sleep, hibernate and shut down wait a minute first, so they can still be cancelled.
+progress-hide-details = Hide details
+progress-show-details = Show details
+progress-pause = Pause
+progress-resume = Resume
+progress-cancel = Cancel
+progress-by-connections = Start positions and download progress by connections
+progress-connections = Connections
+progress-col-n = N.
+progress-col-downloaded = Downloaded
+progress-col-info = Info
+progress-conn-waiting = Waiting for the server…
+progress-conn-connecting = Connecting…
+progress-conn-receiving = Receiving data…
+progress-conn-retrying = Connection lost, trying again…
+progress-conn-finished = Finished
+progress-conn-paused = Paused
+progress-conn-stopped = Stopped
+complete-title = Download complete
+complete-heading = Download complete
+complete-downloaded = Downloaded
+complete-address = Address
+complete-saved-as = Saved as
+complete-dont-show = Don’t show this window again
+complete-open = Open
+complete-open-with = Open with…
+complete-open-folder = Open folder
+tray-panel-progress-windows = Progress windows
+tray-panel-restore = Bring back this window
+main-show-progress = Show progress
+settings-server-speed-limit = Speed limit (KB/s), 0 = none
+settings-progress-windows = Progress windows
+settings-progress-windows-hint = A download you start gets its own window with each connection’s progress
+settings-complete-windows = “Download complete” windows
+settings-complete-windows-hint = After a download with a progress window finishes, show where it went

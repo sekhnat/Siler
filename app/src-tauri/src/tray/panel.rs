@@ -9,7 +9,7 @@
 use gtk::glib;
 use gtk::prelude::*;
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::SeqCst};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering::SeqCst};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
@@ -26,6 +26,45 @@ const KEEP_HIDDEN: Duration = Duration::from_secs(60);
 const REOPEN_AFTER: Duration = Duration::from_millis(300);
 
 static OPEN: AtomicBool = AtomicBool::new(false);
+/// What the panel lists: a [`Mode`].
+static MODE: AtomicU8 = AtomicU8::new(0);
+
+/// What the panel lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// The running downloads (a click on Siler's icon).
+    Downloads = 0,
+    /// The progress windows in the tray (a click on their icon).
+    Stack = 1,
+}
+
+impl Mode {
+    pub fn name(self) -> &'static str {
+        match self {
+            Mode::Downloads => "downloads",
+            Mode::Stack => "stack",
+        }
+    }
+
+    fn now() -> Mode {
+        if MODE.load(SeqCst) == Mode::Stack as u8 {
+            Mode::Stack
+        } else {
+            Mode::Downloads
+        }
+    }
+}
+
+/// What the panel lists, for its page.
+#[tauri::command]
+pub fn panel_mode() -> &'static str {
+    Mode::now().name()
+}
+
+fn set_mode(app: &AppHandle, mode: Mode) {
+    MODE.store(mode as u8, SeqCst);
+    let _ = app.emit_to(LABEL, "panel-mode", mode.name());
+}
 /// Counts openings and closings, so an outdated "destroy it" timer does nothing.
 static TURN: AtomicU64 = AtomicU64::new(0);
 
@@ -56,8 +95,9 @@ pub fn is_open() -> bool {
     OPEN.load(SeqCst)
 }
 
-/// A left click on the icon, at the coordinates the tray host gave.
-pub fn toggle(app: &AppHandle, x: i32, y: i32, token: Option<String>) {
+/// A left click on an icon, at the coordinates the tray host gave: Siler's own (`Downloads`)
+/// or the progress windows' (`Stack`).
+pub fn toggle(app: &AppHandle, x: i32, y: i32, token: Option<String>, mode: Mode) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let scales = if is_open() {
@@ -67,14 +107,24 @@ pub fn toggle(app: &AppHandle, x: i32, y: i32, token: Option<String>) {
         };
         let on_main = app.clone();
         let _ = app.run_on_main_thread(move || {
-            if is_open() {
+            if is_open() && Mode::now() != mode {
+                // The other icon was clicked: list its things instead.
+                set_mode(&on_main, mode);
+            } else if is_open() {
                 close_now(&on_main);
             } else if UI.with_borrow(|ui| ui.closed_at.is_some_and(|t| t.elapsed() < REOPEN_AFTER))
+                && Mode::now() == mode
             {
                 // That click already closed it.
-            } else if let Err(e) = open(&on_main, (x, y), &scales) {
-                tracing::info!("no tray panel ({e}), opening Siler instead");
-                crate::show_main_with(&on_main, token);
+            } else {
+                MODE.store(mode as u8, SeqCst);
+                if let Err(e) = open(&on_main, (x, y), &scales) {
+                    tracing::info!("no tray panel ({e})");
+                    match mode {
+                        Mode::Downloads => crate::show_main_with(&on_main, token),
+                        Mode::Stack => crate::progress::restore_all(&on_main, token),
+                    }
+                }
             }
         });
     });
@@ -191,6 +241,7 @@ fn open(app: &AppHandle, click: (i32, i32), scales: &[((i32, i32), f64)]) -> Res
     TURN.fetch_add(1, SeqCst);
     // Progress was skipped while it was closed.
     let _ = app.emit_to(LABEL, "engine-resync", ());
+    let _ = app.emit_to(LABEL, "panel-mode", Mode::now().name());
     let _ = app.emit_to(LABEL, "tray-opened", ());
     window.set_size_request(WIDTH, height);
     put(&window, &shown, height);

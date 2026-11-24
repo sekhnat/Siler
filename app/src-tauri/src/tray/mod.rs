@@ -10,6 +10,7 @@ mod menu;
 mod model;
 pub mod panel;
 mod place;
+pub mod stack;
 
 use ksni::{Handle, MenuItem, ToolTip, TrayMethods};
 use std::sync::OnceLock;
@@ -103,7 +104,13 @@ impl ksni::Tray for Tray {
             .try_state::<AppState>()
             .is_some_and(|s| s.engine.settings().tray_opens_panel);
         if opens_panel {
-            panel::toggle(&self.app, x, y, ksni::current_xdg_activation_token());
+            panel::toggle(
+                &self.app,
+                x,
+                y,
+                ksni::current_xdg_activation_token(),
+                panel::Mode::Downloads,
+            );
         } else {
             open_siler(&self.app);
         }
@@ -165,10 +172,18 @@ async fn follow(
                     last = tokio::time::Instant::now();
                     shown = Some(model.clone());
                     handle.update(|t| t.set(model)).await;
+                    // The progress windows' icon shows some of the same downloads.
+                    stack::sync();
                 }
             }
         }
     }
+}
+
+/// There is a tray to put things away in.
+pub fn available(app: &AppHandle) -> bool {
+    app.try_state::<AppState>()
+        .is_some_and(|s| s.tray_available.load(std::sync::atomic::Ordering::Relaxed))
 }
 
 /// Rebuilds the menu and the icon after something they show changed.
