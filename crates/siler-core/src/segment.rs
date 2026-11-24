@@ -66,13 +66,42 @@ pub(crate) struct Table {
     pub segs: Vec<Segment>,
     pub busy: Vec<bool>,
     pub conns: Vec<ConnState>,
+    /// Where the write in flight on each segment ends (0 = none). The write itself happens
+    /// without the table's lock, so a split must leave these bytes to the segment.
+    writing: Vec<u64>,
 }
 
 impl Table {
     pub fn new(segs: Vec<Segment>) -> Self {
         let busy = vec![false; segs.len()];
         let conns = segs.iter().map(Self::resting).collect();
-        Table { segs, busy, conns }
+        let writing = vec![0; segs.len()];
+        Table {
+            segs,
+            busy,
+            conns,
+            writing,
+        }
+    }
+
+    /// Claims up to `len` bytes at segment `i`'s position for a write made after the lock
+    /// is let go: returns where they go and how many (0 once the segment is complete).
+    pub fn reserve(&mut self, i: usize, len: u64) -> (u64, usize) {
+        let seg = self.segs[i];
+        let n = len.min(seg.remaining());
+        self.writing[i] = if n > 0 { seg.pos + n } else { 0 };
+        (seg.pos, n as usize)
+    }
+
+    /// The reserved bytes of segment `i` are on disk.
+    pub fn commit(&mut self, i: usize, n: u64) {
+        self.segs[i].pos += n;
+        self.writing[i] = 0;
+    }
+
+    /// The reserved write of segment `i` failed.
+    pub fn unreserve(&mut self, i: usize) {
+        self.writing[i] = 0;
     }
 
     fn resting(seg: &Segment) -> ConnState {
@@ -86,6 +115,7 @@ impl Table {
     /// The segment's worker let go of it.
     pub fn release(&mut self, i: usize) {
         self.busy[i] = false;
+        self.writing[i] = 0;
         self.conns[i] = Self::resting(&self.segs[i]);
     }
 
@@ -106,15 +136,18 @@ impl Table {
             .filter(|&i| self.busy[i])
             .max_by_key(|&i| self.segs[i].remaining())?;
         let seg = self.segs[i];
-        let rem = seg.remaining();
+        // Bytes being written stay with the segment.
+        let from = seg.pos.max(self.writing[i]);
+        let rem = seg.end.saturating_sub(from);
         if rem < 2 * min.max(1) {
             return None;
         }
-        let mid = seg.pos + rem / 2;
+        let mid = from + rem / 2;
         self.segs[i].end = mid;
         self.segs.push(Segment::new(mid, seg.end));
         self.busy.push(true);
         self.conns.push(ConnState::Waiting);
+        self.writing.push(0);
         Some(self.segs.len() - 1)
     }
 
@@ -158,5 +191,29 @@ mod tests {
         // remaining 40/40/20: next split halves a 40 segment; then pieces < 2*min are refused.
         assert!(t.split_largest(10).is_some());
         assert!(t.split_largest(25).is_none());
+    }
+
+    #[test]
+    fn split_leaves_a_write_in_flight_alone() {
+        let mut t = Table::new(vec![Segment::new(0, 100)]);
+        assert_eq!(t.take_free(), Some(0));
+        assert_eq!(t.reserve(0, 60), (0, 60));
+        // Split while the 60 bytes are being written: only the 40 after them are halved.
+        let n = t.split_largest(10).unwrap();
+        assert_eq!(t.segs[0].end, 80);
+        assert_eq!(t.segs[n], Segment::new(80, 100));
+        t.commit(0, 60);
+        assert_eq!(t.segs[0].pos, 60);
+        assert!(!t.segs[0].done());
+        // A reservation never runs past the (shortened) end.
+        assert_eq!(t.reserve(0, 50), (60, 20));
+        t.commit(0, 20);
+        assert!(t.segs[0].done());
+        assert_eq!(t.reserve(0, 50), (80, 0));
+        // Too little left past a write to split.
+        let mut t = Table::new(vec![Segment::new(0, 100)]);
+        t.take_free();
+        t.reserve(0, 90);
+        assert!(t.split_largest(10).is_none());
     }
 }

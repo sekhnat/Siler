@@ -302,8 +302,8 @@ async fn worker(
     delay: Duration,
     release: CancellationToken,
 ) -> (usize, usize, Result<(), WorkerError>) {
-    // Cancelling between awaits is safe: data is written and accounted under the table
-    // lock without awaiting, so a released worker never leaves a half-recorded chunk.
+    // Cancelling between awaits is safe: a chunk is reserved, written and accounted without
+    // awaiting, so a released worker never leaves a half-recorded chunk.
     let run = async {
         if !delay.is_zero() {
             conn(&t, idx, ConnState::Retrying);
@@ -405,21 +405,26 @@ async fn fetch(t: &Transfer, idx: usize, source: &Source) -> Result<(), WorkerEr
             // be seen at the end of the segment: stop here, before this chunk is written.
             return Err(WorkerError::Released);
         }
+        // The segment may have been shortened by a split while we were reading.
+        let (at, n) = t.run.table.lock().unwrap().reserve(idx, chunk.len() as u64);
+        if n > 0 {
+            // Written without the table's lock: a slow disk then holds up this connection
+            // alone, not the progress ticker and the windows waiting on the table.
+            if let Err(e) = t.file.write_all_at(&chunk[..n], at) {
+                t.run.table.lock().unwrap().unreserve(idx);
+                return Err(WorkerError::Fatal(e.into()));
+            }
+        }
         let (finished, written_to) = {
             let mut table = t.run.table.lock().unwrap();
-            let seg = &mut table.segs[idx];
-            // The segment may have been shortened by a split while we were reading.
-            let n = (chunk.len() as u64).min(seg.end.saturating_sub(seg.pos)) as usize;
+            table.commit(idx, n as u64);
             if n > 0 {
-                t.file
-                    .write_all_at(&chunk[..n], seg.pos)
-                    .map_err(|e| WorkerError::Fatal(e.into()))?;
-                seg.pos += n as u64;
                 t.run.downloaded.fetch_add(n as u64, Relaxed);
                 attempt.kept += n as u64;
                 source.bytes.fetch_add(n as u64, Relaxed);
                 source.fails.store(0, Relaxed);
             }
+            let seg = &table.segs[idx];
             (seg.done(), seg.pos)
         };
         if finished || written_to - unflushed >= WRITEBACK_STEP {

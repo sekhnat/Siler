@@ -12,13 +12,43 @@
   import Modal from "./Modal.svelte";
   import SkinPicker from "./SkinPicker.svelte";
 
-  let { settings, onclose, onsaved }: { settings: Settings; onclose: () => void; onsaved: (s: Settings) => void } = $props();
+  type Tab = "general" | "transfers" | "sites" | "media" | "network" | "categories" | "browser" | "appearance";
+  let {
+    settings,
+    onclose,
+    onsaved,
+    initialTab = "general",
+    focusHost = null,
+  }: {
+    settings: Settings;
+    onclose: () => void;
+    onsaved: (s: Settings) => void;
+    initialTab?: Tab;
+    /** Opens the Sites tab on this site's rule, made blank if there is none yet. */
+    focusHost?: string | null;
+  } = $props();
 
-  type Tab = "general" | "transfers" | "media" | "network" | "categories" | "browser" | "appearance";
-  let tab = $state<Tab>("general");
+  // svelte-ignore state_referenced_locally
+  let tab = $state<Tab>(focusHost ? "sites" : initialTab);
   // Edit a copy; nothing changes until Save.
   // svelte-ignore state_referenced_locally
   let s = $state<Settings>(structuredClone($state.snapshot(settings)) as Settings);
+  // svelte-ignore state_referenced_locally
+  if (focusHost && !s.server_limits.some((l) => l.host === focusHost)) {
+    s.server_limits = [...s.server_limits, blankRule(focusHost)];
+  }
+
+  function blankRule(host: string) {
+    return { host, connections: 0, speed_limit: 0, downloads: 0, per_download: 0 };
+  }
+
+  /** Puts the cursor in the rule's first number, for the site the window was opened for. */
+  function focusRule(node: HTMLInputElement, host: string) {
+    if (host && host === focusHost) queueMicrotask(() => node.focus());
+  }
+
+  /** A number field left empty means 0, as the engine wants a number. */
+  const count = (v: unknown) => Math.max(0, Math.round(Number(v) || 0));
   let integration = $state<IntegrationStatus | null>(null);
   let saving = $state(false);
   let route = $state<ProxyRoute | null>(null);
@@ -61,7 +91,7 @@
   }
 
   function addLimit() {
-    s.server_limits = [...s.server_limits, { host: "", connections: 4, speed_limit: 0 }];
+    s.server_limits = [...s.server_limits, blankRule("")];
   }
 
   // FFmpeg is looked at when the Media tab opens.
@@ -146,6 +176,11 @@
   async function save() {
     saving = true;
     try {
+      for (const l of s.server_limits) {
+        l.connections = count(l.connections);
+        l.downloads = count(l.downloads);
+        l.per_download = count(l.per_download);
+      }
       const saved = await api.setSettings(s);
       setChosenLanguage(saved.language);
       if (proxyPassword && saved.proxy.mode === "manual" && saved.proxy.username.trim()) {
@@ -164,6 +199,7 @@
   const tabs: { key: Tab; label: string }[] = [
     { key: "general", label: t("settings-general") },
     { key: "transfers", label: t("settings-transfers") },
+    { key: "sites", label: t("settings-sites") },
     { key: "media", label: t("settings-media") },
     { key: "network", label: t("settings-network") },
     { key: "categories", label: t("settings-categories") },
@@ -351,6 +387,56 @@
         <span class="hint grow truncate" title={integration?.log_dir}>{t("settings-logs", { dir: integration?.log_dir ?? "~/.local/state/siler/logs" })}</span>
         <button class="btn btn-sm" onclick={() => api.openLogFolder().catch(toasts.error.bind(toasts))}>{t("settings-open-log-folder")}</button>
       </div>
+    {:else if tab === "sites"}
+      <div class="field">
+        <span class="label">{t("settings-downloads-per-server")} <b>{s.max_downloads_per_server || t("settings-no-limit")}</b></span>
+        <input type="range" min="0" max="10" bind:value={s.max_downloads_per_server} />
+        <div class="hint">{t("settings-downloads-per-server-hint")}</div>
+      </div>
+      <div class="field">
+        <span class="label">{t("settings-connections-per-server")} <b>{s.max_connections_per_server || t("settings-no-limit")}</b></span>
+        <input type="range" min="0" max="64" bind:value={s.max_connections_per_server} />
+        <div class="hint">{t("settings-shared-by-all-downloads-from-one")}</div>
+      </div>
+      <div class="field">
+        <span class="label">{t("settings-site-rules")}</span>
+        <div class="hint">{t("settings-site-rules-hint")}</div>
+        {#if s.server_limits.length}
+          <div class="limit head">
+            <span>{t("settings-site")}</span>
+            <span>{t("settings-site-at-once")}</span>
+            <span>{t("settings-site-connections-each")}</span>
+            <span>{t("settings-site-connections-in-all")}</span>
+            <span>{t("settings-site-speed")}</span>
+            <span></span>
+          </div>
+        {/if}
+        {#each s.server_limits as limit, i (i)}
+          <div class="limit">
+            <input class="input" bind:value={limit.host} placeholder={t("settings-example-com")} spellcheck="false" />
+            <input
+              class="input num"
+              type="number"
+              min="0"
+              max="20"
+              bind:value={limit.downloads}
+              title={t("settings-site-at-once-hint")}
+              use:focusRule={limit.host}
+            />
+            <input class="input num" type="number" min="0" max="32" bind:value={limit.per_download} title={t("settings-site-connections-each-hint")} />
+            <input class="input num" type="number" min="0" max="128" bind:value={limit.connections} title={t("settings-site-connections-in-all-hint")} />
+            <input
+              class="input num"
+              type="number"
+              min="0"
+              bind:value={() => Math.round(limit.speed_limit / 1024), (v) => (limit.speed_limit = count(v) * 1024)}
+              title={t("settings-server-speed-limit")}
+            />
+            <button class="icon-btn sm" title={t("settings-remove")} onclick={() => (s.server_limits = s.server_limits.filter((_, j) => j !== i))}><X size={15} /></button>
+          </div>
+        {/each}
+        <button class="btn btn-sm add-limit" onclick={addLimit}><Plus size={14} /> {t("settings-add-a-site")}</button>
+      </div>
     {:else if tab === "media"}
       <div class="field">
         <span class="label">{t("settings-ffmpeg")}</span>
@@ -419,27 +505,6 @@
       <div class="field">
         <span class="label">{t("settings-simultaneous-downloads")} <b>{s.max_concurrent}</b></span>
         <input type="range" min="1" max="10" bind:value={s.max_concurrent} />
-      </div>
-      <div class="field">
-        <span class="label">{t("settings-connections-per-server")} <b>{s.max_connections_per_server || t("settings-no-limit")}</b></span>
-        <input type="range" min="0" max="64" bind:value={s.max_connections_per_server} />
-        <div class="hint">{t("settings-shared-by-all-downloads-from-one")}</div>
-        {#each s.server_limits as limit, i (i)}
-          <div class="limit">
-            <input class="input" bind:value={limit.host} placeholder={t("settings-example-com")} spellcheck="false" />
-            <input class="input num" type="number" min="0" max="128" bind:value={limit.connections} title={t("settings-connections")} />
-            <input
-              class="input num"
-              type="number"
-              min="0"
-              bind:value={() => Math.round(limit.speed_limit / 1024), (v) => (limit.speed_limit = Math.max(0, Math.round(Number(v) || 0)) * 1024)}
-              title={t("settings-server-speed-limit")}
-              placeholder="KB/s"
-            />
-            <button class="icon-btn sm" title={t("settings-remove")} onclick={() => (s.server_limits = s.server_limits.filter((_, j) => j !== i))}><X size={15} /></button>
-          </div>
-        {/each}
-        <button class="btn btn-sm add-limit" onclick={addLimit}><Plus size={14} /> {t("settings-different-limit-for-a-server")}</button>
       </div>
       <div class="field">
         <span class="label">{t("settings-http2-connections")} <b>{s.http2_connections_per_server || t("settings-http2-off")}</b></span>
@@ -886,10 +951,16 @@
   }
   .limit {
     display: grid;
-    grid-template-columns: 1fr 72px 90px auto;
+    grid-template-columns: 1fr 62px 84px 84px 84px 30px;
     gap: 6px;
     align-items: center;
     margin-top: 8px;
+  }
+  .limit.head {
+    align-items: end;
+    font-size: 11px;
+    line-height: 1.2;
+    color: var(--text-2);
   }
   .add-limit {
     margin-top: 8px;

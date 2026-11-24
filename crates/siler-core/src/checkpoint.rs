@@ -5,7 +5,8 @@
 //! (Performance) that is what was written, which survives Siler crashing but not the computer
 //! losing power. In Durable mode ("Extra-safe resume") the partial file is flushed to disk
 //! first, and only the progress taken *before* the flush is saved; a flush that fails saves
-//! nothing. Flushing waits for the disk, so it runs off the async runtime, one at a time.
+//! nothing. Flushing and saving wait for the disk, so they run off the async runtime, one
+//! checkpoint at a time.
 
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
@@ -40,7 +41,7 @@ impl Checkpoints {
 
     /// Saves `snap` with `persist`; in Durable mode only after `sync` has put the file on
     /// disk. `snap` must be taken before this is called. Skipped when nothing changed, or
-    /// while the previous Durable checkpoint is still being written.
+    /// while the previous checkpoint is still being written.
     pub fn save(
         &self,
         snap: Snapshot,
@@ -50,26 +51,25 @@ impl Checkpoints {
         if snap.downloaded == self.saved.load(Relaxed) {
             return;
         }
-        if !self.durable {
-            persist(&snap);
-            self.saved.store(snap.downloaded, Relaxed);
-            return;
-        }
         let mut job = self.job.lock().unwrap();
         if job.as_ref().is_some_and(|j| !j.is_finished()) {
             return;
         }
         let saved = self.saved.clone();
-        *job = Some(tokio::task::spawn_blocking(move || match sync() {
-            Ok(()) => {
-                persist(&snap);
-                saved.store(snap.downloaded, Relaxed);
+        let durable = self.durable;
+        // Even without the flush, the database write can wait on a busy disk: it too runs
+        // off the async runtime, so the transfer and the windows don't wait with it.
+        *job = Some(tokio::task::spawn_blocking(move || {
+            if durable && let Err(e) = sync() {
+                tracing::warn!(%e, "couldn't flush the partial file; progress not saved");
+                return;
             }
-            Err(e) => tracing::warn!(%e, "couldn't flush the partial file; progress not saved"),
+            persist(&snap);
+            saved.store(snap.downloaded, Relaxed);
         }));
     }
 
-    /// Waits for a Durable checkpoint still being written, so that it can't land after what
+    /// Waits for a checkpoint still being written, so that it can't land after what
     /// the download saves next (a pause, a failure, or the finished download).
     pub async fn settle(&self) {
         let job = self.job.lock().unwrap().take();

@@ -212,12 +212,12 @@ pub fn import_file(app: &AppHandle, path: &Path) -> Res<usize> {
     Ok(import_items(app, &state.engine, items))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn import_list(app: AppHandle, path: PathBuf) -> Res<usize> {
     import_file(&app, &path)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn export_list(
     state: State<'_, AppState>,
     path: PathBuf,
@@ -308,7 +308,7 @@ pub fn mirrors_arg(urls: Option<&[String]>, extra: Option<&PendingExtra>) -> Vec
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn accept_unverified(state: State<'_, AppState>, id: i64) -> Res<()> {
     state.engine.accept_unverified(id).map_err(err)
 }
@@ -343,7 +343,7 @@ pub async fn file_digests(state: State<'_, AppState>, id: i64) -> Res<Vec<Digest
         .collect())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_checksum(state: State<'_, AppState>, id: i64, checksum: Option<String>) -> Res<()> {
     let c = match checksum.as_deref().map(str::trim) {
         Some(t) if !t.is_empty() => Some(Checksum::parse(t)?),
@@ -385,7 +385,7 @@ pub struct ZipPick {
 }
 
 /// Adds files picked out of a ZIP archive. Returns how many were added.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn add_zip_entries(state: State<'_, AppState>, pick: ZipPick) -> Res<usize> {
     let meta = crate::commands::pending_meta(&state, pick.pending_id).unwrap_or_default();
     let mut added = 0;
@@ -422,12 +422,12 @@ pub fn add_zip_entries(state: State<'_, AppState>, pick: ZipPick) -> Res<usize> 
 
 // ---------------------------------------------------------------- quota and command
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn quota_status(state: State<'_, AppState>) -> QuotaStatus {
     state.engine.quota_status()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn ignore_quota(state: State<'_, AppState>) -> QuotaStatus {
     state.engine.ignore_quota()
 }
@@ -443,22 +443,22 @@ pub async fn test_command(
 
 // ---------------------------------------------------------------- site grabber
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn grab_projects(state: State<'_, AppState>) -> Res<Vec<GrabProject>> {
     state.engine.grab_projects().map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_grab_project(state: State<'_, AppState>, project: GrabProject) -> Res<i64> {
     state.engine.save_grab_project(project).map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_grab_project(state: State<'_, AppState>, id: i64) -> Res<()> {
     state.engine.delete_grab_project(id).map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn grab_start(
     state: State<'_, AppState>,
     config: GrabConfig,
@@ -467,13 +467,13 @@ pub fn grab_start(
     state.engine.grab_start(config, project_id).map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn grab_cancel(state: State<'_, AppState>, run_id: u64) {
     state.engine.grab_cancel(run_id);
 }
 
 /// Puts the files a grab found into the Add window.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn review_grab(app: AppHandle, files: Vec<GrabFile>, queue_id: Option<i64>) -> usize {
     let n = files.len();
     let reviews = files

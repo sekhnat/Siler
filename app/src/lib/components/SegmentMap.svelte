@@ -59,17 +59,17 @@
     position: absolute;
     top: 0;
     bottom: 0;
-    box-shadow: inset -1px 0 0 var(--surface);
+    border-right: 1px solid var(--surface);
   }
+  /* No width transition: progress comes four times a second (see ProgressBar). */
   .fill {
     height: 100%;
     background: color-mix(in srgb, var(--accent) 55%, transparent);
-    transition: width 0.3s linear;
   }
   .fill.active {
     background: var(--grad);
     background-size: 400px 100%;
-    box-shadow: inset -2px 0 0 var(--knob);
+    border-right: 2px solid var(--knob);
   }
   .tick {
     position: absolute;

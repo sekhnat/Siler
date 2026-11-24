@@ -413,18 +413,21 @@ impl Engine {
                 self.inner.rebalance(&st, &h);
             }
         }
-        if old.connections != new.connections {
-            // Unfinished downloads still on the old default follow the new one.
-            let ids: Vec<i64> = self
+        if old.connections != new.connections || old.server_limits != new.server_limits {
+            // Unfinished downloads still on the old default for their site follow the new.
+            let moves: Vec<(i64, u8)> = self
                 .inner
                 .state()
                 .records
                 .values()
-                .filter(|r| r.status != Status::Completed && r.connections == old.connections)
-                .map(|r| r.id)
+                .filter(|r| r.status != Status::Completed)
+                .filter_map(|r| {
+                    let (was, now) = (old.connections_for(&r.url), new.connections_for(&r.url));
+                    (r.connections == was && now != was).then_some((r.id, now))
+                })
                 .collect();
-            for id in ids {
-                let _ = self.set_connections(id, new.connections);
+            for (id, connections) in moves {
+                let _ = self.set_connections(id, connections);
             }
         }
         self.inner.schedule();
@@ -432,21 +435,30 @@ impl Engine {
     }
 
     pub fn list(&self) -> Vec<DownloadInfo> {
-        let st = self.inner.state();
-        st.records
-            .values()
-            .map(|r| {
-                self.inner
-                    .info(r, st.running.get(&r.id).map(|a| a.as_ref()))
-            })
-            .collect()
+        let mut all: Vec<DownloadInfo> = {
+            let st = self.inner.state();
+            st.records
+                .values()
+                .map(|r| {
+                    self.inner
+                        .info_unchecked(r, st.running.get(&r.id).map(|a| a.as_ref()))
+                })
+                .collect()
+        };
+        // Looked at on disk once the engine is free again: a busy disk can be slow to answer.
+        all.iter_mut().for_each(check_missing);
+        all
     }
 
     pub fn get(&self, id: i64) -> Option<DownloadInfo> {
-        let st = self.inner.state();
-        st.records
-            .get(&id)
-            .map(|r| self.inner.info(r, st.running.get(&id).map(|a| a.as_ref())))
+        let mut d = {
+            let st = self.inner.state();
+            let r = st.records.get(&id)?;
+            self.inner
+                .info_unchecked(r, st.running.get(&id).map(|a| a.as_ref()))
+        };
+        check_missing(&mut d);
+        Some(d)
     }
 
     /// Asks the server about `url` and suggests a filename and folder, without adding anything.
@@ -462,8 +474,16 @@ impl Engine {
 
     /// Whether `dir/name` is taken (on disk or by another download), and a free alternative.
     pub fn name_status(&self, dir: &Path, name: &str) -> (bool, String) {
-        let st = self.inner.state();
-        let taken = |n: &str| name_claimed(&st, dir, n, None);
+        // The names downloads claim, taken under the lock; the disk is asked after.
+        let claimed: Vec<String> = {
+            let st = self.inner.state();
+            st.records
+                .values()
+                .filter(|r| r.status != Status::Completed && r.dir.as_deref() == Some(dir))
+                .filter_map(|r| r.filename.clone())
+                .collect()
+        };
+        let taken = |n: &str| claimed.iter().any(|c| c == n);
         let exists =
             taken(name) || dir.join(name).exists() || filename::part_path(dir, name).exists();
         (exists, filename::unique_name(dir, name, taken))
@@ -536,7 +556,10 @@ impl Engine {
             etag: None,
             last_modified: None,
             meta: nd.meta.bound_to(url.as_str()),
-            connections: nd.connections.unwrap_or(s.connections).clamp(1, 32),
+            connections: nd
+                .connections
+                .unwrap_or_else(|| s.connections_for(url.as_str()))
+                .clamp(1, 32),
             speed_limit: 0,
             created_at: now_ms(),
             completed_at: None,
@@ -1601,7 +1624,7 @@ impl Engine {
             etag: None,
             last_modified: None,
             meta: meta.bound_to(url.as_str()),
-            connections: s.connections.clamp(1, 32),
+            connections: s.connections_for(url.as_str()),
             speed_limit: 0,
             created_at: now_ms(),
             completed_at: None,
@@ -2017,6 +2040,15 @@ fn move_sidecars(rec: &mut Record, new_dir: &Path, new_name: &str) {
 }
 
 /// True if another unfinished download already intends to write `dir/name`.
+/// Notes a completed download whose file is gone from disk.
+fn check_missing(d: &mut DownloadInfo) {
+    d.file_missing = d.status == Status::Completed
+        && match (&d.dir, &d.filename) {
+            (Some(dir), Some(n)) => !dir.join(n).exists(),
+            _ => false,
+        };
+}
+
 pub(crate) fn name_claimed(st: &State, dir: &Path, name: &str, except: Option<i64>) -> bool {
     st.records.values().any(|r| {
         Some(r.id) != except
@@ -2045,6 +2077,13 @@ impl Inner {
     }
 
     fn info(&self, r: &Record, run: Option<&Running>) -> DownloadInfo {
+        let mut d = self.info_unchecked(r, run);
+        check_missing(&mut d);
+        d
+    }
+
+    /// [`Self::info`] without looking on disk whether a completed file is still there.
+    fn info_unchecked(&self, r: &Record, run: Option<&Running>) -> DownloadInfo {
         let (downloaded, speed, active, segments, conns) = match run {
             Some(run) => {
                 let table = run.table.lock().unwrap();
@@ -2076,11 +2115,6 @@ impl Inner {
                 visible_conns(&r.segments, None),
             ),
         };
-        let file_missing = r.status == Status::Completed
-            && match (&r.dir, &r.filename) {
-                (Some(d), Some(n)) => !d.join(n).exists(),
-                _ => false,
-            };
         DownloadInfo {
             id: r.id,
             url: r.url.clone(),
@@ -2106,7 +2140,7 @@ impl Inner {
             queue_id: r.queue_id,
             sync_every: u64::try_from(r.sync_every).unwrap_or(0),
             sync_checked_at: r.sync_checked_at,
-            file_missing,
+            file_missing: false,
             error_code: r.error.as_ref().and(r.extras.error_code.clone()),
             needs_login: r.needs_login.clone(),
             needs_host_key: r.needs_host_key.clone(),
@@ -2205,11 +2239,14 @@ impl Inner {
         drop(guard);
         self.emit(Event::Progress { items, total_speed });
         if went_idle {
-            self.store.lock().unwrap().idle_maintenance();
+            // The WAL truncate waits for the disk, which is still busy writing out what the
+            // downloads left: not on the ticker, which the windows hear progress from.
+            let me = self.clone();
+            self.rt
+                .spawn_blocking(move || me.store.lock().unwrap().idle_maintenance());
         }
     }
 
-    /// Starts queued downloads while there are free slots.
     /// Moves `user:password@` from a URL into the login for its server.
     pub(crate) fn strip_login(&self, url: &str) -> Result<String> {
         let mut u = probe::parse_url(url)?;
@@ -2265,10 +2302,24 @@ impl Inner {
         }
     }
 
+    /// Starts queued downloads while there are free slots: in all, in their queue and on
+    /// their site.
     pub(crate) fn schedule(self: &Arc<Self>) {
-        let (max, server_limits) = {
+        let (max, server_limits, per_server) = {
             let s = self.settings.read().unwrap();
-            (s.max_concurrent, s.server_limits.clone())
+            (
+                s.max_concurrent,
+                s.server_limits.clone(),
+                s.max_downloads_per_server,
+            )
+        };
+        // The site each download counts against, and how many of the site's may run.
+        let site_of = |r: &Record| {
+            crate::settings::download_limit(
+                &server_limits,
+                per_server,
+                r.final_url.as_deref().unwrap_or(&r.url),
+            )
         };
         let mut st = self.state();
         if st.shutting_down || self.quota.reached() || self.global.over_budget() {
@@ -2285,9 +2336,11 @@ impl Inner {
             ..
         } = &mut *st;
         let mut per_queue: HashMap<i64, usize> = HashMap::new();
+        let mut per_site: HashMap<String, usize> = HashMap::new();
         for id in running.keys() {
             if let Some(r) = records.get(id) {
                 *per_queue.entry(r.queue_id).or_default() += 1;
+                *per_site.entry(site_of(r).0).or_default() += 1;
             }
         }
         let mut queues_changed = false;
@@ -2313,6 +2366,14 @@ impl Inner {
             if unforced && queue_max > 0 && *in_queue >= queue_max {
                 continue;
             }
+            // A site with all its downloads running holds back only its own: the next ones
+            // from other sites still start.
+            let (site, site_max) = site_of(&records[&id]);
+            let in_site = per_site.entry(site).or_default();
+            if unforced && site_max > 0 && *in_site >= site_max {
+                continue;
+            }
+            *in_site += 1;
             *in_queue += 1;
             if let Some(q) = queues.get_mut(&qid)
                 && !q.active
@@ -3072,7 +3133,7 @@ impl Inner {
                 return;
             }
             let snap = {
-                // Taken together: a chunk is written and counted under this lock.
+                // Taken together: a written chunk is counted under this lock.
                 let table = run.table.lock().unwrap();
                 Snapshot {
                     downloaded: run.downloaded.load(Relaxed),

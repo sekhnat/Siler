@@ -1598,7 +1598,7 @@ async fn connections_shared_per_server() {
     s.server_limits = vec![ServerLimit {
         host: "127.0.0.1".into(),
         connections: 32,
-        speed_limit: 0,
+        ..Default::default()
     }];
     e.set_settings(s).unwrap();
     let da = wait_finished(&e, a).await;
@@ -1675,6 +1675,141 @@ async fn queues_have_their_own_limits() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert_eq!(peak, 3);
+}
+
+// ---------------------------------------------------------------- sites
+
+/// The same test server, under a second site's name.
+fn other_site(url: String) -> String {
+    url.replacen("127.0.0.1", "localhost", 1)
+}
+
+#[tokio::test]
+async fn sites_have_their_own_limits() {
+    let srv = Server::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let e = engine(tmp.path(), |s| {
+        s.max_concurrent = 10;
+        s.connections = 2;
+        s.server_limits = vec![ServerLimit {
+            host: "127.0.0.1".into(),
+            downloads: 1,
+            ..Default::default()
+        }];
+    })
+    .await;
+    let url = |n: &str| srv.url(&format!("/file/{n}?size=1048576&rate=2097152"));
+    let limited: Vec<i64> = ["a", "b", "c"]
+        .iter()
+        .map(|n| add(&e, url(&format!("{n}.bin"))))
+        .collect();
+    let elsewhere = add(&e, other_site(url("d.bin")));
+    let mut together = false;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let on_site = limited
+            .iter()
+            .filter(|id| e.get(**id).unwrap().status.is_running())
+            .count();
+        assert!(
+            on_site <= 1,
+            "{on_site} downloads from the limited site at once"
+        );
+        // The other site's download isn't held back behind them.
+        together |= on_site == 1 && e.get(elsewhere).unwrap().status.is_running();
+        let all = limited.iter().chain([&elsewhere]);
+        if all
+            .clone()
+            .all(|id| e.get(*id).unwrap().status == Status::Completed)
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "timed out");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        together,
+        "the other site's download waited for the limited site"
+    );
+    for id in limited.iter().chain([&elsewhere]) {
+        assert_complete(&e.get(*id).unwrap(), &srv.data(MIB as usize));
+    }
+}
+
+#[tokio::test]
+async fn the_general_limit_per_site_and_start_now() {
+    let srv = Server::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let e = engine(tmp.path(), |s| {
+        s.max_concurrent = 10;
+        s.connections = 2;
+        s.max_downloads_per_server = 1;
+    })
+    .await;
+    let url = |n: &str| srv.url(&format!("/file/{n}?size=4194304&rate=1048576"));
+    let a = add(&e, url("a.bin"));
+    let b = add(&e, url("b.bin"));
+    wait_for(&e, a, |d| d.status == Status::Downloading).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        e.get(b).unwrap().status,
+        Status::Queued,
+        "past the site's limit"
+    );
+    // "Start now" goes past it, as past every other limit.
+    e.start_now(b).unwrap();
+    wait_for(&e, b, |d| d.status.is_running()).await;
+    assert!(e.get(a).unwrap().status.is_running());
+    e.pause(a).unwrap();
+    e.pause(b).unwrap();
+}
+
+#[tokio::test]
+async fn a_site_rule_sets_the_connections_of_new_downloads() {
+    let srv = Server::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let e = engine(tmp.path(), |s| {
+        s.connections = 8;
+        s.server_limits = vec![ServerLimit {
+            host: "127.0.0.1".into(),
+            per_download: 3,
+            ..Default::default()
+        }];
+    })
+    .await;
+    let later = |url: String| {
+        e.add(NewDownload {
+            url,
+            start_paused: true,
+            ..Default::default()
+        })
+        .unwrap()
+    };
+    let ruled = later(srv.url("/file/a.bin"));
+    let other = later(other_site(srv.url("/file/b.bin")));
+    let chosen = e
+        .add(NewDownload {
+            url: srv.url("/file/c.bin"),
+            start_paused: true,
+            connections: Some(5),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(e.get(ruled).unwrap().connections, 3);
+    assert_eq!(e.get(other).unwrap().connections, 8);
+    assert_eq!(
+        e.get(chosen).unwrap().connections,
+        5,
+        "the user's choice wins"
+    );
+
+    // Changing the rule moves the downloads that were on it, and only them.
+    let mut s = e.settings();
+    s.server_limits[0].per_download = 6;
+    e.set_settings(s).unwrap();
+    assert_eq!(e.get(ruled).unwrap().connections, 6);
+    assert_eq!(e.get(other).unwrap().connections, 8);
+    assert_eq!(e.get(chosen).unwrap().connections, 5);
 }
 
 #[tokio::test]

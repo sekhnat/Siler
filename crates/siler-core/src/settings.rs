@@ -35,15 +35,31 @@ impl CategoryRule {
     }
 }
 
-/// Different limits for one server (and its subdomains).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Different limits for one site: a server and its subdomains.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ServerLimit {
     pub host: String,
-    /// 0 = the general limit.
+    /// Connections to it across all its downloads; 0 = the general limit.
     pub connections: u8,
     /// Bytes per second each new download from it starts with; 0 = none.
     #[serde(default)]
     pub speed_limit: u64,
+    /// How many of its downloads run at once; 0 = the general limit.
+    #[serde(default)]
+    pub downloads: u8,
+    /// Connections each new download from it gets; 0 = the general setting.
+    #[serde(default)]
+    pub per_download: u8,
+}
+
+impl ServerLimit {
+    /// Nothing different from the general settings.
+    fn is_empty(&self) -> bool {
+        self.connections == 0
+            && self.speed_limit == 0
+            && self.downloads == 0
+            && self.per_download == 0
+    }
 }
 
 /// A host name as server limits are kept: lowercase, no port, path or `www.`.
@@ -56,11 +72,11 @@ pub fn server_host(input: &str) -> String {
 }
 
 /// The most specific of `limits` that applies to `host` and sets what `pick` reads.
-fn server_limit<T: Copy + Default + PartialEq>(
-    limits: &[ServerLimit],
+fn server_rule<'a, T: Copy + Default + PartialEq>(
+    limits: &'a [ServerLimit],
     host: &str,
     pick: impl Fn(&ServerLimit) -> T,
-) -> Option<T> {
+) -> Option<&'a ServerLimit> {
     let host = host.trim_end_matches('.').to_ascii_lowercase();
     limits
         .iter()
@@ -70,7 +86,26 @@ fn server_limit<T: Copy + Default + PartialEq>(
             host == h || host.ends_with(&format!(".{h}"))
         })
         .max_by_key(|l| l.host.len())
-        .map(pick)
+}
+
+/// What the most specific of `limits` that applies to `host` sets for `pick`.
+fn server_limit<T: Copy + Default + PartialEq>(
+    limits: &[ServerLimit],
+    host: &str,
+    pick: impl Fn(&ServerLimit) -> T + Copy,
+) -> Option<T> {
+    server_rule(limits, host, pick).map(pick)
+}
+
+/// Which site a download from `url` counts against for downloads at once, and how many
+/// may run: the site of the most specific rule that limits it, else its own server with
+/// the general limit (`general`, 0 = none).
+pub fn download_limit(limits: &[ServerLimit], general: u8, url: &str) -> (String, usize) {
+    let host = server_host(url);
+    match server_rule(limits, &host, |l| l.downloads) {
+        Some(l) => (l.host.clone(), l.downloads as usize),
+        None => (host, general as usize),
+    }
 }
 
 /// The speed limit new downloads from `host` start with; 0 = none.
@@ -149,6 +184,8 @@ pub struct Settings {
     pub categories: Vec<CategoryRule>,
     /// Connections to one server across all its downloads; 0 = no limit.
     pub max_connections_per_server: u8,
+    /// Downloads from one server running at once; 0 = no limit.
+    pub max_downloads_per_server: u8,
     /// HTTP/2 connections a ranged https download's streams share per server (0–16);
     /// 0 = HTTP/1.1 only, one connection per stream.
     pub http2_connections_per_server: u8,
@@ -351,6 +388,7 @@ impl Default for Settings {
             on_conflict: OnConflict::Ask,
             categories: default_categories(),
             max_connections_per_server: 16,
+            max_downloads_per_server: 0,
             http2_connections_per_server: 0,
             server_limits: Vec::new(),
             proxy: ProxySettings::default(),
@@ -412,6 +450,13 @@ impl Settings {
             .unwrap_or(self.max_connections_per_server) as usize
     }
 
+    /// How many connections a new download from `url` gets, unless it is told otherwise.
+    pub fn connections_for(&self, url: &str) -> u8 {
+        server_limit(&self.server_limits, &server_host(url), |l| l.per_download)
+            .unwrap_or(self.connections)
+            .clamp(1, 32)
+    }
+
     /// Remembers (or, with 0, forgets) the speed limit for downloads from `host`.
     pub fn remember_speed_limit(&mut self, host: &str, bytes_per_sec: u64) {
         let host = server_host(host);
@@ -424,11 +469,12 @@ impl Settings {
                 host,
                 connections: 0,
                 speed_limit: bytes_per_sec,
+                downloads: 0,
+                per_download: 0,
             }),
             None => {}
         }
-        self.server_limits
-            .retain(|l| l.connections > 0 || l.speed_limit > 0);
+        self.server_limits.retain(|l| !l.is_empty());
     }
 
     /// A conflict policy for downloads added without a dialog, where nobody can be asked.
@@ -450,6 +496,7 @@ impl Settings {
         self.connections = self.connections.clamp(1, 32);
         self.min_split_size = self.min_split_size.max(16 * 1024);
         self.max_connections_per_server = self.max_connections_per_server.min(128);
+        self.max_downloads_per_server = self.max_downloads_per_server.min(20);
         self.http2_connections_per_server = self
             .http2_connections_per_server
             .min(crate::net::MAX_H2_SLOTS);
@@ -459,10 +506,9 @@ impl Settings {
             .filter_map(|mut l| {
                 l.host = server_host(&l.host);
                 l.connections = l.connections.min(128);
-                (!l.host.is_empty()
-                    && (l.connections > 0 || l.speed_limit > 0)
-                    && hosts.insert(l.host.clone()))
-                .then_some(l)
+                l.downloads = l.downloads.min(20);
+                l.per_download = l.per_download.min(32);
+                (!l.host.is_empty() && !l.is_empty() && hosts.insert(l.host.clone())).then_some(l)
             })
             .collect();
         if self.user_agent.trim().is_empty() {
@@ -536,6 +582,7 @@ mod tests {
                 host: "example.com".into(),
                 connections: 4,
                 speed_limit: 0,
+                ..Default::default()
             }],
             ..Default::default()
         };
@@ -569,16 +616,19 @@ mod tests {
                     host: "https://www.Example.com/x".into(),
                     connections: 4,
                     speed_limit: 0,
+                    ..Default::default()
                 },
                 ServerLimit {
                     host: "cdn.example.com:8443".into(),
                     connections: 2,
                     speed_limit: 0,
+                    ..Default::default()
                 },
                 ServerLimit {
                     host: "  ".into(),
                     connections: 9,
                     speed_limit: 0,
+                    ..Default::default()
                 },
             ],
             ..Default::default()
@@ -608,5 +658,83 @@ mod tests {
         assert_eq!(s.categories.len(), Category::ALL.len());
         assert_eq!(s.category_for("x.mkv"), Category::Video);
         assert_eq!(s.on_conflict, OnConflict::Ask);
+    }
+
+    #[test]
+    fn site_rules_for_downloads_at_once_and_connections_each() {
+        let s = Settings {
+            connections: 8,
+            max_downloads_per_server: 3,
+            server_limits: vec![
+                ServerLimit {
+                    host: "example.com".into(),
+                    downloads: 1,
+                    per_download: 2,
+                    ..Default::default()
+                },
+                ServerLimit {
+                    host: "fast.example.com".into(),
+                    per_download: 16,
+                    ..Default::default()
+                },
+                ServerLimit {
+                    host: "huge.org".into(),
+                    downloads: 99,
+                    per_download: 99,
+                    ..Default::default()
+                },
+                // Nothing set: dropped.
+                ServerLimit {
+                    host: "nothing.net".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }
+        .normalized();
+        assert_eq!(s.server_limits.len(), 3);
+        let at_once = |url| download_limit(&s.server_limits, s.max_downloads_per_server, url);
+        // Subdomains share their site's limit, counted under the site's name.
+        assert_eq!(
+            at_once("https://a.example.com/x"),
+            ("example.com".into(), 1)
+        );
+        assert_eq!(
+            at_once("http://www.Example.com:8080/y"),
+            ("example.com".into(), 1)
+        );
+        // fast.example.com sets no downloads limit of its own: example.com's applies.
+        assert_eq!(
+            at_once("https://fast.example.com/z"),
+            ("example.com".into(), 1)
+        );
+        assert_eq!(at_once("https://other.net/f"), ("other.net".into(), 3));
+        assert_eq!(
+            at_once("https://huge.org/f"),
+            ("huge.org".into(), 20),
+            "clamped"
+        );
+        assert_eq!(s.connections_for("https://dl.example.com/x"), 2);
+        assert_eq!(s.connections_for("https://fast.example.com/x"), 16);
+        assert_eq!(s.connections_for("https://huge.org/x"), 32, "clamped");
+        assert_eq!(s.connections_for("https://other.net/x"), 8);
+        // Speed and connection limits leave the new fields to the general settings.
+        assert_eq!(
+            s.connection_limit("example.com"),
+            s.max_connections_per_server as usize
+        );
+    }
+
+    #[test]
+    fn site_rules_saved_before_the_new_fields_still_load() {
+        let s: Settings =
+            serde_json::from_str(r#"{"server_limits":[{"host":"example.com","connections":4}]}"#)
+                .unwrap();
+        let rule = &s.server_limits[0];
+        assert_eq!(
+            (rule.connections, rule.downloads, rule.per_download),
+            (4, 0, 0)
+        );
+        assert_eq!(s.max_downloads_per_server, 0);
     }
 }

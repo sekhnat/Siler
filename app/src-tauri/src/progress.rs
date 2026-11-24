@@ -38,7 +38,7 @@ fn dialogs() -> std::sync::MutexGuard<'static, Dialogs> {
     DIALOGS.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn label(id: i64) -> String {
+pub fn label(id: i64) -> String {
     format!("{PROGRESS}{id}")
 }
 
@@ -56,9 +56,14 @@ pub fn in_tray() -> Vec<i64> {
         .collect()
 }
 
-/// A progress window is on screen, so it needs the progress events.
-pub fn any_shown() -> bool {
-    dialogs().open.values().any(|tray| !tray)
+/// The downloads whose progress windows are on screen, so need the progress events.
+pub fn shown() -> Vec<i64> {
+    dialogs()
+        .open
+        .iter()
+        .filter(|(_, tray)| !**tray)
+        .map(|(id, _)| *id)
+        .collect()
 }
 
 /// The user started `id`: its window opens when it starts running.
@@ -81,7 +86,19 @@ pub fn want(app: &AppHandle, id: i64) {
 }
 
 /// Opens the progress window of `id`, or brings it back.
+///
+/// Always on the main thread. Built from another thread, a window is made on the main thread
+/// but only known by its label once the asking thread hears back: a second request in between
+/// (a double click, the download starting) found no window and built another with the same
+/// label, which then had no working connection to Siler and could not be closed.
 pub fn open(app: &AppHandle, id: i64, token: Option<String>) {
+    let on_main = app.clone();
+    if let Err(e) = app.run_on_main_thread(move || open_here(&on_main, id, token)) {
+        tracing::error!("could not open the progress window: {e}");
+    }
+}
+
+fn open_here(app: &AppHandle, id: i64, token: Option<String>) {
     let label = label(id);
     if app.get_webview_window(&label).is_some() {
         restore(app, id, token);
@@ -131,7 +148,7 @@ fn raise(app: &AppHandle, label: String, token: Option<String>) {
         let _ = w.unminimize();
         let _ = w.set_focus();
         // Progress was skipped while it was away.
-        let _ = w.emit("progress-shown", ());
+        let _ = w.emit_to(w.label(), "progress-shown", ());
     });
 }
 
@@ -165,11 +182,14 @@ pub fn restore_all(app: &AppHandle, token: Option<String>) {
     }
 }
 
-/// Closes the progress window of `id`, if it is open.
+/// Closes the progress window of `id`, if it is open (on the main thread, as it opens).
 pub fn close(app: &AppHandle, id: i64) {
-    if let Some(w) = app.get_webview_window(&label(id)) {
-        let _ = w.destroy();
-    }
+    let on_main = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(w) = on_main.get_webview_window(&label(id)) {
+            let _ = w.destroy();
+        }
+    });
 }
 
 /// A window is gone.
@@ -180,7 +200,13 @@ pub fn destroyed(label: &str) {
     }
 }
 
+/// On the main thread, for the reason [`open`] gives.
 fn open_complete(app: &AppHandle, id: i64) {
+    let on_main = app.clone();
+    let _ = app.run_on_main_thread(move || open_complete_here(&on_main, id));
+}
+
+fn open_complete_here(app: &AppHandle, id: i64) {
     let label = format!("{COMPLETE}{id}");
     if let Some(w) = app.get_webview_window(&label) {
         let _ = w.show();
@@ -233,9 +259,12 @@ pub fn on_event(app: &AppHandle, ev: &Event) {
                 d.shown.remove(id);
             }
             close(app, *id);
-            if let Some(w) = app.get_webview_window(&format!("{COMPLETE}{id}")) {
-                let _ = w.destroy();
-            }
+            let (on_main, id) = (app.clone(), *id);
+            let _ = app.run_on_main_thread(move || {
+                if let Some(w) = on_main.get_webview_window(&format!("{COMPLETE}{id}")) {
+                    let _ = w.destroy();
+                }
+            });
         }
         Event::Completed { id, filename, path } => completed(app, *id, filename, path),
         _ => {}
@@ -290,7 +319,7 @@ fn engine(app: &AppHandle) -> Res<siler_core::Engine> {
         .ok_or_else(|| tr("command-siler-isnt-running"))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_download(app: AppHandle, id: i64) -> Res<DownloadInfo> {
     engine(&app)?.get(id).ok_or_else(|| tr("error-not-found"))
 }
@@ -318,7 +347,7 @@ pub fn progress_restore_all(app: AppHandle) {
 }
 
 /// The downloads whose windows are in the tray.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn progress_in_tray(app: AppHandle) -> Vec<DownloadInfo> {
     let Ok(engine) = engine(&app) else {
         return Vec::new();
@@ -329,7 +358,7 @@ pub fn progress_in_tray(app: AppHandle) -> Vec<DownloadInfo> {
         .collect()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_on_done(app: AppHandle, id: i64, on_done: Option<OnDone>) -> Res<()> {
     engine(&app)?
         .set_on_done(id, on_done)
@@ -346,13 +375,13 @@ fn change_settings(app: &AppHandle, f: impl FnOnce(&mut siler_core::Settings)) -
 }
 
 /// Remembers the speed limit for the server of `url`; 0 forgets it.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn remember_server_speed_limit(app: AppHandle, url: String, bytes_per_sec: u64) -> Res<()> {
     change_settings(&app, |s| s.remember_speed_limit(&url, bytes_per_sec))
 }
 
 /// The speed limit remembered for the server of `url`; 0 = none.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn server_speed_limit(app: AppHandle, url: String) -> Res<u64> {
     let s = engine(&app)?.settings();
     Ok(siler_core::server_speed_limit(
@@ -362,7 +391,7 @@ pub fn server_speed_limit(app: AppHandle, url: String) -> Res<u64> {
 }
 
 /// Shows the connections in progress windows, or hides them.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_progress_details(app: AppHandle, shown: bool) -> Res<()> {
     change_settings(&app, |s| s.ui.progress_details = shown)
 }
@@ -381,7 +410,10 @@ pub async fn open_with(app: AppHandle, id: i64) -> Res<()> {
         Ok(()) => Ok(()),
         Err(e) => {
             tracing::info!("no application chooser ({e}); opening with the default one");
-            crate::launch::open(&path).map_err(|e| e.to_string())
+            crate::commands::off_thread(move || {
+                crate::launch::open(&path).map_err(|e| e.to_string())
+            })
+            .await
         }
     }
 }

@@ -1,9 +1,9 @@
 <script lang="ts">
   import { t } from "./lib/i18n";
-  import { Activity, ArrowDownToLine, ArrowUpToLine, ChevronDown, ChevronUp, CircleStop, Copy, ExternalLink, FileOutput, FolderOpen, KeyRound, Link2, ListOrdered, Pause, Play, RefreshCcwDot, RefreshCw, RotateCcw, ShieldCheck, SlidersHorizontal, Trash2, Zap } from "@lucide/svelte";
+  import { Activity, ArrowDownToLine, Globe, ArrowUpToLine, ChevronDown, ChevronUp, CircleStop, Copy, ExternalLink, FileOutput, FolderOpen, KeyRound, Link2, ListOrdered, Pause, Play, RefreshCcwDot, RefreshCw, RotateCcw, ShieldCheck, SlidersHorizontal, Trash2, Zap } from "@lucide/svelte";
   import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
   import { listen } from "@tauri-apps/api/event";
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
   import { api, MAIN_QUEUE, type AfterDone, type Download, type ListFormat, type Queue, type QueueMove, type Settings } from "./lib/api";
   import { draggable, startFileDrag } from "./lib/drag";
@@ -60,6 +60,8 @@
   let addOpen = $state<{ url: string } | null>(null);
   let batchOpen = $state<BatchItem[] | null>(null);
   let settingsOpen = $state(false);
+  /** The site whose rule Settings opens on ("Limits for this site…"). */
+  let settingsSite = $state<string | null>(null);
   let removeItems = $state<Download[] | null>(null);
   let propsFor = $state<number | null>(null);
   let refreshFor = $state<number | null>(null);
@@ -187,11 +189,24 @@
     }
   }
 
+  /** Sorts by what changes with every progress update. */
+  const LIVE_SORTS = new Set<SortKey>(["progress", "speed", "eta", "connections"]);
+  /** Ticks once a second while such a sort is on: rows move at most that often. */
+  let resortClock = $state(0);
+  $effect(() => {
+    if (!LIVE_SORTS.has(sort)) return;
+    const timer = setInterval(() => resortClock++, 1000);
+    return () => clearInterval(timer);
+  });
   const filtered = $derived.by(() => {
     const q = search.trim().toLowerCase();
-    return store.list
-      .filter((d) => matches(d, filter) && (!q || (d.filename ?? "").toLowerCase().includes(q) || d.url.toLowerCase().includes(q)))
-      .sort(sorter(sort, reverse));
+    const rows = store.list.filter(
+      (d) => matches(d, filter) && (!q || (d.filename ?? "").toLowerCase().includes(q) || d.url.toLowerCase().includes(q)),
+    );
+    const by = sorter(sort, reverse);
+    if (!LIVE_SORTS.has(sort)) return rows.sort(by);
+    void resortClock;
+    return untrack(() => rows.sort(by));
   });
   const selection = $derived(filtered.filter((d) => selected.has(d.id)));
   const detail = $derived(selection.length === 1 ? selection[0] : null);
@@ -301,6 +316,16 @@
     }
   }
 
+  /** The site a download's limits are kept under, as the engine names it (no `www.`). */
+  function siteOf(d: Download): string | null {
+    try {
+      const host = new URL(d.final_url ?? d.url).hostname.toLowerCase().replace(/^\[|\]$/g, "");
+      return host.replace(/^www\./, "") || null;
+    } catch {
+      return null;
+    }
+  }
+
   function openMenu(d: Download, e: MouseEvent) {
     if (!selected.has(d.id)) select(d.id);
     const sel = selection.length ? selection : [d];
@@ -325,6 +350,16 @@
         icon: Activity,
         disabled: !(one && one.status !== "completed"),
         run: () => one && attempt(api.showProgress(one.id)),
+      },
+      {
+        label: t("main-site-limits"),
+        icon: Globe,
+        disabled: !(one && siteOf(one)),
+        run: () => {
+          if (!one) return;
+          settingsSite = siteOf(one);
+          settingsOpen = true;
+        },
       },
       "separator",
     ];
@@ -724,7 +759,15 @@
 {/if}
 
 {#if settingsOpen && settings}
-  <SettingsDialog {settings} onclose={() => (settingsOpen = false)} onsaved={(s) => (settings = s)} />
+  <SettingsDialog
+    {settings}
+    focusHost={settingsSite}
+    onclose={() => {
+      settingsOpen = false;
+      settingsSite = null;
+    }}
+    onsaved={(s) => (settings = s)}
+  />
 {/if}
 
 {#if propsDownload}

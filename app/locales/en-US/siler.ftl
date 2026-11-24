@@ -562,9 +562,20 @@ settings-extra-safe-resume = Extra-safe resume (slower)
 settings-extra-safe-resume-hint = Writes downloaded data to the disk before saving progress, so a power cut or a crash of the whole computer can't leave a resumed download with gaps. Siler itself crashing is covered either way.
 settings-shared-by-all-downloads-from-one = Shared by all downloads from one server, so busy servers don't refuse or ban you.
 settings-example-com = example.com
-settings-connections = Connections
 settings-remove = Remove
-settings-different-limit-for-a-server = Different limit for a server
+settings-add-a-site = Add a site
+settings-downloads-per-server = Downloads from one server at once
+settings-downloads-per-server-hint = The others wait in the queue until one from the same server finishes. Downloads from other servers start meanwhile.
+settings-site-rules = Different limits for a site
+settings-site-rules-hint = A site’s rule also covers its subdomains. 0 keeps the general setting.
+settings-site = Site
+settings-site-at-once = At once
+settings-site-at-once-hint = Downloads from this site running at once, 0 = the general limit
+settings-site-connections-each = Connections each
+settings-site-connections-each-hint = Connections a new download from this site gets, 0 = the general setting
+settings-site-connections-in-all = Connections in all
+settings-site-connections-in-all-hint = Connections to this site across all its downloads, 0 = the general limit
+settings-site-speed = Speed (KB/s)
 settings-global-speed-limit = Global speed limit
 settings-retries-per-connection = Retries per connection
 settings-user-agent = User agent
@@ -944,6 +955,7 @@ settings-update-the-browser-extension = Update the browser extension
 settings-update-siler = Update Siler
 settings-general = General
 settings-transfers = Transfers
+settings-sites = Sites
 settings-media = Media
 settings-network = Network
 settings-categories = Categories
@@ -1509,6 +1521,7 @@ complete-open-folder = Open folder
 tray-panel-progress-windows = Progress windows
 tray-panel-restore = Bring back this window
 main-show-progress = Show progress
+main-site-limits = Limits for this site…
 settings-server-speed-limit = Speed limit (KB/s), 0 = none
 settings-progress-windows = Progress windows
 settings-progress-windows-hint = A download you start gets its own window with each connection’s progress

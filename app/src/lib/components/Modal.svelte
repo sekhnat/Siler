@@ -43,8 +43,8 @@
     display: grid;
     place-items: center;
     padding: 24px;
+    /* No blur: over a list that updates four times a second it is redrawn each time. */
     background: var(--backdrop);
-    backdrop-filter: blur(3px);
   }
   .dialog {
     max-width: 100%;

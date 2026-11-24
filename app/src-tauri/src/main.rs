@@ -160,7 +160,14 @@ pub fn show_main(app: &AppHandle) {
 }
 
 /// Opens the compact "Download file" window that confirms browser-captured downloads.
+/// On the main thread, for the reason `progress::open` gives: links can arrive in quick
+/// succession.
 pub fn open_add_window(app: &AppHandle) {
+    let on_main = app.clone();
+    let _ = app.run_on_main_thread(move || open_add_window_here(&on_main));
+}
+
+fn open_add_window_here(app: &AppHandle) {
     tray::panel::close(app);
     if let Some(w) = app.get_webview_window("add") {
         let _ = w.emit("pending-changed", ());
@@ -418,12 +425,45 @@ fn host_key_unknown(
     }
 }
 
+/// Progress goes only to the windows on screen: Siler's own while it is shown, the tray
+/// panel while it is open, and each progress window shown, with its own download alone. The
+/// others catch up when they come back (`engine-resync`, `progress-shown`).
+fn emit_progress(
+    app: &AppHandle,
+    ev: &Event,
+    items: &[siler_core::ProgressItem],
+    total_speed: u64,
+) {
+    let visible = app
+        .try_state::<AppState>()
+        .is_some_and(|s| s.ui_visible.load(Ordering::Relaxed));
+    if visible {
+        let _ = app.emit_to("main", "engine", ev);
+    }
+    if tray::panel::is_open() {
+        let _ = app.emit_to(tray::panel::LABEL, "engine", ev);
+    }
+    for id in progress::shown() {
+        let own = Event::Progress {
+            items: items.iter().filter(|i| i.id == id).cloned().collect(),
+            total_speed,
+        };
+        let _ = app.emit_to(progress::label(id).as_str(), "engine", &own);
+    }
+}
+
 fn forward_engine_events(app: AppHandle, engine: Engine, activity: watch::Sender<usize>) {
     let mut rx = engine.subscribe();
     tauri::async_runtime::spawn(async move {
         loop {
             match rx.recv().await {
                 Ok(ev) => {
+                    if let Event::Progress { items, total_speed } = &ev {
+                        let n = items.len();
+                        activity.send_if_modified(|v| std::mem::replace(v, n) != n);
+                        emit_progress(&app, &ev, items, *total_speed);
+                        continue;
+                    }
                     progress::on_event(&app, &ev);
                     let settings = engine.settings();
                     match &ev {
@@ -525,16 +565,6 @@ fn forward_engine_events(app: AppHandle, engine: Engine, activity: watch::Sender
                     {
                         host_key_unknown(&app, *id, filename.as_deref(), request);
                         continue;
-                    }
-                    if let Event::Progress { items, .. } = &ev {
-                        let n = items.len();
-                        activity.send_if_modified(|v| std::mem::replace(v, n) != n);
-                        let visible = app
-                            .try_state::<AppState>()
-                            .is_some_and(|s| s.ui_visible.load(Ordering::Relaxed));
-                        if !visible && !tray::panel::is_open() && !progress::any_shown() {
-                            continue;
-                        }
                     }
                     let _ = app.emit("engine", &ev);
                 }
@@ -734,27 +764,50 @@ fn add_from_args(app: &AppHandle, args: &Args) -> Result<(), String> {
     Ok(())
 }
 
+/// The downloads' own threads, apart from the ones the windows' commands run on, and a
+/// little below normal priority: a busy download then can't make the windows wait.
+fn engine_runtime() -> std::io::Result<&'static tokio::runtime::Runtime> {
+    static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+    if let Some(rt) = RT.get() {
+        return Ok(rt);
+    }
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_name("siler-engine")
+        .on_thread_start(|| {
+            #[cfg(target_os = "linux")]
+            // SAFETY: plain syscalls on the calling thread; a failure only leaves its priority.
+            unsafe {
+                libc::setpriority(libc::PRIO_PROCESS as _, libc::gettid() as _, 5);
+            }
+        })
+        .build()?;
+    Ok(RT.get_or_init(|| rt))
+}
+
 fn open_engine(app: &tauri::App) -> Result<Engine, String> {
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     // Known before the engine resumes anything, so a media download picked up at start can
     // be rebuilt.
     let ffmpeg = media::find_ffmpeg(app.handle());
-    tauri::async_runtime::block_on(async {
-        // The manual proxy's password is the only secret needed before anything runs.
-        let proxy_password = match Engine::peek_settings(&data_dir) {
+    // The manual proxy's password is the only secret needed before anything runs.
+    let proxy_password = tauri::async_runtime::block_on(async {
+        match Engine::peek_settings(&data_dir) {
             Ok(s) if s.proxy.needs_password() => logins::proxy_password().await,
             _ => None,
-        };
-        Engine::open_with(&data_dir, proxy_password, ffmpeg)
-    })
-    .map_err(|e| {
-        format!(
-            "Siler couldn't open its database in {}:\n{e}",
-            data_dir.display()
-        )
-    })
-    .inspect(|_| tracing::info!("data in {}", data_dir.display()))
-    .inspect_err(|e| tracing::error!("{e}"))
+        }
+    });
+    engine_runtime()
+        .map_err(|e| format!("Siler couldn't start its download threads: {e}"))?
+        .block_on(async { Engine::open_with(&data_dir, proxy_password, ffmpeg) })
+        .map_err(|e| {
+            format!(
+                "Siler couldn't open its database in {}:\n{e}",
+                data_dir.display()
+            )
+        })
+        .inspect(|_| tracing::info!("data in {}", data_dir.display()))
+        .inspect_err(|e| tracing::error!("{e}"))
 }
 
 fn main() {
@@ -1056,7 +1109,10 @@ fn main() {
     app.run(|app, event| {
         if let RunEvent::Exit = event {
             if let Some(state) = app.try_state::<AppState>() {
-                tauri::async_runtime::block_on(state.engine.shutdown());
+                match engine_runtime() {
+                    Ok(rt) => rt.block_on(state.engine.shutdown()),
+                    Err(_) => tauri::async_runtime::block_on(state.engine.shutdown()),
+                }
             }
             ipc_server::cleanup();
         }

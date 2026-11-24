@@ -213,7 +213,7 @@
         {/if}
       </div>
 
-      <ProgressBar value={recording ? 100 : pct} status={d.status} height={14} />
+      <ProgressBar value={recording ? 100 : pct} status={d.status} height={14} shimmer />
 
       <div class="buttons">
         <button class="btn btn-sm" onclick={toggleDetails}>

@@ -165,12 +165,17 @@ export interface ProxyRoute {
   note: string | null;
 }
 
+/** Different limits for one site: a server and its subdomains. */
 export interface ServerLimit {
   host: string;
-  /** 0 = the general limit. */
+  /** Connections to it across all its downloads; 0 = the general limit. */
   connections: number;
   /** Bytes per second each new download from it starts with; 0 = none. */
   speed_limit: number;
+  /** How many of its downloads run at once; 0 = the general limit. */
+  downloads: number;
+  /** Connections each new download from it gets; 0 = the general setting. */
+  per_download: number;
 }
 
 export interface SavedLogin {
@@ -593,6 +598,8 @@ export interface Settings {
   on_conflict: OnConflict;
   categories: CategoryRule[];
   max_connections_per_server: number;
+  /** Downloads from one server running at once; 0 = no limit. */
+  max_downloads_per_server: number;
   server_limits: ServerLimit[];
   proxy: ProxySettings;
   prevent_sleep: boolean;

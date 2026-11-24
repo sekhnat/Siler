@@ -96,9 +96,12 @@ pub fn startup_error(app: AppHandle) -> Option<String> {
     app.try_state::<StartupError>().map(|e| e.0.clone())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_downloads(state: State<'_, AppState>) -> Vec<DownloadInfo> {
-    state.engine.list()
+    let started = Instant::now();
+    let all = state.engine.list();
+    tracing::debug!(took = ?started.elapsed(), n = all.len(), "listed the downloads");
+    all
 }
 
 /// A failed probe; `login` is set when the server wants a username and password.
@@ -216,12 +219,12 @@ pub fn open_chromium_extensions(browser: String) -> Res<()> {
 }
 
 /// Ends a recording and keeps what was recorded.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn finish_download(state: State<'_, AppState>, id: i64) -> Res<()> {
     state.engine.finish(id).map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn trust_host_key(state: State<'_, AppState>, request: siler_core::HostKeyRequest) -> Res<()> {
     state.engine.trust_host_key(&request).map_err(err)
 }
@@ -274,7 +277,7 @@ pub struct ProxyStatus {
 }
 
 /// Where connections go now, for the settings screen.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn proxy_status(state: State<'_, AppState>) -> ProxyStatus {
     let route: ProxyRoute = state.engine.proxy_route();
     ProxyStatus {
@@ -317,7 +320,7 @@ pub struct NameStatus {
 }
 
 /// Whether `dir/name` already exists, and a free name to use instead.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn name_status(state: State<'_, AppState>, dir: PathBuf, name: String) -> NameStatus {
     let (exists, suggested) = state.engine.name_status(&dir, &name);
     NameStatus { exists, suggested }
@@ -342,7 +345,7 @@ pub struct AddArgs {
     mirrors: Option<Vec<String>>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn add_download(app: AppHandle, state: State<'_, AppState>, args: AddArgs) -> Res<i64> {
     let meta = pending_meta(&state, args.pending_id).unwrap_or_default();
     let extra = args.pending_id.and_then(|id| {
@@ -452,12 +455,12 @@ pub async fn add_media(app: AppHandle, state: State<'_, AppState>, args: AddMedi
 }
 
 /// What the FFmpeg check found, for Settings → Media.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn media_diagnostics(state: State<'_, AppState>) -> siler_core::FfmpegStatus {
     state.engine.ffmpeg_status()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn pending_adds(state: State<'_, AppState>) -> Vec<PendingView> {
     let pending = state.pending.lock().unwrap();
     let single = pending.len() == 1;
@@ -504,53 +507,56 @@ pub fn dismiss_pending(state: State<'_, AppState>, id: u64) {
     state.pending.lock().unwrap().retain(|p| p.id != id);
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn pause(state: State<'_, AppState>, id: i64) -> Res<()> {
-    state.engine.pause(id).map_err(err)
+    let started = Instant::now();
+    let paused = state.engine.pause(id).map_err(err);
+    tracing::debug!(took = ?started.elapsed(), id, "paused");
+    paused
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn resume(app: AppHandle, state: State<'_, AppState>, id: i64) -> Res<()> {
     state.engine.resume(id).map_err(err)?;
     crate::progress::want(&app, id);
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn remove(state: State<'_, AppState>, id: i64, delete_file: bool) -> Res<()> {
     state.engine.remove(id, delete_file).map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn remove_many(state: State<'_, AppState>, ids: Vec<i64>, delete_files: bool) -> Res<usize> {
     state.engine.remove_many(&ids, delete_files).map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn pause_all(state: State<'_, AppState>) -> Res<()> {
     state.engine.pause_all().map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn resume_all(state: State<'_, AppState>) -> Res<()> {
     state.engine.resume_all().map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn start_now(app: AppHandle, state: State<'_, AppState>, id: i64) -> Res<()> {
     state.engine.start_now(id).map_err(err)?;
     crate::progress::want(&app, id);
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn start_queue(state: State<'_, AppState>, queue_id: i64) -> Res<()> {
     state.engine.start_queue(queue_id).map_err(err)
 }
 
 /// Stopping a queue by hand only holds back what hasn't started (like before);
 /// the schedule's stop also pauses running downloads.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn stop_queue(
     state: State<'_, AppState>,
     queue_id: i64,
@@ -562,38 +568,38 @@ pub fn stop_queue(
         .map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_queues(state: State<'_, AppState>) -> Vec<Queue> {
     state.engine.queues()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn create_queue(state: State<'_, AppState>, queue: Queue) -> Res<i64> {
     state.engine.create_queue(queue).map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn update_queue(state: State<'_, AppState>, queue: Queue) -> Res<()> {
     state.engine.update_queue(queue).map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_queue(state: State<'_, AppState>, queue_id: i64) -> Res<()> {
     state.engine.delete_queue(queue_id).map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn move_to_queue(state: State<'_, AppState>, ids: Vec<i64>, queue_id: i64) -> Res<()> {
     state.engine.move_to_queue(&ids, queue_id).map_err(err)
 }
 
 /// Keep a finished download up to date: check every `every_secs` seconds (0 = off).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_sync(state: State<'_, AppState>, id: i64, every_secs: u64) -> Res<()> {
     state.engine.set_sync(id, every_secs).map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn check_for_update(state: State<'_, AppState>, id: i64) -> Res<()> {
     state.engine.check_for_update(id).map_err(err)
 }
@@ -654,7 +660,7 @@ pub fn test_sound(
     sound::play(&s, sound);
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn move_in_queue(state: State<'_, AppState>, ids: Vec<i64>, to: QueueMove) -> Res<()> {
     state.engine.move_in_queue(&ids, to).map_err(err)
 }
@@ -695,7 +701,7 @@ const REFRESH_WAIT: Duration = Duration::from_secs(120);
 /// Opens the page the download came from, so the user can click the link again; the next
 /// matching hand-over from the browser updates this download. Returns whether a page was
 /// known.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn await_refresh(state: State<'_, AppState>, id: i64) -> Res<bool> {
     open_page_for_link(&state, id)
 }
@@ -718,7 +724,7 @@ pub fn cancel_await_refresh(state: State<'_, AppState>, id: i64) {
     state.awaiting_refresh.stop(id);
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_connections(state: State<'_, AppState>, id: i64, connections: u8) -> Res<()> {
     state.engine.set_connections(id, connections).map_err(err)
 }
@@ -737,7 +743,7 @@ pub async fn edit_download(
         .map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_speed_limit(state: State<'_, AppState>, id: i64, bytes_per_sec: u64) -> Res<()> {
     state.engine.set_speed_limit(id, bytes_per_sec).map_err(err)
 }
@@ -747,12 +753,12 @@ pub fn default_categories() -> Vec<siler_core::CategoryRule> {
     siler_core::default_categories()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_settings(state: State<'_, AppState>) -> Settings {
     state.engine.settings()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_settings(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -814,29 +820,40 @@ pub fn reveal(app: &AppHandle, id: i64) -> Res<()> {
     }
 }
 
-#[tauri::command]
-pub fn open_file(app: AppHandle, id: i64) -> Res<()> {
-    open_path(&app, id)
+/// Runs `f` on a thread of its own: starting a program waits a moment to see it start, and
+/// the windows mustn't wait with it.
+pub(crate) async fn off_thread<T: Send + 'static>(
+    f: impl FnOnce() -> Res<T> + Send + 'static,
+) -> Res<T> {
+    tauri::async_runtime::spawn_blocking(f).await.map_err(err)?
 }
 
 #[tauri::command]
-pub fn show_in_folder(app: AppHandle, id: i64) -> Res<()> {
-    reveal(&app, id)
+pub async fn open_file(app: AppHandle, id: i64) -> Res<()> {
+    off_thread(move || open_path(&app, id)).await
 }
 
 #[tauri::command]
-pub fn open_url(url: String) -> Res<()> {
+pub async fn show_in_folder(app: AppHandle, id: i64) -> Res<()> {
+    off_thread(move || reveal(&app, id)).await
+}
+
+#[tauri::command]
+pub async fn open_url(url: String) -> Res<()> {
     if !(url.starts_with("http://") || url.starts_with("https://")) {
         return Err(tr("command-only-web-links"));
     }
-    crate::launch::open(&url).map_err(err)
+    off_thread(move || crate::launch::open(&url).map_err(err)).await
 }
 
 #[tauri::command]
-pub fn open_log_folder() -> Res<()> {
-    let dir = crate::logging::dir();
-    std::fs::create_dir_all(&dir).map_err(err)?;
-    crate::launch::open(&dir).map_err(err)
+pub async fn open_log_folder() -> Res<()> {
+    off_thread(|| {
+        let dir = crate::logging::dir();
+        std::fs::create_dir_all(&dir).map_err(err)?;
+        crate::launch::open(&dir).map_err(err)
+    })
+    .await
 }
 
 fn status_of(state: &AppState) -> IntegrationStatus {
@@ -847,12 +864,12 @@ fn status_of(state: &AppState) -> IntegrationStatus {
     )
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn integration_status(state: State<'_, AppState>) -> IntegrationStatus {
     status_of(&state)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn install_integration(state: State<'_, AppState>) -> Res<IntegrationStatus> {
     integration::install().map_err(err)?;
     crate::desktop::install().map_err(err)?;

@@ -1,6 +1,6 @@
 // One download kept up to date from the engine's events, for a window about just that
 // download (its progress window, its "Download complete" window).
-import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { api, type Download, type EngineEvent } from "./api";
 
 export class LiveDownload {
@@ -19,11 +19,13 @@ export class LiveDownload {
 
   /** Follows the download until the returned function is called (`reload` reads it first). */
   start(): () => void {
+    // This window's own events: progress comes only while it is on screen.
+    const win = getCurrentWebviewWindow();
     const stops = [
-      listen<EngineEvent>("engine", (e) => this.apply(e.payload)),
-      listen("engine-resync", () => this.reload()),
+      win.listen<EngineEvent>("engine", (e) => this.apply(e.payload)),
+      win.listen("engine-resync", () => this.reload()),
       // Back from the tray: progress was skipped meanwhile.
-      listen("progress-shown", () => this.reload()),
+      win.listen("progress-shown", () => this.reload()),
     ];
     return () => stops.forEach((s) => s.then((f) => f()));
   }

@@ -160,7 +160,13 @@ fn verb(action: AfterDone) -> &'static str {
     }
 }
 
+/// On the main thread, for the reason `progress::open` gives.
 fn open_countdown_window(app: &AppHandle) {
+    let on_main = app.clone();
+    let _ = app.run_on_main_thread(move || open_countdown_window_here(&on_main));
+}
+
+fn open_countdown_window_here(app: &AppHandle) {
     crate::tray::panel::close(app);
     if let Some(w) = app.get_webview_window("countdown") {
         let _ = w.show();
