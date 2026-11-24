@@ -238,6 +238,9 @@ pub struct DownloadInfo {
     /// What it cost on the network beyond its own bytes (see [`Traffic`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub traffic: Option<Traffic>,
+    /// The HTTP version its own server answers over (1 or 2), while it runs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<u8>,
 }
 
 /// One address of a download, with what it delivered.
@@ -315,6 +318,8 @@ pub struct ProgressItem {
     pub source_bytes: Vec<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub traffic: Option<Traffic>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<u8>,
 }
 
 /// What a download cost on the network beyond its own bytes: everything received (`wire`),

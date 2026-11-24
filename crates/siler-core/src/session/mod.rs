@@ -58,6 +58,8 @@ pub(crate) struct Request<'a> {
     pub user_agent: &'a str,
     pub range: Option<&'a str>,
     pub policy: Policy<'a>,
+    /// One of several streams of a ranged download: it may go over an HTTP/2 slot.
+    pub streams: bool,
 }
 
 /// The answer at the end of the redirects.
@@ -81,6 +83,11 @@ impl Reply {
     /// The address that answered, after the redirects.
     pub fn url(&self) -> &Url {
         self.resp.url()
+    }
+
+    /// The HTTP version the answer came over.
+    pub fn version(&self) -> reqwest::Version {
+        self.resp.version()
     }
 
     pub fn content_length(&self) -> Option<u64> {
@@ -454,11 +461,21 @@ impl Net {
                     }),
                 })
             }
-            None => match self.client(&exit, &how, url) {
-                Ok(out) => hop
-                    .send(&out.client, None)
-                    .await
-                    .map(|resp| Ok((resp, None))),
+            None => match self.client(
+                &exit,
+                &how,
+                url,
+                (req.streams && https).then(|| self.next_slot()).flatten(),
+            ) {
+                Ok(out) => {
+                    let first = out.first_turn(url).await;
+                    let sent = hop.send(&out.client, None).await;
+                    if sent.is_ok() {
+                        out.answered(url);
+                    }
+                    drop(first);
+                    sent.map(|resp| Ok((resp, None)))
+                }
                 Err(e) => Err(e),
             },
         };

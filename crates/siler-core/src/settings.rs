@@ -109,6 +109,9 @@ pub struct Settings {
     pub categories: Vec<CategoryRule>,
     /// Connections to one server across all its downloads; 0 = no limit.
     pub max_connections_per_server: u8,
+    /// HTTP/2 connections a ranged https download's streams share per server (0–16);
+    /// 0 = HTTP/1.1 only, one connection per stream.
+    pub http2_connections_per_server: u8,
     pub server_limits: Vec<ServerLimit>,
     pub proxy: ProxySettings,
     /// Keep the computer from sleeping while downloads run.
@@ -303,6 +306,7 @@ impl Default for Settings {
             on_conflict: OnConflict::Ask,
             categories: default_categories(),
             max_connections_per_server: 16,
+            http2_connections_per_server: 0,
             server_limits: Vec::new(),
             proxy: ProxySettings::default(),
             prevent_sleep: true,
@@ -390,6 +394,9 @@ impl Settings {
         self.connections = self.connections.clamp(1, 32);
         self.min_split_size = self.min_split_size.max(16 * 1024);
         self.max_connections_per_server = self.max_connections_per_server.min(128);
+        self.http2_connections_per_server = self
+            .http2_connections_per_server
+            .min(crate::net::MAX_H2_SLOTS);
         let mut hosts = HashSet::new();
         self.server_limits = std::mem::take(&mut self.server_limits)
             .into_iter()

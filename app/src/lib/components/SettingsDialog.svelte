@@ -431,6 +431,11 @@
         {/each}
         <button class="btn btn-sm add-limit" onclick={addLimit}><Plus size={14} /> {t("settings-different-limit-for-a-server")}</button>
       </div>
+      <div class="field">
+        <span class="label">{t("settings-http2-connections")} <b>{s.http2_connections_per_server || t("settings-http2-off")}</b></span>
+        <input type="range" min="0" max="16" bind:value={s.http2_connections_per_server} />
+        <div class="hint">{t("settings-http2-connections-hint")}</div>
+      </div>
       <div class="row2">
         <div class="field">
           <span class="label">{t("settings-global-speed-limit")}</span>

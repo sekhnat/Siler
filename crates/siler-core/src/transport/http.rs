@@ -10,14 +10,17 @@ use crate::session::{Policy, Request};
 use crate::{Error, RequestMeta};
 
 /// Opens `url` from `start` to `end` (exclusive). `range` is false when the server can't
-/// send parts: then the whole file is asked for and `start` must be 0.
+/// send parts: then the whole file is asked for and `start` must be 0. With `streams` (one
+/// of several ranges of a download) it may go over an HTTP/2 slot. Also says which HTTP
+/// version answered: 1 or 2.
 pub(crate) async fn open_range(
     net: &Net,
     url: &Url,
     meta: &RequestMeta,
     user_agent: &str,
     range: Option<(u64, u64)>,
-) -> Result<ByteStream, OpenError> {
+    streams: bool,
+) -> Result<(ByteStream, u8), OpenError> {
     let range_header = range.map(|(start, end)| format!("bytes={}-{}", start, end - 1));
     let resp = net
         .send(Request {
@@ -26,6 +29,7 @@ pub(crate) async fn open_range(
             user_agent,
             range: range_header.as_deref(),
             policy: Policy::File,
+            streams,
         })
         .await
         .map_err(|e| match e {
@@ -67,5 +71,10 @@ pub(crate) async fn open_range(
             )));
         }
     }
-    Ok(Box::pin(resp.into_stream()))
+    let version = if resp.version() == reqwest::Version::HTTP_2 {
+        2
+    } else {
+        1
+    };
+    Ok((Box::pin(resp.into_stream()), version))
 }

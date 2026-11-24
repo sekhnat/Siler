@@ -2,8 +2,8 @@
 
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
@@ -62,10 +62,50 @@ pub(crate) fn site_key(url: &Url) -> String {
 /// More ways out than this and the oldest clients are dropped.
 const MAX_CLIENTS: usize = 128;
 
+/// The most HTTP/2 connections per server (Settings → Transfers).
+pub const MAX_H2_SLOTS: u8 = 16;
+/// HTTP/2 flow control: how much one stream may have in flight. One stream then carries
+/// at most this much per round trip (2 MiB at 50 ms is about 40 MB/s).
+const H2_STREAM_WINDOW: u32 = 2 * 1024 * 1024;
+/// And one connection, for the several streams that share it.
+const H2_CONNECTION_WINDOW: u32 = 8 * H2_STREAM_WINDOW;
+
 /// A client for one way out, and its tunnel.
 pub(crate) struct Kept {
     pub client: Client,
     pub tunnel: Option<Tunnel>,
+    /// For an HTTP/2 slot: the servers that have answered it.
+    first: Option<FirstTurn>,
+}
+
+/// Until a server has answered a slot client, its requests go one at a time: whether the
+/// connection is HTTP/2 is only known once it is made, and requests sent together before
+/// then would each make a connection of their own.
+#[derive(Default)]
+struct FirstTurn {
+    answered: Mutex<HashSet<String>>,
+    turn: tokio::sync::Mutex<()>,
+}
+
+impl Kept {
+    /// Waits while another request makes this client's first connection to `url`'s server.
+    /// Holding the guard, this request is the one making it.
+    pub async fn first_turn(&self, url: &Url) -> Option<tokio::sync::MutexGuard<'_, ()>> {
+        let first = self.first.as_ref()?;
+        let site = site_key(url);
+        if first.answered.lock().unwrap().contains(&site) {
+            return None;
+        }
+        let guard = first.turn.lock().await;
+        (!first.answered.lock().unwrap().contains(&site)).then_some(guard)
+    }
+
+    /// `url`'s server answered: its connection is made, and is shared from now on.
+    pub fn answered(&self, url: &Url) {
+        if let Some(first) = &self.first {
+            first.answered.lock().unwrap().insert(site_key(url));
+        }
+    }
 }
 
 #[derive(PartialEq)]
@@ -75,11 +115,14 @@ struct WayKey {
     allow_private: bool,
     /// A tunnel leads to one server.
     to: Option<(String, u16)>,
+    /// An HTTP/2 slot: a client of its own, so its connection to a server is its own.
+    slot: Option<u8>,
 }
 
 impl WayKey {
-    fn new(exit: &Exit, how: &How, url: &Url) -> WayKey {
+    fn new(exit: &Exit, how: &How, url: &Url, slot: Option<u8>) -> WayKey {
         WayKey {
+            slot,
             via: exit.via.clone(),
             how: how.clone(),
             allow_private: exit.allow_private,
@@ -107,6 +150,13 @@ pub(crate) struct Net {
     pub(crate) known_hosts: RwLock<Option<std::path::PathBuf>>,
     /// Idle FTP control connections, for the next range from the same server.
     pub(crate) ftp_pool: crate::transport::ftp::Pool,
+    /// HTTP/2 connections per server for range workers; 0 = HTTP/1.1 only.
+    h2_slots: AtomicU8,
+    /// Round robin over the slots.
+    h2_next: AtomicUsize,
+    /// Certificates the tests' own HTTPS servers are signed with.
+    #[cfg(test)]
+    pub(crate) test_roots: Mutex<Vec<reqwest::Certificate>>,
 }
 
 impl Net {
@@ -128,9 +178,13 @@ impl Net {
             hosts: Mutex::new(HashMap::new()),
             known_hosts: RwLock::new(None),
             ftp_pool: Default::default(),
+            h2_slots: AtomicU8::new(0),
+            h2_next: AtomicUsize::new(0),
+            #[cfg(test)]
+            test_roots: Mutex::new(Vec::new()),
         };
         // A computer that can't make a client at all says so now, not at the first download.
-        net.build(&net.exit(Via::Direct, true), &How::Plain, None, false)?;
+        net.build(&net.exit(Via::Direct, true), &How::Plain, None, false, None)?;
         net.configure(proxy, password);
         Ok(net)
     }
@@ -142,6 +196,24 @@ impl Net {
         self.setup.fetch_add(1, Relaxed);
         self.clients.lock().unwrap().clear();
         self.ftp_pool.clear();
+    }
+
+    /// How many HTTP/2 connections range workers may open to a server; 0 keeps them on
+    /// HTTP/1.1. Clients made for the old number are dropped.
+    pub fn set_h2_slots(&self, n: u8) {
+        let n = n.min(MAX_H2_SLOTS);
+        if self.h2_slots.swap(n, Relaxed) != n {
+            self.clients
+                .lock()
+                .unwrap()
+                .retain(|(k, _)| k.slot.is_none());
+        }
+    }
+
+    /// The slot for the next range request, round robin; None when HTTP/2 is off.
+    pub(crate) fn next_slot(&self) -> Option<u8> {
+        let n = self.h2_slots.load(Relaxed);
+        (n > 0).then(|| (self.h2_next.fetch_add(1, Relaxed) % n as usize) as u8)
     }
 
     pub(crate) fn setup(&self) -> u64 {
@@ -168,8 +240,17 @@ impl Net {
     /// The client for one way out to `url`. It returns redirects instead of following
     /// them, and unless the exit allows private addresses it refuses names that resolve to
     /// this computer or the local network.
-    pub(crate) fn client(&self, exit: &Exit, how: &How, url: &Url) -> Result<Arc<Kept>> {
-        let key = WayKey::new(exit, how, url);
+    ///
+    /// With a `slot` it is one of the HTTP/2 clients; without, it only speaks HTTP/1.1.
+    pub(crate) fn client(
+        &self,
+        exit: &Exit,
+        how: &How,
+        url: &Url,
+        slot: Option<u8>,
+    ) -> Result<Arc<Kept>> {
+        let slot = slot.filter(|_| *how != How::Tunnel);
+        let key = WayKey::new(exit, how, url, slot);
         let setup = self.setup();
         let find = |list: &[(WayKey, Arc<Kept>)]| {
             list.iter().find(|(k, _)| *k == key).map(|(_, c)| c.clone())
@@ -177,7 +258,7 @@ impl Net {
         if let Some(found) = find(&self.clients.lock().unwrap()) {
             return Ok(found);
         }
-        let made = self.build(exit, how, key.to.as_ref(), false)?;
+        let made = self.build(exit, how, key.to.as_ref(), false, key.slot)?;
         let mut list = self.clients.lock().unwrap();
         if let Some(found) = find(&list) {
             return Ok(found);
@@ -194,8 +275,8 @@ impl Net {
 
     /// A new client with a single connection, for a login that belongs to its connection.
     pub(crate) fn pinned(&self, exit: &Exit, how: &How, url: &Url) -> Result<Arc<Kept>> {
-        let key = WayKey::new(exit, how, url);
-        self.build(exit, how, key.to.as_ref(), true)
+        let key = WayKey::new(exit, how, url, None);
+        self.build(exit, how, key.to.as_ref(), true, None)
     }
 
     fn build(
@@ -204,6 +285,7 @@ impl Net {
         how: &How,
         to: Option<&(String, u16)>,
         pinned: bool,
+        slot: Option<u8>,
     ) -> Result<Arc<Kept>> {
         let mut b = Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -211,9 +293,21 @@ impl Net {
             .read_timeout(Duration::from_secs(60))
             .pool_idle_timeout(Duration::from_secs(30))
             .no_proxy();
+        b = match slot {
+            // Offers HTTP/2 to https servers; it keeps one connection to each.
+            Some(_) if !pinned => b
+                .http2_initial_stream_window_size(H2_STREAM_WINDOW)
+                .http2_initial_connection_window_size(H2_CONNECTION_WINDOW),
+            // Each request on a connection of its own, its ranges pointing at the file.
+            _ => b.http1_only(),
+        };
         if pinned {
             // One connection, whose certificate an NTLM or Kerberos answer names.
-            b = b.http1_only().pool_max_idle_per_host(1).tls_info(true);
+            b = b.pool_max_idle_per_host(1).tls_info(true);
+        }
+        #[cfg(test)]
+        for cert in self.test_roots.lock().unwrap().iter() {
+            b = b.tls_certs_merge([cert.clone()]);
         }
         b = if exit.allow_private {
             b.dns_resolver(resolve::Any(self.lookup.clone()))
@@ -253,7 +347,11 @@ impl Net {
             b = b.proxy(through);
         }
         let client = b.build().map_err(|e| Error::Network(e.to_string()))?;
-        Ok(Arc::new(Kept { client, tunnel }))
+        Ok(Arc::new(Kept {
+            client,
+            tunnel,
+            first: (slot.is_some() && !pinned).then(FirstTurn::default),
+        }))
     }
 
     /// A connection for FTP or SFTP, routed as `url` is.
@@ -359,5 +457,47 @@ mod tests {
         assert_eq!(login.username, "me@x");
         assert_eq!(login.password, "p:ss");
         assert_eq!(host_key(&Url::parse("https://a.b:443/").unwrap()), "a.b");
+    }
+
+    #[test]
+    fn http2_slots_take_turns_and_are_off_by_default() {
+        let net = Net::new(&ProxySettings::default(), None).unwrap();
+        assert_eq!(net.next_slot(), None);
+        net.set_h2_slots(3);
+        let turns: Vec<_> = (0..6).map(|_| net.next_slot().unwrap()).collect();
+        for (i, t) in turns.iter().enumerate() {
+            assert_eq!(*t as usize, (turns[0] as usize + i) % 3);
+        }
+        net.set_h2_slots(200);
+        assert_eq!(net.h2_slots.load(Relaxed), MAX_H2_SLOTS);
+        net.set_h2_slots(0);
+        assert_eq!(net.next_slot(), None);
+    }
+
+    #[test]
+    fn each_slot_is_a_client_of_its_own() {
+        let net = Net::new(&ProxySettings::default(), None).unwrap();
+        net.set_h2_slots(2);
+        let exit = net.exit(Via::Direct, false);
+        let url = Url::parse("https://files.example/a.iso").unwrap();
+        let plain = net.client(&exit, &How::Plain, &url, None).unwrap();
+        let a = net.client(&exit, &How::Plain, &url, Some(0)).unwrap();
+        let b = net.client(&exit, &How::Plain, &url, Some(1)).unwrap();
+        assert!(!Arc::ptr_eq(&plain, &a) && !Arc::ptr_eq(&a, &b));
+        assert!(plain.first.is_none() && a.first.is_some());
+        assert!(Arc::ptr_eq(
+            &a,
+            &net.client(&exit, &How::Plain, &url, Some(0)).unwrap()
+        ));
+        // A new number of slots drops the slot clients, not the others.
+        net.set_h2_slots(4);
+        assert!(!Arc::ptr_eq(
+            &a,
+            &net.client(&exit, &How::Plain, &url, Some(0)).unwrap()
+        ));
+        assert!(Arc::ptr_eq(
+            &plain,
+            &net.client(&exit, &How::Plain, &url, None).unwrap()
+        ));
     }
 }

@@ -19,6 +19,11 @@ use std::time::{Duration, Instant};
 /// The log is started over once it grows past this.
 const MAX_LOG: u64 = 1024 * 1024;
 
+/// What `log` writes for `msg`: secrets such as signed links taken out.
+fn log_line(secs: u64, msg: &str) -> String {
+    format!("[{secs}] {}", siler_ipc::redact::text(msg))
+}
+
 /// Appends a line to `nmhost.log`. Logging must never break the relay, so errors are ignored.
 fn log(msg: &str) {
     let dir = log_dir();
@@ -35,7 +40,7 @@ fn log(msg: &str) {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        let _ = writeln!(f, "[{secs}] {msg}");
+        let _ = writeln!(f, "{}", log_line(secs, msg));
     }
 }
 
@@ -160,4 +165,17 @@ fn launch_app() -> io::Result<()> {
         .spawn()
         .map(drop)
         .inspect_err(|e| log(&format!("could not start {}: {e}", bin.display())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::log_line;
+
+    #[test]
+    fn log_lines_lose_their_secrets() {
+        assert_eq!(
+            log_line(7, "relay failed for https://u:pw@cdn.example/f?token=abc"),
+            "[7] relay failed for https://***@cdn.example/f?token=…"
+        );
+    }
 }

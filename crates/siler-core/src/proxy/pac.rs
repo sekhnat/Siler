@@ -107,6 +107,7 @@ pub(super) async fn fetch(url: &str) -> Result<String, String> {
     let failed = |e: reqwest::Error| format!("{url}: {}", crate::error::describe(&e));
     // Not through `Net::send`: there is no route until the script is here.
     let client = reqwest::Client::builder()
+        .http1_only()
         .no_proxy()
         .timeout(FETCH_TIMEOUT)
         .redirect(reqwest::redirect::Policy::limited(5))

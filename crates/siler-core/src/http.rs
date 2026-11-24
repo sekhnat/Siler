@@ -135,6 +135,7 @@ async fn request(http: &Http, url: &Url, kind: Req, range: Option<String>) -> Re
                 guard: &http.guard,
                 source: kind == Req::Source,
             },
+            streams: false,
         })
         .await?;
     match resp.status() {

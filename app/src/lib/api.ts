@@ -229,6 +229,8 @@ export interface Download {
   zip_path: string | null;
   command: CommandResult | null;
   traffic?: Traffic;
+  /** The HTTP version its own server answers over (1 or 2), while it runs. */
+  protocol?: number;
   /** Checking or unpacking a finished transfer. */
   phase?: PhaseProgress | null;
 }
@@ -390,6 +392,7 @@ export interface ProgressItem {
   phase?: PhaseProgress | null;
   source_bytes?: number[];
   traffic?: Traffic;
+  protocol?: number;
 }
 
 /** What a download cost on the network beyond its own bytes; absent until measured. */
@@ -553,6 +556,7 @@ export interface Settings {
   max_retries: number;
   min_split_size: number;
   durable_checkpoints: boolean;
+  http2_connections_per_server: number;
   resume_on_startup: boolean;
   user_agent: string;
   auto_start_browser_downloads: boolean;

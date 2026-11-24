@@ -176,6 +176,10 @@
       <dt>{t("detail-panel-retransferred")}</dt>
       <dd title={t("detail-panel-retransferred-hint")}>{t("detail-panel-retransferred-value", { bytes: bytes(d.traffic?.wasted ?? 0), times: amplification.toFixed(1) })}</dd>
     {/if}
+    {#if d.protocol}
+      <dt>{t("detail-panel-protocol")}</dt>
+      <dd>{d.protocol === 2 ? "HTTP/2" : "HTTP/1.1"}</dd>
+    {/if}
     {#if d.traffic?.retries}
       <dt>{t("detail-panel-retries")}</dt>
       <dd>{d.traffic.retries}</dd>

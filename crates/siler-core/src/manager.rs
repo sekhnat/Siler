@@ -13,6 +13,7 @@ use crate::checkpoint::{Checkpoints, Snapshot};
 use crate::checksum::{self, Algo, Checksum, ChecksumSource};
 use crate::error::MediaError;
 use crate::extras::{CommandResult, Extras, Mirror, MirrorOrigin, VerifyResult};
+use crate::gate::HostGates;
 use crate::http::{Http, Limiters};
 use crate::media::{
     self, FfmpegStatus, JobKind, MediaInfo, MediaProbe, MediaRecord, NewMediaDownload, SourceHint,
@@ -43,12 +44,14 @@ use tokio_util::sync::CancellationToken;
 /// The download engine. Cheap to clone; all clones share one queue.
 #[derive(Clone)]
 pub struct Engine {
-    inner: Arc<Inner>,
+    pub(crate) inner: Arc<Inner>,
 }
 
 pub(crate) struct Inner {
     store: Mutex<Store>,
     pub(crate) net: Arc<Net>,
+    /// What busy servers said, shared by their downloads.
+    gates: Arc<HostGates>,
     proxy_password: Mutex<Option<String>>,
     settings: RwLock<Settings>,
     pub(crate) global: Arc<RateLimiter>,
@@ -279,12 +282,14 @@ impl Engine {
         }
 
         let net = Arc::new(Net::new(&settings.proxy, proxy_password.as_deref())?);
+        net.set_h2_slots(settings.http2_connections_per_server);
         *net.known_hosts.write().unwrap() = Some(dir.join("known_hosts"));
         let quota = Quota::new(store.load_value("quota")?.as_deref());
 
         let inner = Arc::new(Inner {
             store: Mutex::new(store),
             net,
+            gates: Default::default(),
             proxy_password: Mutex::new(proxy_password),
             global: Arc::new(RateLimiter::new(settings.global_speed_limit)),
             settings: RwLock::new(settings),
@@ -374,6 +379,9 @@ impl Engine {
             let pw = self.inner.proxy_password.lock().unwrap().clone();
             self.inner.net.configure(&new.proxy, pw.as_deref());
         }
+        self.inner
+            .net
+            .set_h2_slots(new.http2_connections_per_server);
         if old.max_connections_per_server != new.max_connections_per_server
             || old.server_limits != new.server_limits
         {
@@ -953,6 +961,8 @@ impl Engine {
             .map(|r| r.hosts.lock().unwrap().clone())
             .unwrap_or_default();
         for host in hosts {
+            // Try the count asked for, even past what the server took before.
+            self.inner.gates.reset_cap(&host);
             self.inner.rebalance(&st, &host);
         }
         Ok(())
@@ -1043,6 +1053,7 @@ impl Engine {
                 user_agent: &self.settings().user_agent,
                 range: None,
                 policy: crate::session::Policy::Own(headers),
+                streams: false,
             })
             .await?;
         if !resp.status().is_success() {
@@ -2077,6 +2088,7 @@ impl Inner {
             zip_path: r.extras.zip_entry.as_ref().map(|z| z.path.clone()),
             command: r.extras.command.clone(),
             traffic: run.map_or(r.traffic, Running::traffic).measured(),
+            protocol: run.and_then(Running::protocol),
         }
     }
 
@@ -2091,6 +2103,11 @@ impl Inner {
     fn tick(self: &Arc<Self>) {
         self.check_quota();
         let mut guard = self.state();
+        // A server's limit learned by one download reaches the others here.
+        for host in self.gates.take_dirty() {
+            self.rebalance(&guard, &host);
+        }
+        self.gates.prune(|h| guard.hosts.contains_key(h));
         let went_idle = guard.running.is_empty();
         if went_idle {
             if guard.idle_reported {
@@ -2127,6 +2144,7 @@ impl Inner {
                         .map(|r| source_views(r, Some(run)).iter().map(|v| v.bytes).collect())
                         .unwrap_or_default(),
                     traffic: run.traffic().measured(),
+                    protocol: run.protocol(),
                 }
             })
             .collect();
@@ -2176,6 +2194,12 @@ impl Inner {
             }
         });
         let limit = self.settings.read().unwrap().connection_limit(name);
+        // What the server itself took, when it said so (0 = no limit).
+        let limit = match (limit, self.gates.cap(host)) {
+            (l, usize::MAX) => l,
+            (0, c) => c,
+            (l, c) => l.min(c),
+        };
         for (run, cap) in runs.iter().zip(share_connections(
             limit,
             &runs
@@ -2557,6 +2581,8 @@ impl Inner {
                     ids.retain(|&i| i != id);
                     if ids.is_empty() {
                         st.hosts.remove(&host);
+                        // Its limit was learned for these downloads; a cooldown stays.
+                        self.gates.reset_cap(&host);
                     }
                 }
                 self.rebalance(&st, &host);
@@ -2691,11 +2717,36 @@ impl Inner {
         s: &Settings,
     ) -> Result<Option<ProbeResult>> {
         let mut attempt = 0;
+        // The probe can't say which server refused it after redirects: the one it reached
+        // last time, else the one asked.
+        let host = rec
+            .final_url
+            .as_deref()
+            .and_then(|u| Url::parse(u).ok())
+            .or_else(|| Url::parse(&rec.url).ok())
+            .map(|u| host_key(&u));
         loop {
+            let pass = match &host {
+                Some(h) => match self.gates.enter(h, &run.cancel).await {
+                    Some(p) => Some(p),
+                    None => return Ok(None),
+                },
+                None => None,
+            };
             let r = tokio::select! {
                 r = probe::probe(&self.net, &rec.url, &rec.meta, &s.user_agent) => r,
                 _ = run.cancel.cancelled() => return Ok(None),
             };
+            drop(pass);
+            if let (Err(e @ Error::Busy(..)), Some(h)) = (&r, &host) {
+                if self.gates.live(h) > 0 {
+                    // Refused one connection too many, as the transfers do.
+                    self.gates.lower_cap(h);
+                } else {
+                    self.gates
+                        .throttled(h, task::retry_delay(attempt + 1, e.retry_after()));
+                }
+            }
             match r {
                 Ok(p) => return Ok(Some(p)),
                 Err(e) if e.is_transient() && attempt < s.max_retries => {
@@ -2948,6 +2999,7 @@ impl Inner {
             run: run.clone(),
             global: self.global.clone(),
             ranged,
+            gates: self.gates.clone(),
         });
         // Never claims more than the mode promises is on disk (see `checkpoint`).
         let checkpoints = Checkpoints::new(s.durable_checkpoints);

@@ -157,6 +157,7 @@ pub(crate) async fn probe(
             user_agent: ua,
             range: Some("bytes=0-0"),
             policy: Policy::File,
+            streams: false,
         })
         .await?;
     let status = resp.status();
@@ -252,6 +253,7 @@ pub(crate) async fn fetch_range(
             user_agent: ua,
             range: Some(&range),
             policy: Policy::File,
+            streams: false,
         })
         .await?;
     match resp.status() {

@@ -37,6 +37,8 @@ struct Shared {
     requests: AtomicUsize,
     probes: AtomicUsize,
     busy_hits: AtomicUsize,
+    /// 503s for going past `maxconn`.
+    refused: AtomicUsize,
     posts: AtomicUsize,
     /// Requests that arrived through a proxy (absolute-form request target).
     proxied: AtomicUsize,
@@ -292,6 +294,7 @@ async fn serve_file(
     if let Some(max) = q.maxconn
         && srv.active.load(SeqCst) >= max
     {
+        srv.refused.fetch_add(1, SeqCst);
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
     srv.active.fetch_add(1, SeqCst);
@@ -380,6 +383,7 @@ impl Server {
             requests: AtomicUsize::new(0),
             probes: AtomicUsize::new(0),
             busy_hits: AtomicUsize::new(0),
+            refused: AtomicUsize::new(0),
             posts: AtomicUsize::new(0),
             proxied: AtomicUsize::new(0),
             proxy_login: RwLock::new(None),
@@ -1974,4 +1978,94 @@ async fn a_failed_download_resumes_from_what_it_kept() {
     let d = wait_finished(&e, id).await;
     assert_complete(&d, &srv.data(SIZE));
     assert!(d.notice.is_none(), "it was continued: {:?}", d.notice);
+}
+
+// ------------------------------------------------- busy servers, shared (host gate)
+
+async fn wait_until(what: &str, mut pred: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !pred() {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+#[tokio::test]
+async fn a_busy_server_holds_its_other_downloads_only() {
+    let srv = Server::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let e = engine(tmp.path(), |s| s.connections = 1).await;
+    let a = add(&e, srv.url("/file/a.bin?busy=1&retryafter=4&size=1048576"));
+    wait_until("A's 503", || srv.shared.busy_hits.load(SeqCst) >= 1).await;
+    let refused_at = Instant::now();
+    let b = add(&e, srv.url("/file/b.bin?size=1048576"));
+    // The same server by another name is another server.
+    let c = add(
+        &e,
+        format!(
+            "http://localhost:{}/file/c.bin?size=1048576",
+            srv.addr.port()
+        ),
+    );
+
+    assert_complete(&wait_finished(&e, c).await, &srv.data(1048576));
+    let c_done = refused_at.elapsed();
+    assert_complete(&wait_finished(&e, b).await, &srv.data(1048576));
+    let b_done = refused_at.elapsed();
+    assert_complete(&wait_finished(&e, a).await, &srv.data(1048576));
+    // Generous bounds: only the order of things is certain on a busy machine.
+    assert!(
+        b_done >= Duration::from_millis(3500),
+        "B didn't wait: {b_done:?}"
+    );
+    assert!(c_done < Duration::from_millis(3500), "C waited: {c_done:?}");
+}
+
+#[tokio::test]
+async fn pausing_a_download_held_by_a_busy_server_is_prompt() {
+    let srv = Server::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let e = engine(tmp.path(), |s| s.connections = 1).await;
+    let a = add(&e, srv.url("/file/a.bin?busy=1&retryafter=30&size=1048576"));
+    wait_until("A's 503", || srv.shared.busy_hits.load(SeqCst) >= 1).await;
+    let b = add(&e, srv.url("/file/b.bin?size=1048576"));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(e.get(b).unwrap().downloaded, 0, "B went past the cooldown");
+    let asked = Instant::now();
+    e.pause(b).unwrap();
+    e.pause(a).unwrap();
+    wait_for(&e, b, |d| d.status == Status::Paused).await;
+    wait_for(&e, a, |d| d.status == Status::Paused).await;
+    assert!(
+        asked.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        asked.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn a_learned_connection_limit_is_shared() {
+    let srv = Server::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let e = engine(tmp.path(), |s| s.connections = 8).await;
+    let a = add(&e, srv.url("/file/a.bin?maxconn=3&rate=524288"));
+    // A finds out the server takes three.
+    wait_for(&e, a, |d| d.active_connections == 3 && d.downloaded > MIB).await;
+    let refused = srv.shared.refused.load(SeqCst);
+    assert!(refused > 0);
+
+    let b = add(&e, srv.url("/file/b.bin?maxconn=3&rate=524288"));
+    wait_for(&e, b, |d| d.downloaded > MIB).await;
+    // B started within the limit A learned instead of finding it out again.
+    let more = srv.shared.refused.load(SeqCst) - refused;
+    assert!(more <= 2, "{more} more refusals");
+    let (da, db) = (e.get(a).unwrap(), e.get(b).unwrap());
+    assert!(
+        da.active_connections + db.active_connections <= 3,
+        "{} + {}",
+        da.active_connections,
+        db.active_connections
+    );
+    assert_complete(&wait_finished(&e, a).await, &srv.data(SIZE));
+    assert_complete(&wait_finished(&e, b).await, &srv.data(SIZE));
 }

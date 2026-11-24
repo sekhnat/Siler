@@ -14,6 +14,7 @@ use tokio::sync::Notify;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
+use crate::gate::HostGates;
 use crate::net::{Net, host_key};
 use crate::ratelimit::RateLimiter;
 use crate::segment::Table;
@@ -143,6 +144,16 @@ impl Running {
             .unwrap_or(usize::MAX)
     }
 
+    /// The HTTP version its own server answers over (1 or 2), once known.
+    pub fn protocol(&self) -> Option<u8> {
+        self.sources
+            .lock()
+            .unwrap()
+            .first()
+            .map(|s| s.protocol.load(Relaxed))
+            .filter(|&v| v > 0)
+    }
+
     /// The share of the download's own server (the first one it joined).
     pub fn primary_cap(&self) -> usize {
         match self.hosts.lock().unwrap().first() {
@@ -195,6 +206,8 @@ pub(crate) struct Source {
     pub bytes: AtomicU64,
     /// Connections currently fetching from it.
     pub active: AtomicU32,
+    /// The HTTP version it last answered over: 0 not yet (or not HTTP), 1 or 2.
+    pub protocol: AtomicU8,
 }
 
 impl Source {
@@ -208,6 +221,7 @@ impl Source {
             disabled: Mutex::new(None),
             bytes: AtomicU64::new(0),
             active: AtomicU32::new(0),
+            protocol: AtomicU8::new(0),
         }
     }
 
@@ -241,6 +255,8 @@ pub(crate) struct Transfer {
     pub global: Arc<RateLimiter>,
     /// Range requests are possible (server supports them and the size is known).
     pub ranged: bool,
+    /// What busy servers said, shared with the other downloads.
+    pub gates: Arc<HostGates>,
 }
 
 #[derive(Clone)]
@@ -308,8 +324,15 @@ async fn fetch(t: &Transfer, idx: usize, source: &Source) -> Result<(), WorkerEr
     }
 
     let range = t.ranged.then(|| (t.base + pos, t.base + end));
+    // Counts this request against its server for as long as it runs.
+    let _pass;
     let opened = match transport::kind(&source.url) {
         transport::Kind::Http => {
+            // A server that told another download to wait gets nothing new from this one.
+            _pass = match t.gates.enter(&source.host, &t.run.cancel).await {
+                Some(p) => p,
+                None => return Err(WorkerError::Released),
+            };
             // Cookies, referrer and the browser's headers belong to the download's own server.
             let other_meta;
             let meta = if source.index == 0 {
@@ -321,7 +344,15 @@ async fn fetch(t: &Transfer, idx: usize, source: &Source) -> Result<(), WorkerEr
                 };
                 &other_meta
             };
-            transport::http::open_range(&t.net, &source.url, meta, &t.user_agent, range).await
+            // Several streams at once can share HTTP/2 connections; a lone one is faster
+            // on a connection of its own.
+            let streams = range.is_some() && t.run.target.load(Relaxed) > 1;
+            transport::http::open_range(&t.net, &source.url, meta, &t.user_agent, range, streams)
+                .await
+                .map(|(stream, version)| {
+                    source.protocol.store(version, Relaxed);
+                    stream
+                })
         }
         _ => {
             let (start, stop) = match range {
@@ -631,16 +662,22 @@ pub(crate) async fn transfer(
                         // The server caps connections: keep the ones we have, free this segment.
                         let n = crew.on_source(src);
                         source.learned_cap.store(n, Relaxed);
+                        t.gates.lower_cap(&source.host);
                         tracing::debug!(code, cap = n, "server limits connections");
                         None
                     }
-                    Err(WorkerError::Throttled(code, after)) => Some((format!("HTTP {code}"), after)),
-                    Err(WorkerError::Transient(m)) => Some((m, None)),
+                    Err(WorkerError::Throttled(code, after)) => {
+                        Some((format!("HTTP {code}"), after, true))
+                    }
+                    Err(WorkerError::Transient(m)) => Some((m, None, false)),
                 };
 
-                if let Some((msg, after)) = failure {
+                if let Some((msg, after, busy)) = failure {
                     let fails = source.fails.fetch_add(1, Relaxed) + 1;
                     if others && fails >= SOURCE_MAX_FAILS {
+                        if busy {
+                            t.gates.throttled(&source.host, retry_delay(fails, after));
+                        }
                         // Give up this source; the segment moves to another one at once.
                         source.disable(msg);
                         retries.remove(&idx);
@@ -674,6 +711,11 @@ pub(crate) async fn transfer(
                         return Err(Error::Network(msg));
                     }
                     tracing::debug!(idx, attempt, %msg, "retrying segment");
+                    let delay = retry_delay(attempt, after);
+                    if busy {
+                        // The server refused us outright: the other downloads from it wait too.
+                        t.gates.throttled(&source.host, delay);
+                    }
                     let retry_src = if source.is_disabled() {
                         crew.pick(&t)
                     } else {
@@ -681,7 +723,7 @@ pub(crate) async fn transfer(
                     };
                     t.run.retries.fetch_add(1, Relaxed);
                     match retry_src {
-                        Some(s) => crew.spawn(&t, idx, s, retry_delay(attempt, after)),
+                        Some(s) => crew.spawn(&t, idx, s, delay),
                         None => t.run.table.lock().unwrap().busy[idx] = false,
                     }
                 }

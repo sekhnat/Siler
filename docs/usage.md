@@ -112,7 +112,7 @@ siler --import links.txt
   - NTLM and Kerberos have been tested against a pyspnego test server and an MIT KDC, not yet against Windows servers or Active Directory.
 - **SFTP server keys:** the first connection to an SFTP server shows its key's fingerprint and asks whether to trust it (as `ssh` does). Trusted keys are kept in Siler's own `known_hosts` (next to its database); `~/.ssh/known_hosts` is read too. A key that changed is refused.
 - **Proxies for FTP and SFTP:** they go where the proxy settings (or the script) say: through a SOCKS proxy, or an HTTP or HTTPS proxy with `CONNECT`.
-- **Connections:** connections per download, simultaneous downloads and a per-server connection limit are in Settings → Transfers.
+- **Connections:** connections per download, simultaneous downloads and a per-server connection limit are in Settings → Transfers. **HTTP/2 connections per server** (experimental, off by default) lets a download's connections to an https server share a few HTTP/2 connections instead of each opening its own. When a server says it's busy (429 or 503), all of Siler's downloads from it wait as long as it asked, and when it refuses extra connections, its downloads share the number it accepts.
 - **Extra-safe resume** (Settings → Transfers, off by default): progress is only saved after the downloaded data is on the disk, so a power cut or a crash of the whole computer can't leave a resumed download with gaps. It costs a flush to disk about once a second while downloading. Without it, Siler itself crashing or being killed is still safe.
 - **Fetched twice** (in a download's details): data that was received and thrown away, from dropped connections, a download that had to start over or damaged pieces fetched again, with how many times the file's size came over the network in all (shown above 1.05×), and the number of retries. A data quota counts these bytes too, as your provider does.
 
@@ -132,7 +132,7 @@ siler --import links.txt
 
 ## Logs and data
 
-- **Logs** are written to `~/.local/state/siler/logs/`: `siler.<date>.log` (kept for a week), `nmhost.log`, and `siler-stderr.log` when the browser started Siler. Settings → General → **Open log folder** opens the folder.
+- **Logs** are written to `~/.local/state/siler/logs/`: `siler.<date>.log` (kept for a week), `nmhost.log`, and `siler-stderr.log` when the browser started Siler. Settings → General → **Open log folder** opens the folder. Logs are safe to share: signed links, logins in addresses and cookies are removed as they are written (parameter names stay, so a log still shows which kind of link it was).
 - **Data** is stored in `~/.local/share/app.siler.Siler/siler.db`. See [Architecture → Files on disk](architecture.md#files-on-disk).
 
 ## Troubleshooting

@@ -14,8 +14,10 @@ thiserror.workspace = true
 tracing.workspace = true
 tokio-util = "0.7"
 futures-util = "0.3"
-# HTTP/1.1 only on purpose: with HTTP/2 every "connection" would be multiplexed onto a single TCP stream.
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "charset", "system-proxy", "stream", "socks"] }
+# Every client is pinned to HTTP/1.1 (`http1_only`) except the HTTP/2 slots in `net.rs`, which
+# only range workers use, and only when Settings → Transfers turns them on: one HTTP/2 client
+# would multiplex all of a server's connections onto one TCP connection.
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "charset", "system-proxy", "stream", "socks", "http2"] }
 rusqlite = { version = "0.43", features = ["bundled"] }
 dirs = "7"
 mime_guess = "2"
@@ -49,5 +51,9 @@ zbus = { version = "5.19", default-features = false, features = ["tokio"] }
 
 [dev-dependencies]
 axum = "0.8"
+# The HTTP/2 test server (`h2_tests.rs`).
+hyper = { version = "1", features = ["server", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
+http-body-util = "0.1"
 tempfile = "3"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["full", "test-util"] }

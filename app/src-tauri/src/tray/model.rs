@@ -411,6 +411,7 @@ mod tests {
             phase: None,
             source_bytes: vec![],
             traffic: None,
+            protocol: None,
         }
     }
 

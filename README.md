@@ -29,7 +29,7 @@
 
 **Fast and resilient**
 - Segmented downloads over many connections, with dynamic splitting: a free connection takes over half of the largest remaining piece. The connection count can change while a download runs.
-- Pause and resume across restarts and crashes; passing network failures are retried, honouring `Retry-After`. **Extra-safe resume** makes it survive a power cut too, and the details show how much a flaky connection made Siler fetch twice.
+- Pause and resume across restarts and crashes; passing network failures are retried, honouring `Retry-After`, and a server that says it's busy slows down every download from it, not just one. **Extra-safe resume** makes it survive a power cut too, and the details show how much a flaky connection made Siler fetch twice.
 - Partial files are private to you, and Siler never writes through a link someone left where its partial file goes.
 - Mirrors and multi-source downloads, and metalinks with piece hashes.
 - **Expired links refresh themselves**: Siler asks the original address again, or the browser the link came from finds it on its page in a background tab. Siler checks that the file is still the same and continues where it was.
@@ -51,7 +51,7 @@
 - Keep files up to date, a site grabber that can also save pages for offline reading, and a command to run after each download.
 
 **In control**
-- Global and per-download speed limits, per-server connection limits and a data quota (so many MB every so many hours).
+- Global and per-download speed limits, per-server connection limits and a data quota (so many MB every so many hours). HTTP/2 is there to try (Settings → Transfers), off by default.
 - Checksums (MD5 to SHA-512, and the server's `Digest` header), **Verify checksum…** for any file, and ZIP preview to fetch just the files you need from an archive.
 - **Proxies:** the desktop's, HTTP, HTTPS, SOCKS4/4a and SOCKS5, an FTP proxy, **proxy scripts (PAC)** and **automatic detection (WPAD)**, with failover. Scripts run in a separate helper with tight limits on time and memory.
 - **Logins:** Basic, Digest, **NTLM** and **Kerberos (Negotiate)**, for sites and proxies, saved in the desktop keyring.

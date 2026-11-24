@@ -72,6 +72,7 @@ class DownloadStore {
           if (p.source_bytes) p.source_bytes.forEach((b, i) => d.sources[i] && (d.sources[i].bytes = b));
           if (p.total_size != null) d.total_size = p.total_size;
           if (p.traffic) d.traffic = p.traffic;
+          if (p.protocol) d.protocol = p.protocol;
           const h = this.perHistory[p.id] ?? new Array(HISTORY).fill(0);
           h.push(p.speed);
           if (h.length > HISTORY) h.shift();

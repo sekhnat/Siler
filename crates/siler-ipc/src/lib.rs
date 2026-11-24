@@ -3,6 +3,8 @@
 //! Framing matches WebExtension native messaging: a 32-bit little-endian length followed
 //! by that many bytes of UTF-8 JSON. The native host can therefore relay frames verbatim.
 
+pub mod redact;
+
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
 use std::path::PathBuf;

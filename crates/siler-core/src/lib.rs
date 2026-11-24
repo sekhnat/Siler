@@ -12,7 +12,10 @@ pub mod checksum;
 mod error;
 pub mod extras;
 pub mod filename;
+pub(crate) mod gate;
 pub mod grabber;
+#[cfg(test)]
+mod h2_tests;
 pub mod host;
 mod http;
 pub mod lists;
